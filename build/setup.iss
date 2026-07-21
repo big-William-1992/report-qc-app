@@ -1,4 +1,4 @@
-#codepage 65001
+#pragma codepage(65001)
 
 [Setup]
 AppName=医学影像报告质控软件
