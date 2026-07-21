@@ -1,0 +1,36 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# ---------- 运行时数据（样本库可能含患者信息，绝不入库） ----------
+*.db
+*.sqlite
+*.sqlite3
+assets/samples.db
+
+# 用户本地规则配置：rules_config.json 是软件默认规则模板（含 R8 错别字库、R9 冲突、R10 模板），
+# 必须随仓库分发，否则打包后的 exe 缺少该文件、R8 错别字检查会变空。运行时用户修改会写入 %APPDATA%。
+# 仅 ris_config.json（院内 RIS 连接，含敏感信息且为可选功能）不入库。
+assets/ris_config.json
+
+# ---------- 打包产物 ----------
+dist/
+build/*.exe
+build/*.dmg
+build/*.app
+# 保留打包脚本本身
+!build/*.spec
+!build/*.bat
+!build/*.iss
+
+# ---------- 系统 / IDE ----------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

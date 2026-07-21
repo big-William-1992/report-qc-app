@@ -1,0 +1,55 @@
+name: Build Windows (exe + installer)
+
+# 触发：手动点一下 / 推到 main / 打 v* tag
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: windows-latest   # 真实 x64 Windows Server，产物兼容绝大多数 PC
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Build exe (PyInstaller)
+        run: python -m PyInstaller build/report_qc.spec --noconfirm --clean
+
+      - name: Smoke test - engine import & run
+        # 干净环境下验证引擎能正常 import 并跑一份示例报告（抓逻辑层错误）
+        run: python -c "import sys; sys.path.insert(0,'src'); import engine; e=engine.QcEngine(); e.run('Chest CT: no acute findings.'); print('ENGINE_OK')"
+
+      - name: Upload exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-qc-exe
+          path: dist/报告质控软件/
+          if-no-files-found: warn
+
+      # ---- 以下为可选：生成 Inno Setup 安装包。任一步失败都不阻断 exe 产物 ----
+      - name: Install Inno Setup (optional)
+        continue-on-error: true
+        run: choco install innosetup -y
+
+      - name: Build installer (optional)
+        continue-on-error: true
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build\setup.iss'
+
+      - name: Upload installer artifact (optional)
+        continue-on-error: true
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-qc-installer
+          path: installer/*.exe
+          if-no-files-found: ignore

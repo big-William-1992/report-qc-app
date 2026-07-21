@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>医学影像报告质控系统 · 免费下载</title>
+<style>
+  :root{
+    --primary:#0E7C9B; --primary-d:#0A5C73; --accent:#F2A900;
+    --bg:#F4F8FA; --panel:#FFFFFF; --text:#22323A; --text-dim:#5E7079;
+    --ok:#2ECC71; --border:#DCE6EB;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",Segoe UI,sans-serif;
+       background:var(--bg);color:var(--text);line-height:1.6}
+  a{color:var(--primary);text-decoration:none}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 20px}
+  /* Hero */
+  header.hero{background:linear-gradient(135deg,var(--primary),var(--primary-d));color:#fff;padding:64px 0 56px}
+  .hero h1{font-size:34px;font-weight:800;letter-spacing:.5px}
+  .hero p{margin-top:14px;font-size:17px;opacity:.92;max-width:680px}
+  .hero .ver{display:inline-block;background:rgba(255,255,255,.18);padding:3px 12px;border-radius:20px;font-size:13px;margin-bottom:16px}
+  .dl{margin-top:28px;display:flex;gap:14px;flex-wrap:wrap}
+  .btn{display:inline-block;padding:13px 26px;border-radius:8px;font-weight:700;font-size:15px;transition:.15s}
+  .btn-primary{background:var(--accent);color:#3a2c00}
+  .btn-primary:hover{background:#ffbe24}
+  .btn-ghost{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.4)}
+  .btn-ghost:hover{background:rgba(255,255,255,.22)}
+  /* Section */
+  section{padding:52px 0}
+  h2{font-size:24px;color:var(--primary-d);margin-bottom:8px}
+  .sub{color:var(--text-dim);margin-bottom:28px}
+  /* Features grid */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:22px;transition:.15s}
+  .card:hover{box-shadow:0 6px 20px rgba(14,124,155,.12);transform:translateY(-2px)}
+  .card .ic{font-size:26px}
+  .card h3{font-size:17px;margin:10px 0 6px;color:var(--text)}
+  .card p{font-size:14px;color:var(--text-dim)}
+  /* Screenshot */
+  .shot{background:var(--panel);border:1px dashed var(--border);border-radius:12px;padding:40px;text-align:center;color:var(--text-dim)}
+  .shot img{max-width:100%;border-radius:8px;border:1px solid var(--border)}
+  /* Disclaimer */
+  .disc{background:#FFF7E6;border:1px solid #F2D49B;border-radius:12px;padding:24px}
+  .disc h2{color:#B8780E}
+  .disc ul{margin:12px 0 0 20px;font-size:14px;color:var(--text)}
+  .disc li{margin:6px 0}
+  /* Footer */
+  footer{background:var(--primary-d);color:#cfe6ee;padding:26px 0;font-size:13px;text-align:center}
+  footer a{color:#fff}
+  .tag{display:inline-block;background:#E6F4F8;color:var(--primary-d);font-size:12px;padding:3px 10px;border-radius:6px;margin:3px 4px 0 0}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="ver">v2.0 · 免费开源</span>
+    <h1>医学影像报告质控系统</h1>
+    <p>面向放射科医生的报告智能质控助手：粘贴即查、复制即控、自动修正、样本沉淀、科室报表。所有数据仅在本机运行，不上传任何网络。</p>
+    <div class="dl">
+      <!-- 发布时把下方链接替换为你的 GitHub Releases 地址 -->
+      <a class="btn btn-primary" href="https://github.com/你的用户名/report_qc_app/releases/latest">⬇ 下载 Windows 版</a>
+      <a class="btn btn-primary" href="https://github.com/你的用户名/report_qc_app/releases/latest">⬇ 下载 macOS 版</a>
+      <a class="btn btn-ghost" href="https://github.com/你的用户名/report_qc_app">GitHub 仓库</a>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>核心功能</h2>
+    <p class="sub">覆盖 R1–R10 十大类报告问题，从粘贴到出科报表一站式完成。</p>
+    <div class="grid">
+      <div class="card"><div class="ic">🔍</div><h3>实时剪贴板监听</h3><p>复制即质控，命中问题弹窗提醒，听写误写及时拦截。监听循环自愈合，不静默中断。</p></div>
+      <div class="card"><div class="ic">📝</div><h3>R1–R10 规则引擎</h3><p>性别矛盾、左右混淆、评分缺失、单位错误、描述-结论矛盾、部位不符、错别字、互斥冲突、模板合规。</p></div>
+      <div class="card"><div class="ic">✏️</div><h3>自动修正预览</h3><p>同音错别字逐条确认后再回填；矛盾类问题只提示不改写，避免误判污染正式报告。</p></div>
+      <div class="card"><div class="ic">📊</div><h3>样本库与驾驶舱</h3><p>错误沉淀、趋势统计，一键导出科室质控报表（CSV），直接用于月度 QA 汇报。</p></div>
+      <div class="card"><div class="ic">⚙️</div><h3>可配置规则</h3><p>错别字词典、互斥冲突、忽略名单、模板规范均可维护，修改即时生效。</p></div>
+      <div class="card"><div class="ic">🔗</div><h3>RIS 直连（可选）</h3><p>院内内网连接 PACS/RIS，批量拉取报告质控入库，配置仅存本机。</p></div>
+    </div>
+  </div>
+</section>
+
+<section style="background:var(--panel);border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
+  <div class="wrap">
+    <h2>软件界面</h2>
+    <p class="sub">三页签结构：报告质控 · 质控驾驶舱 · RIS 直连。</p>
+    <div class="shot">
+      <!-- 发布前：在此替换为一张软件运行截图（建议 1180×760 左右），例如 <img src="screenshot.png" alt="软件截图"> -->
+      📷 截图占位区 — 请放置一张软件主界面截图（替换此区域）
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="disc">
+      <h2>⚠ 免责声明与合规</h2>
+      <ul>
+        <li><b>非医疗器械</b>：本软件为科研 / 教学辅助工具，<b>非医疗器械</b>，不替代执业医师的诊断与判断。</li>
+        <li><b>数据不出本机</b>：所有报告、样本、配置均仅存于本机，<b>不发起任何网络上传</b>。</li>
+        <li><b>本地运行</b>：软件完全离线运行；RIS 直连仅连接你所在的院内内网数据库。</li>
+        <li><b>使用责任</b>：质控结果仅供参考，最终以执业医师审核为准。因使用本软件产生的任何后果，作者不承担责任。</li>
+        <li><b>开源许可</b>：基于 MIT License 免费提供，可自由使用、修改与再分发。</li>
+      </ul>
+    </div>
+    <p style="margin-top:18px">
+      <span class="tag">免费</span><span class="tag">开源 MIT</span>
+      <span class="tag">本地运行</span><span class="tag">不上传数据</span>
+      <span class="tag">Windows / macOS</span>
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    医学影像报告质控系统 v2.0 · 作者 谢君（Xie Jun）· 基于 MIT License 发布<br>
+    问题反馈与误报收集：请通过 GitHub Issues 提交
+  </div>
+</footer>
+
+</body>
+</html>
