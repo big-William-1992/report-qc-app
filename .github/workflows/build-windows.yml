@@ -48,7 +48,14 @@ jobs:
       # ---- 生成 Inno Setup 安装包（用户选择要安装向导，必选）----
       - name: Install Inno Setup
         continue-on-error: true
-        run: choco install innosetup -y
+        run: |
+          for ($i=1; $i -le 3; $i++) {
+            Write-Host "choco install attempt $i"
+            choco install innosetup -y --no-progress
+            if (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") { Write-Host "ISCC INSTALLED"; break }
+            Start-Sleep -Seconds 5
+          }
+          Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
       - name: Build installer
         working-directory: build
