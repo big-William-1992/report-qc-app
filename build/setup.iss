@@ -8,7 +8,7 @@ AppVersion=1.0
 AppPublisher=报告质控软件
 DefaultDirName={autopf}\报告质控软件
 DefaultGroupName=报告质控软件
-OutputDir=installer
+OutputDir=..\installer
 OutputBaseFilename=报告质控软件_安装包
 Compression=lzma2
 SolidCompression=yes
@@ -21,7 +21,7 @@ UninstallDisplayIcon={app}\报告质控软件.exe
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "dist\报告质控软件\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\报告质控软件\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\报告质控软件"; Filename: "{app}\报告质控软件.exe"

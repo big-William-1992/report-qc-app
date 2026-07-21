@@ -52,7 +52,8 @@ jobs:
 
       - name: Build installer
         continue-on-error: true
-        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build\setup.iss'
+        working-directory: build
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss'
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
