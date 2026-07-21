@@ -1,5 +1,3 @@
-; Inno Setup 脚本 —— 生成 Windows 安装包
-; 编码：UTF-8（#codepage 65001 让 IS 正确解析中文）
 #codepage 65001
 
 [Setup]
@@ -9,7 +7,7 @@ AppPublisher=报告质控软件
 DefaultDirName={autopf}\报告质控软件
 DefaultGroupName=报告质控软件
 OutputDir=..\installer
-OutputBaseFilename=报告质控软件_安装包
+OutputBaseFilename=ReportQcSetup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

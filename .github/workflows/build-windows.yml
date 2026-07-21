@@ -49,13 +49,20 @@ jobs:
       - name: Install Inno Setup
         continue-on-error: true
         run: |
-          for ($i=1; $i -le 3; $i++) {
+          # 1) 先试 choco（最多 2 次）
+          for ($i=1; $i -le 2; $i++) {
             Write-Host "choco install attempt $i"
             choco install innosetup -y --no-progress
-            if (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") { Write-Host "ISCC INSTALLED"; break }
+            if (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") { Write-Host "ISCC via choco OK"; break }
             Start-Sleep -Seconds 5
           }
-          Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          # 2) choco 失败则直接下载官方安装包静默安装
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            Write-Host "choco 失败，尝试直接下载官方 installer..."
+            Invoke-WebRequest -Uri "https://jrsoftware.org/download.php/is.exe" -OutFile "$env:TEMP\innosetup.exe" -MaximumRedirection 10
+            Start-Process "$env:TEMP\innosetup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          }
+          Write-Host "ISCC exists:" (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")
 
       - name: Build installer
         continue-on-error: true
