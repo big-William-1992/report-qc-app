@@ -51,9 +51,12 @@ jobs:
         run: choco install innosetup -y
 
       - name: Build installer
-        continue-on-error: true
         working-directory: build
-        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss'
+        run: |
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) { Write-Error "ISCC.exe 未找到，choco 安装 Inno Setup 可能失败"; exit 1 }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
+          if ($LASTEXITCODE -ne 0) { Write-Error "Inno Setup 编译失败 (exit $LASTEXITCODE)"; exit 1 }
+          Write-Host "INSTALLER BUILD OK"
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
