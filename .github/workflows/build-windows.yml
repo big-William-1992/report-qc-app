@@ -46,32 +46,46 @@ jobs:
         run: Compress-Archive -Path "dist/报告质控软件/*" -DestinationPath "report-qc-portable.zip" -Force
 
       # ---- 生成 Inno Setup 安装包（用户选择要安装向导，必选）----
-      - name: Install Inno Setup
+      - name: Install Inno Setup (with diagnostics)
         continue-on-error: true
         run: |
-          # 1) 先试 choco（最多 2 次）
+          $diag = "DIAG.md"
+          "# 安装包诊断" | Out-File -FilePath $diag -Encoding utf8
           for ($i=1; $i -le 2; $i++) {
-            Write-Host "choco install attempt $i"
-            choco install innosetup -y --no-progress
-            if (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") { Write-Host "ISCC via choco OK"; break }
+            "choco attempt $i" | Add-Content $diag
+            choco install innosetup -y --no-progress *>&1 | Out-Null
+            if (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") { "ISCC via choco OK" | Add-Content $diag; break }
+            "choco attempt $i failed" | Add-Content $diag
             Start-Sleep -Seconds 5
           }
-          # 2) choco 失败则直接下载官方安装包静默安装
           if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
-            Write-Host "choco 失败，尝试直接下载官方 installer..."
-            Invoke-WebRequest -Uri "https://jrsoftware.org/download.php/is.exe" -OutFile "$env:TEMP\innosetup.exe" -MaximumRedirection 10
-            Start-Process "$env:TEMP\innosetup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+            "choco 失败, 尝试官方下载" | Add-Content $diag
+            try {
+              Invoke-WebRequest -Uri "https://jrsoftware.org/download.php/is.exe" -OutFile "$env:TEMP\innosetup.exe" -MaximumRedirection 10 -ErrorAction Stop
+              "下载完成, 开始静默安装" | Add-Content $diag
+              Start-Process "$env:TEMP\innosetup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+            } catch {
+              "官方下载/安装异常: $_" | Add-Content $diag
+            }
           }
-          Write-Host "ISCC exists:" (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")
+          "ISCC 最终存在: $(Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')" | Add-Content $diag
 
-      - name: Build installer
+      - name: Build installer (with diagnostics)
         continue-on-error: true
         working-directory: build
         run: |
-          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) { Write-Error "ISCC.exe 未找到，choco 安装 Inno Setup 可能失败"; exit 1 }
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
-          if ($LASTEXITCODE -ne 0) { Write-Error "Inno Setup 编译失败 (exit $LASTEXITCODE)"; exit 1 }
-          Write-Host "INSTALLER BUILD OK"
+          $diag = "../DIAG.md"
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            "ISCC 未找到, 跳过编译" | Add-Content $diag
+            Write-Error "ISCC.exe 未找到"; exit 1
+          }
+          "开始编译 setup.iss" | Add-Content $diag
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss 2>&1 | Add-Content $diag
+          if ($LASTEXITCODE -ne 0) {
+            "编译失败 exit $LASTEXITCODE" | Add-Content $diag
+            Write-Error "Inno Setup 编译失败"; exit 1
+          }
+          "INSTALLER BUILD OK" | Add-Content $diag
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
@@ -97,16 +111,24 @@ jobs:
           for f in installer/*.exe; do FILES="$FILES,$f"; done
           echo "RELEASE_FILES=$FILES" >> "$GITHUB_ENV"
 
+      - name: Prepare release notes (with installer diagnostics)
+        shell: bash
+        run: |
+          {
+            echo "医学影像报告质控软件 Windows 版（每次推代码自动构建）。"
+            echo "- 绿色版：解压 report-qc-portable.zip，双击「报告质控软件.exe」即可运行（无需安装）"
+            echo "- 安装版：若本次构建成功，下载 installer 里的 exe，双击「下一步」安装，自动建桌面快捷方式"
+            echo ""
+            echo "## 安装包构建诊断"
+            cat DIAG.md 2>/dev/null || echo "(无诊断信息)"
+          } > RELEASE_BODY.md
+
       - name: Publish latest Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: 报告质控软件（最新版）
           files: ${{ env.RELEASE_FILES }}
-          body: |
-            医学影像报告质控软件 Windows 版（每次推代码自动构建）。
-            - 安装版：下载 installer 里的 exe，双击「下一步」即可安装，自动建桌面快捷方式
-            - 绿色版：解压 report-qc-portable.zip，双击「报告质控软件.exe」即可运行（无需安装）
-            未做代码签名，Windows 可能提示「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」即可。
+          body_path: RELEASE_BODY.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
