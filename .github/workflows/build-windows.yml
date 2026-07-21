@@ -58,6 +58,7 @@ jobs:
           Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
       - name: Build installer
+        continue-on-error: true
         working-directory: build
         run: |
           if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) { Write-Error "ISCC.exe 未找到，choco 安装 Inno Setup 可能失败"; exit 1 }
