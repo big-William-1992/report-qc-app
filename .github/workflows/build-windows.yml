@@ -7,6 +7,9 @@ on:
     branches: [main]
     tags: ['v*']
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest   # 真实 x64 Windows Server，产物兼容绝大多数 PC
@@ -38,20 +41,53 @@ jobs:
           path: dist/报告质控软件/
           if-no-files-found: warn
 
-      # ---- 以下为可选：生成 Inno Setup 安装包。任一步失败都不阻断 exe 产物 ----
-      - name: Install Inno Setup (optional)
+      # ---- 打包绿色版 zip（供 Release 下载，解压即用）----
+      - name: Package portable zip
+        run: Compress-Archive -Path "dist/报告质控软件/*" -DestinationPath "report-qc-portable.zip" -Force
+
+      # ---- 生成 Inno Setup 安装包（用户选择要安装向导，必选）----
+      - name: Install Inno Setup
         continue-on-error: true
         run: choco install innosetup -y
 
-      - name: Build installer (optional)
+      - name: Build installer
         continue-on-error: true
         run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build\setup.iss'
 
-      - name: Upload installer artifact (optional)
-        continue-on-error: true
-        if: success()
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: report-qc-installer
           path: installer/*.exe
-          if-no-files-found: ignore
+          if-no-files-found: warn
+
+      # ---- 自动发布 latest Release（固定链接，公开仓库任何人可下载，永久不过期）----
+      - name: Delete old latest release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes || true
+          git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/big-William-1992/-.git" :refs/tags/latest || true
+
+      - name: Prepare release files
+        shell: bash
+        run: |
+          FILES="report-qc-portable.zip"
+          shopt -s nullglob
+          for f in installer/*.exe; do FILES="$FILES,$f"; done
+          echo "RELEASE_FILES=$FILES" >> "$GITHUB_ENV"
+
+      - name: Publish latest Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: 报告质控软件（最新版）
+          files: ${{ env.RELEASE_FILES }}
+          body: |
+            医学影像报告质控软件 Windows 版（每次推代码自动构建）。
+            - 安装版：下载 installer 里的 exe，双击「下一步」即可安装，自动建桌面快捷方式
+            - 绿色版：解压 report-qc-portable.zip，双击「报告质控软件.exe」即可运行（无需安装）
+            未做代码签名，Windows 可能提示「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」即可。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

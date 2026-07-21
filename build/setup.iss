@@ -1,47 +1,34 @@
-; Inno Setup 安装脚本 —— 医学影像报告质控软件
-; 用法：先用 PyInstaller 生成 dist\报告质控软件\ 目录，再用 Inno Setup Compiler 打开本文件 Build
-; 输出： installer\医学影像报告质控软件_Setup.exe
-; 可选：若提供图标，把 .ico 放到 assets\app.ico 并取消下行注释：
-; SetupIconFile=assets\app.ico
-
-#define MyAppName "医学影像报告质控软件"
-#define MyAppVersion "1.0"
-#define MyAppPublisher "Radiology QC"
-#define MyAppURL "https://example.com"
-#define MyAppExeName "报告质控软件.exe"
+; Inno Setup 脚本 —— 生成 Windows 安装包
+; 编码：UTF-8（#codepage 65001 让 IS 正确解析中文）
+#codepage 65001
 
 [Setup]
-AppId={{8F2C1A3B-6D4E-4C9A-9B21-7E33C5A8D201}
-AppName={#MyAppName}
-AppVersion={#MyAppVersion}
-AppPublisher={#MyAppPublisher}
-AppPublisherURL={#MyAppURL}
-AppSupportURL={#MyAppURL}
-AppUpdatesURL={#MyAppURL}
-DefaultDirName={autopf}\{#MyAppName}
-DefaultGroupName={#MyAppName}
-AllowNoIcons=yes
+AppName=医学影像报告质控软件
+AppVersion=1.0
+AppPublisher=报告质控软件
+DefaultDirName={autopf}\报告质控软件
+DefaultGroupName=报告质控软件
 OutputDir=installer
-OutputBaseFilename={#MyAppName}_Setup
+OutputBaseFilename=报告质控软件_安装包
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesInstallIn64BitMode=x64
 PrivilegesRequired=lowest
+ArchitecturesInstallIn64BitMode=x64
+UninstallDisplayIcon={app}\报告质控软件.exe
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl"
+Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-; 把 PyInstaller 产物整个目录打进安装包（含 exe 与 assets/）
-Source: "dist\{#MyAppExeName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\报告质控软件\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{group}\报告质控软件"; Filename: "{app}\报告质控软件.exe"
+Name: "{autodesktop}\报告质控软件"; Filename: "{app}\报告质控软件.exe"; Tasks: desktopicon
 
 [Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式:"; Flags: unchecked
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\报告质控软件.exe"; Description: "启动 报告质控软件"; Flags: nowait postinstall skipifsilent
