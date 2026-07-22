@@ -1,6 +1,6 @@
 """
 report_qc_app/src/app.py
-医学影像报告质控软件 · 桌面 GUI（纯标准库 Tkinter，零依赖）
+星衍放射质控软件 · 桌面 GUI（纯标准库 Tkinter，零依赖）
 
 视觉风格：专业医疗浅色主题（青蓝主色 / 卡片化 / 统一字体 / 环形饼图 + 双轴趋势图）
 
@@ -28,6 +28,7 @@ from engine import RuleEngine, score, error_type_counts
 import engine
 import samplelib
 import ris
+import license_utils
 
 
 # ----------------------------- 主题 -----------------------------
@@ -197,7 +198,7 @@ class ScrollableFrame(tk.Frame):
 class ReportQcApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("医学影像报告质控系统  v2.0")
+        self.title("星衍放射质控软件  v2.0")
         # ponytail: force visible position on multi-monitor setups where Tk
         # may default to a negative Y. Update these if your screen is different.
         self.geometry("1180x760+100+50")
@@ -260,7 +261,7 @@ class ReportQcApp(tk.Tk):
         shadow = tk.Frame(self, bg=s["primary_d"], height=2)
         shadow.pack(fill="x")
 
-        tk.Label(bar, text="医学影像报告质控系统", bg=s["header_bg"], fg=s["header_fg"],
+        tk.Label(bar, text="星衍放射质控软件", bg=s["header_bg"], fg=s["header_fg"],
                  font=F(FAMILY, 17, "bold"), padx=16).pack(side="left", anchor="center")
         tk.Label(bar, text="第一代 · NER + 知识图谱 + 规则引擎（R1–R10）",
                  bg=s["header_bg"], fg="#B8E4EE", font=F(FAMILY, 10)).pack(side="left", padx=10, anchor="center")
@@ -1418,7 +1419,32 @@ class ReportQcApp(tk.Tk):
 
 
 def main():
+    # ---------- 启动授权检查 ----------
+    root = tk.Tk()
+    root.withdraw()  # 隐藏主窗口，仅作为弹窗的父窗口
+    
+    # 1. 免责声明
+    if not license_utils.show_disclaimer(root):
+        root.destroy()
+        return
+    
+    # 2. 试用期检查
+    status, data = license_utils.check_trial()
+    if status == "expired":
+        if not license_utils.show_activation_dialog(root):
+            root.destroy()
+            return
+    
+    root.destroy()
+    # ---------- 授权通过，正式启动 ----------
+    
     app = ReportQcApp()
+    
+    # 在状态栏标注试用信息
+    if status == "trial":
+        days = data
+        app.session_var.set(f"试用期剩余 {days} 天 · 未监听")
+    
     app.mainloop()
 
 
