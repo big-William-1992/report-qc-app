@@ -34,3 +34,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+keys/private_key.pem
+# 运行时授权状态（含本机免责声明接受标记/激活状态），由软件生成，不入库
+assets/license.dat

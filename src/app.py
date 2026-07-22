@@ -214,6 +214,9 @@ class ReportQcApp(tk.Tk):
         self._last_alert_ts = 0.0
         self.style = apply_theme(self)
 
+        # 菜单栏（macOS 显示在屏幕顶部，Windows 显示在窗口标题栏下方）
+        self._build_menubar()
+
         # ponytail: v2 — configure root background + header font
         self.configure(bg=THEME["bg"])
 
@@ -236,6 +239,10 @@ class ReportQcApp(tk.Tk):
         ttk.Label(sb, text="监听", foreground=THEME["text_dim"]).pack(side="left", padx=(0, 8))
         self.session_var = tk.StringVar(value="未监听 · 本次会话命中 0 份")
         ttk.Label(sb, textvariable=self.session_var, foreground=THEME["primary"]).pack(side="left")
+        # 授权入口：主动激活 / 重新激活（默认显示"激活"，激活成功后变"重新激活"）
+        self._activate_btn = ttk.Button(sb, text="激活", width=9,
+                                        command=self._open_activation)
+        self._activate_btn.pack(side="right", padx=(10, 0))
         self._update_status_bar()
 
         self.tab_qc = ttk.Frame(self.notebook)
@@ -269,6 +276,33 @@ class ReportQcApp(tk.Tk):
                  font=F(FAMILY, 10, "bold")).pack(side="right", padx=14, anchor="center")
         ttk.Button(bar, text="⚙ 规则维护", command=self._open_rules_editor).pack(
             side="right", padx=8, anchor="center")
+
+    # -------------------- 菜单栏 / 授权入口 --------------------
+    def _build_menubar(self):
+        """构建顶部菜单栏，提供激活入口与关于信息。"""
+        menubar = tk.Menu(self)
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="输入激活码…", command=self._open_activation)
+        help_menu.add_separator()
+        help_menu.add_command(label="关于星衍放射质控软件", command=self._show_about)
+        menubar.add_cascade(label="帮助", menu=help_menu)
+        self.config(menu=menubar)
+
+    def _open_activation(self):
+        """主动激活 / 重新激活：弹出激活码输入框，成功则刷新授权状态。"""
+        if license_utils.show_activation_dialog(self):
+            self.session_var.set("已激活 · 未监听")
+            self._activate_btn.configure(text="重新激活")
+            messagebox.showinfo("激活成功",
+                                "软件已成功激活，感谢使用「星衍放射质控软件」！")
+
+    def _show_about(self):
+        """关于对话框。"""
+        info = ("星衍放射质控软件  v2.0\n\n"
+                "第一代 · NER + 知识图谱 + 规则引擎（R1–R10）\n\n"
+                "本软件提供的报告质控结果仅供参考，不构成最终诊断依据；\n"
+                "所有结果均需由具备资质的放射科医师审核确认。")
+        messagebox.showinfo("关于", info)
 
     # -------------------- 规则维护弹窗 --------------------
     def _open_rules_editor(self):
@@ -1420,31 +1454,41 @@ class ReportQcApp(tk.Tk):
 
 def main():
     # ---------- 启动授权检查 ----------
-    root = tk.Tk()
-    root.withdraw()  # 隐藏主窗口，仅作为弹窗的父窗口
-    
-    # 1. 免责声明
-    if not license_utils.show_disclaimer(root):
-        root.destroy()
+    app = ReportQcApp()
+    # macOS 关键：必须先把主窗口显示出来，再弹 transient 子窗口（免责声明/激活）。
+    # 若先 withdraw 主窗口，macOS 的 transient 子窗口会因父窗口隐藏而不渲染，
+    # 导致 wait_window 死等、程序表现为"完全没启动"（用户看不到任何窗口）。
+    app.deiconify()
+    app.update_idletasks()
+    app.lift()
+    app.focus_force()
+
+    # 1. 免责声明（首次运行才弹，同意后写入 license.dat，后续不再弹）
+    if not license_utils.show_disclaimer(app):
+        app.destroy()
         return
-    
+
     # 2. 试用期检查
     status, data = license_utils.check_trial()
     if status == "expired":
-        if not license_utils.show_activation_dialog(root):
-            root.destroy()
+        # 过期且未激活：弹激活框（模态 grab 覆盖主界面）。
+        # macOS 注意：transient 子窗口需父窗口可见才能渲染，故不 withdraw 主窗口，
+        # 由激活框的 grab_set + topmost 锁定交互并置顶。
+        if not license_utils.show_activation_dialog(app):
+            app.destroy()
             return
-    
-    root.destroy()
-    # ---------- 授权通过，正式启动 ----------
-    
-    app = ReportQcApp()
-    
-    # 在状态栏标注试用信息
+        app.lift()
+        app.focus_force()
+
+    # 在状态栏标注授权状态
     if status == "trial":
-        days = data
-        app.session_var.set(f"试用期剩余 {days} 天 · 未监听")
-    
+        app.session_var.set(f"试用期剩余 {data} 天 · 未监听")
+        app._activate_btn.configure(text="激活")
+    elif status == "activated":
+        app.session_var.set("已激活 · 未监听")
+        app._activate_btn.configure(text="重新激活")
+
+    # ---------- 授权通过，进入主循环 ----------
     app.mainloop()
 
 

@@ -22,8 +22,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install PyInstaller
-        run: python -m pip install --upgrade pip pyinstaller
+      - name: Install PyInstaller + cryptography
+        run: python -m pip install --upgrade pip pyinstaller cryptography
 
       - name: Build exe (PyInstaller)
         run: python -m PyInstaller build/report_qc.spec --noconfirm --clean
@@ -101,7 +101,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release delete latest --yes || true
-          git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/big-William-1992/-.git" :refs/tags/latest || true
+          git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/big-William-1992/report-qc-app.git" :refs/tags/latest || true
 
       - name: Prepare release files
         shell: bash

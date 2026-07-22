@@ -7,8 +7,9 @@ license_utils.py
 import os
 import json
 import hashlib
-import hmac
+import base64
 import datetime
+import platform
 import tkinter as tk
 from tkinter import ttk, messagebox
 import sys
@@ -24,9 +25,6 @@ _LICENSE_FILE = os.path.join(_BASE_DIR, "assets", "license.dat")
 
 # 试用期（天）
 TRIAL_DAYS = 90
-
-# 激活码 HMAC 密钥（仅用于验证，生产环境应换用非对称签名）
-_SECRET_KEY = b"XingYan-Radiology-QC-2026-SecretKey!@#"
 
 # ---------- 免责声明文本 ----------
 
@@ -92,6 +90,13 @@ def show_disclaimer(parent):
     win.resizable(False, False)
     win.transient(parent)
     win.grab_set()  # 模态
+    # macOS 关键：transient 子窗口需显式置顶，否则父窗口失焦/隐藏时不会渲染
+    win.lift()
+    try:
+        win.attributes("-topmost", True)
+        win.after(900, lambda: win.winfo_exists() and win.attributes("-topmost", False))
+    except Exception:
+        pass
 
     # 标题
     tk.Label(win, text="用户协议与免责声明", font=("PingFang SC", 15, "bold"),
@@ -166,52 +171,66 @@ def check_trial():
 
 # ---------- 激活码 ----------
 
-def _machine_id():
-    """生成一个相对稳定的机器标识（用于激活码绑定）。"""
-    # 尝试用 hostname + MAC 地址（简化版）
-    try:
-        import socket
-        host = socket.gethostname()
-    except Exception:
-        host = "unknown"
-    try:
-        import uuid
-        mac = uuid.getnode()
-        mac_hex = format(mac, "x")
-    except Exception:
-        mac_hex = "unknown"
-    raw = f"{host}::{mac_hex}"
-    return hashlib.md5(raw.encode()).hexdigest()[:12]
+# ---------- 激活码（Ed25519 非对称，离线验证） ----------
+# 机制：开发者用私钥对硬件标识签名生成激活码；客户端用内置公钥验签。
+# 客户端仅持有公钥，没有私钥即无法伪造激活码。
+_PUBLIC_KEY_PEM = b"""-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEACsb0q9A7E3oRfw/DNkMf1UKoxKWzeK6xP2ZaNLbpnto=
+-----END PUBLIC KEY-----
+"""
+from cryptography.hazmat.primitives import serialization
+PUBLIC_KEY = serialization.load_pem_public_key(_PUBLIC_KEY_PEM)
 
 
-def generate_activation_code(machine_id=None):
-    """生成激活码（管理员/开发者用）。
-    返回格式: XXXXX-XXXXX-XXXXX
+def _stable_hw_id():
+    """稳定的硬件标识（激活码绑定对象）。重装系统/换网卡尽量不变。
+
+    Windows 用 MachineGuid；macOS 用硬件 UUID；Linux 用 /etc/machine-id；
+    兜底退化为 hostname（仍优于 MAC）。
     """
-    if not machine_id:
-        machine_id = _machine_id()
-    msg = machine_id.encode("utf-8")
-    sig = hmac.new(_SECRET_KEY, msg, hashlib.sha256).hexdigest()[:15].upper()
-    # 分成三组 X5-X5-X5
-    return f"{sig[:5]}-{sig[5:10]}-{sig[10:15]}"
+    sysname = platform.system()
+    try:
+        if sysname == "Windows":
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"SOFTWARE\Microsoft\Cryptography") as k:
+                return winreg.QueryValueEx(k, "MachineGuid")[0].strip()
+        elif sysname == "Darwin":
+            out = subprocess.check_output(
+                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"]).decode()
+            for line in out.splitlines():
+                if "IOPlatformUUID" in line:
+                    return line.split('"')[3].strip()
+        else:
+            with open("/etc/machine-id") as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    import socket
+    return socket.gethostname().strip() or "UNKNOWN"
+
+
+def _machine_id():
+    """展示用短机器码（供激活对话框显示、客服核对）。"""
+    return hashlib.md5(_stable_hw_id().encode("utf-8")).hexdigest()[:12]
 
 
 def validate_activation_code(code):
-    """验证用户输入的激活码是否有效。
-    返回 True/False。（支持手动绕过的万能码）
-    """
+    """用内置公钥验证激活码（须为『本机硬件标识』的有效 Ed25519 签名）。"""
     if not code:
         return False
-    code = code.strip().upper()
-
-    # 万能激活码（仅开发调试用，发布时移除）
-    MASTER_CODE = "XING-YAN-QC-2026"
-    if code == MASTER_CODE:
+    raw = code.strip().upper().replace("-", "").replace(" ", "")
+    if len(raw) % 8 != 0:
+        raw += "=" * (8 - len(raw) % 8)
+    try:
+        sig = base64.b32decode(raw)
+    except Exception:
+        return False
+    try:
+        PUBLIC_KEY.verify(sig, _stable_hw_id().encode("utf-8"))
         return True
-
-    # 标准验证：根据本机 ID 校验
-    expected = generate_activation_code()
-    return code == expected
+    except Exception:
+        return False
 
 
 def activate(code):
@@ -238,6 +257,12 @@ def show_activation_dialog(parent):
     win.resizable(False, False)
     win.transient(parent)
     win.grab_set()
+    win.lift()
+    try:
+        win.attributes("-topmost", True)
+        win.after(900, lambda: win.winfo_exists() and win.attributes("-topmost", False))
+    except Exception:
+        pass
 
     # 标题与说明
     tk.Label(win, text="星衍放射质控软件", font=("PingFang SC", 16, "bold"),
@@ -246,8 +271,8 @@ def show_activation_dialog(parent):
              bg="#FFFFFF", fg="#5A6B7A").pack(pady=(0, 18))
 
     # 机器 ID 显示（方便客服核验）
-    mid = _machine_id()
-    tk.Label(win, text=f"机器识别码: {mid}", font=("PingFang SC", 9),
+    mid = _stable_hw_id()
+    tk.Label(win, text=f"机器识别码（发卡用）: {mid}", font=("PingFang SC", 9),
              bg="#FFFFFF", fg="#9AA0A6").pack()
 
     # 激活码输入
