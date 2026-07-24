@@ -37,3 +37,5 @@ Thumbs.db
 keys/private_key.pem
 # 运行时授权状态（含本机免责声明接受标记/激活状态），由软件生成，不入库
 assets/license.dat
+# 构建信息（供软件内检查更新比对），仅 CI 打包时写入，本地不入库避免陈旧值
+assets/build_info.json

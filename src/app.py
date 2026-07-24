@@ -20,6 +20,7 @@ import subprocess
 import difflib
 import hashlib
 import time
+import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
@@ -29,6 +30,13 @@ import engine
 import samplelib
 import ris
 import license_utils
+import version
+import log_utils
+import update_check
+
+# 反馈通道：GitHub Issues（公开仓库任何人可提），可按需改为飞书/腾讯问卷链接
+FEEDBACK_URL = "https://github.com/big-William-1992/report-qc-app/issues"
+FEEDBACK_CONTACT = "抖音 / B站：蜗牛学长（医学AI）"
 
 
 # ----------------------------- 主题 -----------------------------
@@ -198,7 +206,7 @@ class ScrollableFrame(tk.Frame):
 class ReportQcApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("星衍放射质控软件  v2.0")
+        self.title(f"星衍放射质控软件  v{version.APP_VERSION}")
         # ponytail: force visible position on multi-monitor setups where Tk
         # may default to a negative Y. Update these if your screen is different.
         self.geometry("1180x760+100+50")
@@ -272,7 +280,7 @@ class ReportQcApp(tk.Tk):
                  font=F(FAMILY, 17, "bold"), padx=16).pack(side="left", anchor="center")
         tk.Label(bar, text="第一代 · NER + 知识图谱 + 规则引擎（R1–R10）",
                  bg=s["header_bg"], fg="#B8E4EE", font=F(FAMILY, 10)).pack(side="left", padx=10, anchor="center")
-        tk.Label(bar, text="v2.0", bg=s["header_bg"], fg="#B8E4EE",
+        tk.Label(bar, text=f"v{version.APP_VERSION}", bg=s["header_bg"], fg="#B8E4EE",
                  font=F(FAMILY, 10, "bold")).pack(side="right", padx=14, anchor="center")
         ttk.Button(bar, text="⚙ 规则维护", command=self._open_rules_editor).pack(
             side="right", padx=8, anchor="center")
@@ -283,6 +291,10 @@ class ReportQcApp(tk.Tk):
         menubar = tk.Menu(self)
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="输入激活码…", command=self._open_activation)
+        help_menu.add_separator()
+        help_menu.add_command(label="检查更新…", command=self._check_update_manual)
+        help_menu.add_command(label="问题反馈…", command=self._open_feedback)
+        help_menu.add_command(label="导出诊断包…", command=self._export_diagnostic)
         help_menu.add_separator()
         help_menu.add_command(label="关于星衍放射质控软件", command=self._show_about)
         menubar.add_cascade(label="帮助", menu=help_menu)
@@ -298,11 +310,138 @@ class ReportQcApp(tk.Tk):
 
     def _show_about(self):
         """关于对话框。"""
-        info = ("星衍放射质控软件  v2.0\n\n"
+        ver = getattr(version, "APP_VERSION", "2.0")
+        bt = getattr(version, "BUILD_TIME", "") or "本地开发版"
+        commit = getattr(version, "COMMIT", "dev")
+        info = (f"星衍放射质控软件  v{ver}\n"
+                f"构建时间：{bt}\n"
+                f"版本标识：{commit}\n\n"
                 "第一代 · NER + 知识图谱 + 规则引擎（R1–R10）\n\n"
                 "本软件提供的报告质控结果仅供参考，不构成最终诊断依据；\n"
                 "所有结果均需由具备资质的放射科医师审核确认。")
         messagebox.showinfo("关于", info)
+
+    # -------------------- 内测支撑：更新 / 反馈 / 诊断 --------------------
+    def _check_update_manual(self):
+        """手动检查更新：弹「正在检查」→ 后台请求 → 回主线程展示结果。"""
+        prog = tk.Toplevel(self)
+        prog.title("检查更新")
+        prog.geometry("300x110")
+        prog.configure(bg=THEME["panel"])
+        prog.transient(self)
+        prog.grab_set()
+        try:
+            prog.attributes("-topmost", True)
+        except Exception:
+            pass
+        tk.Label(prog, text="正在检查更新…", bg=THEME["panel"],
+                 fg=THEME["text"], font=F(FAMILY, 12)).pack(expand=True)
+
+        def cb(res):
+            self.after(0, lambda: self._show_update_result(res, prog))
+
+        update_check.check_update_async(cb)
+
+    def _show_update_result(self, res, prog=None):
+        if prog is not None:
+            try:
+                prog.destroy()
+            except Exception:
+                pass
+        status = res.get("status")
+        msg = res.get("message", "")
+        if status == "update":
+            if messagebox.askyesno("发现新版本", msg + "\n\n是否现在打开下载页面？"):
+                webbrowser.open(res.get("url", update_check.RELEASE_PAGE))
+        elif status == "latest":
+            messagebox.showinfo("检查更新", msg)
+        elif status == "unknown":
+            if messagebox.askyesno("检查更新", msg + "\n\n是否打开发布页查看？"):
+                webbrowser.open(res.get("url", update_check.RELEASE_PAGE))
+        else:
+            messagebox.showwarning("检查更新", msg or "检查更新失败，请稍后重试。")
+
+    def _check_update_background(self):
+        """启动后静默检查更新，仅在发现新版时才打扰用户。"""
+        def cb(res):
+            self.after(0, lambda: self._bg_update_notify(res))
+        update_check.check_update_async(cb)
+
+    def _bg_update_notify(self, res):
+        if res.get("status") == "update":
+            if messagebox.askyesno(
+                    "发现新版本",
+                    res.get("message", "") + "\n\n是否现在打开下载页面？"):
+                webbrowser.open(res.get("url", update_check.RELEASE_PAGE))
+
+    def _open_feedback(self):
+        """问题反馈入口：引导导出诊断包 + 打开反馈通道 + 复制联系方式。"""
+        s = THEME
+        win = tk.Toplevel(self)
+        win.title("问题反馈 · 星衍放射质控软件")
+        win.geometry("470x380")
+        win.configure(bg=s["panel"])
+        win.transient(self)
+        win.grab_set()
+        win.lift()
+        try:
+            win.attributes("-topmost", True)
+            win.after(400, lambda: win.attributes("-topmost", False))
+        except Exception:
+            pass
+
+        tk.Label(win, text="遇到问题？欢迎反馈", bg=s["panel"], fg=s["text"],
+                 font=F(FAMILY, 15, "bold")).pack(pady=(18, 6))
+        msg = ("你的反馈将帮助我们快速改进。建议按以下方式反馈：\n\n"
+               "1. 点「导出诊断包」生成 zip（含运行日志）\n"
+               "2. 点「打开反馈通道」在网页描述遇到的问题\n"
+               "3. 把诊断包 zip 一并发给开发者，便于定位\n\n"
+               "也可通过以下方式直接联系开发者：")
+        tk.Label(win, text=msg, bg=s["panel"], fg=s["text_dim"], justify="left",
+                 font=F(FAMILY, 10), wraplength=420).pack(padx=24, anchor="w")
+
+        ent = tk.Entry(win, font=F(MONO, 10), justify="center")
+        ent.insert(0, FEEDBACK_CONTACT)
+        ent.configure(state="readonly")
+        ent.pack(fill="x", padx=24, pady=(6, 14))
+
+        btnbar = ttk.Frame(win)
+        btnbar.pack(pady=4)
+        ttk.Button(btnbar, text="打开反馈通道",
+                   command=lambda: webbrowser.open(FEEDBACK_URL)).pack(side="left", padx=6)
+        ttk.Button(btnbar, text="导出诊断包",
+                   command=lambda: self._export_diagnostic(parent=win)).pack(side="left", padx=6)
+
+        def _copy():
+            self.clipboard_clear()
+            self.clipboard_append(FEEDBACK_CONTACT)
+            messagebox.showinfo("已复制", "联系方式已复制到剪贴板。", parent=win)
+
+        ttk.Button(btnbar, text="复制联系方式", command=_copy).pack(side="left", padx=6)
+        ttk.Button(win, text="关闭", command=win.destroy).pack(pady=(12, 4))
+
+    def _export_diagnostic(self, parent=None):
+        """导出诊断包（日志 + 系统信息 + 授权状态）为 zip。"""
+        parent = parent or self
+        try:
+            dest = filedialog.askdirectory(
+                title="选择诊断包保存位置（取消则默认存到桌面）", parent=parent)
+            path = log_utils.export_diagnostic_bundle(dest or None)
+            messagebox.showinfo(
+                "诊断包已导出",
+                f"诊断包已生成：\n{path}\n\n请把该 zip 文件发给开发者以便排查问题。",
+                parent=parent)
+            # 顺手在文件管理器中定位到该文件
+            try:
+                if platform.system() == "Windows":
+                    subprocess.Popen(["explorer", "/select,", path])
+                elif platform.system() == "Darwin":
+                    subprocess.Popen(["open", "-R", path])
+            except Exception:
+                pass
+        except Exception as e:
+            log_utils.get_logger().error("诊断包导出失败: %s", e)
+            messagebox.showerror("导出失败", f"诊断包导出失败：{e}", parent=parent)
 
     # -------------------- 规则维护弹窗 --------------------
     def _open_rules_editor(self):
@@ -1453,6 +1592,13 @@ class ReportQcApp(tk.Tk):
 
 
 def main():
+    # ---------- 日志与崩溃捕获（最先初始化，确保全程可记录）----------
+    log_utils.setup_logging()
+    log_utils.install_excepthook()
+    log_utils.get_logger().info("应用启动流程开始 | v%s | build=%s",
+                                getattr(version, "APP_VERSION", "?"),
+                                getattr(version, "BUILD_TIME", "") or "dev")
+
     # ---------- 启动授权检查 ----------
     app = ReportQcApp()
     # macOS 关键：必须先把主窗口显示出来，再弹 transient 子窗口（免责声明/激活）。
@@ -1488,7 +1634,11 @@ def main():
         app.session_var.set("已激活 · 未监听")
         app._activate_btn.configure(text="重新激活")
 
-    # ---------- 授权通过，进入主循环 ----------
+    # ---------- 授权通过，启动后静默检查更新（延迟 3s 避免与启动争抢）----------
+    app.after(3000, app._check_update_background)
+
+    # ---------- 进入主循环 ----------
+    log_utils.get_logger().info("进入主循环")
     app.mainloop()
 
 

@@ -24,7 +24,10 @@ a = Analysis(
         (assets_dir, "assets"),                 # 规则配置 + 样本库初始数据
     ],
     hiddenimports=["tkinter", "tkinter.ttk", "tkinter.filedialog",
-                   "tkinter.messagebox", "tkinter.scrolledtext", "sqlite3"],
+                   "tkinter.messagebox", "tkinter.scrolledtext", "sqlite3",
+                   "engine", "samplelib", "ris", "license_utils",
+                   "version", "log_utils", "update_check", "webbrowser",
+                   "logging.handlers", "cryptography"],
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
