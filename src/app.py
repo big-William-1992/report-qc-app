@@ -227,6 +227,72 @@ OCR_FALLBACK_S = OCR_FALLBACK_MS / 1000.0
 # findings=影像描述 / impression=影像结论（按需识别并质控，可编辑自由文本回填）
 OCR_ROLE_CN = {"basic": "基础信息", "findings": "影像描述", "impression": "影像结论"}
 
+# ---------------- 「识别并质控」全局快捷键 ----------------
+# Windows 用 RegisterHotKey 注册系统级热键：用户在 PACS 等其他窗口聚焦时按下
+# 也能触发（这正是主用法——报告在 PACS 里写完，直接按快捷键质控）。
+# 非 Windows / 注册失败时退化为应用内 Tk 绑定（本软件聚焦时可用）。
+HOTKEY_ID = 0xA11                       # RegisterHotKey 自定义 id
+HOTKEY_MOD_FLAGS = {"ctrl": 0x0002, "alt": 0x0001, "shift": 0x0004, "win": 0x0008}
+_HOTKEY_MODIFIER_KEYSYMS = {
+    "Control_L", "Control_R", "Alt_L", "Alt_R", "Shift_L", "Shift_R",
+    "Meta_L", "Meta_R", "Super_L", "Super_R", "Win_L", "Win_R",
+    "Caps_Lock", "Num_Lock", "ISO_Level3_Shift",
+}
+# Tk keysym → Windows 虚拟键码（字母/数字按 ord 处理，此表补常用特殊键）
+_HOTKEY_VK_SPECIAL = {
+    "space": 0x20, "return": 0x0D, "tab": 0x09,
+    "prior": 0x21, "next": 0x22, "end": 0x23, "home": 0x24,
+    "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28,
+    "insert": 0x2D, "delete": 0x2E, "pause": 0x13,
+    "grave": 0xC0, "minus": 0xBD, "equal": 0xBB,
+    "bracketleft": 0xDB, "bracketright": 0xDD, "backslash": 0xDC,
+    "semicolon": 0xBA, "apostrophe": 0xDE, "comma": 0xBC,
+    "period": 0xBE, "slash": 0xBF,
+}
+
+
+def hotkey_vk(key):
+    """Tk keysym → Windows 虚拟键码；不支持的键返回 None（则只做窗口内绑定）。"""
+    k = (key or "")
+    if len(k) == 1 and (k.isalpha() and k.isascii() or k.isdigit()):
+        return ord(k.upper())
+    kl = k.lower()
+    if kl.startswith("f") and kl[1:].isdigit() and 1 <= int(kl[1:]) <= 24:
+        return 0x70 + int(kl[1:]) - 1          # F1=0x70
+    if kl.startswith("kp_") and kl[3:].isdigit():
+        return 0x60 + int(kl[3:])              # 小键盘 0-9
+    return _HOTKEY_VK_SPECIAL.get(kl)
+
+
+def hotkey_display(hk):
+    """快捷键配置 → 人类可读文本，如 Ctrl+Alt+F9；未设置返回「未设置」。"""
+    if not hk or not hk.get("key"):
+        return "未设置"
+    names = {"ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "win": "Win"}
+    mods = hk.get("mods") or []
+    parts = [names[m] for m in ("ctrl", "alt", "shift", "win") if m in mods]
+    k = hk["key"]
+    parts.append(k.upper() if len(k) == 1 else k)
+    return "+".join(parts)
+
+
+def hotkey_tk_sequence(hk):
+    """快捷键配置 → Tk 绑定序列，如 <Control-Alt-F9>（应用内兜底绑定用）。"""
+    if not hk or not hk.get("key"):
+        return None
+    mods = hk.get("mods") or []
+    seq = ""
+    if "ctrl" in mods:
+        seq += "Control-"
+    if "alt" in mods:
+        seq += "Alt-"
+    if "shift" in mods:
+        seq += "Shift-"
+    key = hk["key"]
+    if len(key) == 1 and key.isalpha():
+        key = key.upper() if "shift" in mods else key.lower()
+    return f"<{seq}{key}>"
+
 
 class ReportQcApp(tk.Tk):
     def __init__(self):
@@ -275,6 +341,15 @@ class ReportQcApp(tk.Tk):
         self._update_region_status()
         if self.ocr_region:
             self._ocr_status("off", "● 基础信息区已设定（监控未开启）")
+
+        # 「识别并质控」快捷键（任意组合，持久化在 ocr_config.json）
+        self.qc_hotkey = self.ocr_cfg.get("hotkey") or None   # {"mods":[...], "key":"F9"}
+        self.qc_hotkey_status = tk.StringVar(value=f"快捷键：{hotkey_display(self.qc_hotkey)}")
+        self._hotkey_thread_id = None      # Windows 全局热键消息循环线程 id
+        self._hotkey_tk_seq = None         # 应用内 Tk 绑定序列（兜底）
+        self._hotkey_busy = False          # 防抖：质控执行中忽略重复触发
+        if self.qc_hotkey:
+            self.after(400, self._register_qc_hotkey)   # 主循环起来后再注册
 
         self.style = apply_theme(self)
 
@@ -866,6 +941,10 @@ class ReportQcApp(tk.Tk):
                    command=lambda: self._select_ocr_region("impression")).pack(side="left", padx=2)
         ttk.Button(ocr_bar2, text="🔍 识别并质控", width=14, style="Primary.TButton",
                    command=self._capture_and_qc).pack(side="left", padx=2)
+        ttk.Button(ocr_bar2, text="⌨ 设置快捷键", width=12,
+                   command=self._set_qc_hotkey).pack(side="left", padx=2)
+        ttk.Label(ocr_bar2, textvariable=self.qc_hotkey_status,
+                  foreground=s["text_dim"]).pack(side="left", padx=(2, 0))
         ttk.Label(ocr_bar2, textvariable=self.ocr_regions_status,
                   foreground=s["text_dim"]).pack(side="left", padx=6)
 
@@ -1019,7 +1098,8 @@ class ReportQcApp(tk.Tk):
     def _save_ocr_config(self):
         try:
             cfg = {"regions": {k: list(v) for k, v in self.ocr_regions.items()},
-                   "watch": bool(self.ocr_watch)}
+                   "watch": bool(self.ocr_watch),
+                   "hotkey": getattr(self, "qc_hotkey", None)}
             with open(self._ocr_config_path(), "w", encoding="utf-8") as fh:
                 json.dump(cfg, fh, ensure_ascii=False, indent=2)
         except Exception:
@@ -1187,6 +1267,170 @@ class ReportQcApp(tk.Tk):
         except Exception as e:
             self._ocr_status("error", f"● 识别并质控失败：{e}")
             messagebox.showerror("识别并质控失败", str(e))
+
+    # -------------------- 「识别并质控」快捷键 --------------------
+    def _set_qc_hotkey(self):
+        """弹窗捕获任意快捷键组合：按下即设定；Esc 取消；Backspace/Delete 清除。"""
+        dlg = tk.Toplevel(self)
+        dlg.title("设置「识别并质控」快捷键")
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        frm = ttk.Frame(dlg, padding=18)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="请按下要设置的快捷键组合",
+                  font=(FAMILY, 12, "bold")).pack()
+        preview = tk.StringVar(value=f"当前：{hotkey_display(self.qc_hotkey)}")
+        ttk.Label(frm, textvariable=preview, font=(FAMILY, 14)).pack(pady=(10, 6))
+        ttk.Label(frm, text="推荐 F 键或 Ctrl/Alt 组合键（如 F9、Ctrl+Alt+Q）\n"
+                            "Esc 取消 · Backspace/Delete 清除快捷键",
+                  foreground="#7A8794", justify="center").pack()
+        held = set()   # 自行跟踪按住的修饰键，跨平台比 event.state 可靠
+
+        def _mods_of():
+            mods = []
+            if held & {"Control_L", "Control_R"}:
+                mods.append("ctrl")
+            if held & {"Alt_L", "Alt_R", "Meta_L", "Meta_R"}:
+                mods.append("alt")
+            if held & {"Shift_L", "Shift_R"}:
+                mods.append("shift")
+            if held & {"Super_L", "Super_R", "Win_L", "Win_R"}:
+                mods.append("win")
+            return mods
+
+        def on_press(e):
+            ks = e.keysym
+            if ks == "Escape":
+                dlg.destroy()
+                return "break"
+            if ks in ("BackSpace", "Delete"):
+                dlg.destroy()
+                self._apply_qc_hotkey(None)
+                return "break"
+            if ks in _HOTKEY_MODIFIER_KEYSYMS:
+                held.add(ks)
+                m = _mods_of()
+                preview.set("+".join(hotkey_display({"mods": m, "key": "x"}).split("+")[:-1]) + "+…"
+                            if m else "…")
+                return "break"
+            mods = _mods_of()
+            # 补充 event.state 兜底（个别平台 KeyPress 序列不含修饰键按下事件）
+            if e.state & 0x4 and "ctrl" not in mods:
+                mods.append("ctrl")
+            if e.state & 0x1 and "shift" not in mods:
+                mods.append("shift")
+            hk = {"mods": mods, "key": ks}
+            # 无修饰的普通字符键会全局劫持打字，给出确认
+            if not mods and len(ks) == 1:
+                if not messagebox.askyesno(
+                        "确认快捷键",
+                        f"「{hotkey_display(hk)}」没有修饰键，任何窗口里输入该字符都会触发质控，"
+                        "容易误触。\n\n仍要使用吗？（推荐 F 键或加 Ctrl/Alt）",
+                        parent=dlg):
+                    return "break"
+            dlg.destroy()
+            self._apply_qc_hotkey(hk)
+            return "break"
+
+        def on_release(e):
+            held.discard(e.keysym)
+            return "break"
+
+        dlg.bind("<KeyPress>", on_press)
+        dlg.bind("<KeyRelease>", on_release)
+        dlg.focus_force()
+        # 居中于主窗口
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - dlg.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 3
+        dlg.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def _apply_qc_hotkey(self, hk):
+        """设定/清除快捷键：注销旧的 → 持久化 → 注册新的 → 刷新状态文本。"""
+        self._unregister_qc_hotkey()
+        self.qc_hotkey = hk or None
+        self._save_ocr_config()
+        if self.qc_hotkey:
+            self._register_qc_hotkey()
+        else:
+            self.qc_hotkey_status.set("快捷键：未设置")
+
+    def _register_qc_hotkey(self):
+        """注册快捷键。Windows 走 RegisterHotKey 全局热键（PACS 聚焦时也能触发），
+        并同时做应用内 Tk 绑定兜底；非 Windows 仅应用内绑定。"""
+        hk = self.qc_hotkey
+        if not hk:
+            return
+        # 1) 应用内 Tk 绑定（所有平台兜底）
+        seq = hotkey_tk_sequence(hk)
+        if seq:
+            try:
+                self.bind_all(seq, lambda e: (self._on_qc_hotkey(), "break")[1])
+                self._hotkey_tk_seq = seq
+            except Exception:
+                self._hotkey_tk_seq = None
+        label = f"快捷键：{hotkey_display(hk)}"
+        # 2) Windows 全局热键
+        if sys.platform.startswith("win"):
+            vk = hotkey_vk(hk.get("key"))
+            if vk is None:
+                self.qc_hotkey_status.set(label + "（仅本软件窗口内有效）")
+                return
+            mod_flags = 0
+            for m in hk.get("mods") or []:
+                mod_flags |= HOTKEY_MOD_FLAGS.get(m, 0)
+            mod_flags |= 0x4000  # MOD_NOREPEAT：按住不重复触发
+
+            def loop():
+                import ctypes
+                from ctypes import wintypes
+                u32, k32 = ctypes.windll.user32, ctypes.windll.kernel32
+                self._hotkey_thread_id = k32.GetCurrentThreadId()
+                if not u32.RegisterHotKey(None, HOTKEY_ID, mod_flags, vk):
+                    # 被其他程序占用等：退化为仅应用内绑定
+                    self.after(0, lambda: self.qc_hotkey_status.set(
+                        label + "（全局注册失败，可能被占用；仅本软件窗口内有效）"))
+                    self._hotkey_thread_id = None
+                    return
+                self.after(0, lambda: self.qc_hotkey_status.set(label + "（全局）"))
+                msg = wintypes.MSG()
+                while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                    if msg.message == 0x0312 and msg.wParam == HOTKEY_ID:   # WM_HOTKEY
+                        self.after(0, self._on_qc_hotkey)
+                u32.UnregisterHotKey(None, HOTKEY_ID)
+
+            threading.Thread(target=loop, daemon=True).start()
+        else:
+            self.qc_hotkey_status.set(label + "（本软件窗口内有效）")
+
+    def _unregister_qc_hotkey(self):
+        """注销现有快捷键（Tk 解绑 + 结束 Windows 热键消息循环线程）。"""
+        if self._hotkey_tk_seq:
+            try:
+                self.unbind_all(self._hotkey_tk_seq)
+            except Exception:
+                pass
+            self._hotkey_tk_seq = None
+        if self._hotkey_thread_id is not None:
+            try:
+                import ctypes
+                # WM_QUIT 结束 GetMessageW 循环，线程内自行 UnregisterHotKey
+                ctypes.windll.user32.PostThreadMessageW(
+                    self._hotkey_thread_id, 0x0012, 0, 0)
+            except Exception:
+                pass
+            self._hotkey_thread_id = None
+
+    def _on_qc_hotkey(self):
+        """快捷键触发入口：防抖后执行「识别并质控」。"""
+        if self._hotkey_busy:
+            return
+        self._hotkey_busy = True
+        try:
+            self._capture_and_qc()
+        finally:
+            self._hotkey_busy = False
 
     def _toggle_ocr(self):
         self.ocr_watch = self.ocr_var.get()
