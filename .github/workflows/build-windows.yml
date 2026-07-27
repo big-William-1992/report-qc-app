@@ -147,3 +147,18 @@ jobs:
           body_path: RELEASE_BODY.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---- 自动更新端到端实测：构建发布 latest 后，用真实的 Windows 安装器跑完整更新 ----
+  test-update:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run Windows auto-update end-to-end test
+        run: python tests/test_windows_update.py
+        shell: bash
