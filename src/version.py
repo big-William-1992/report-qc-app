@@ -9,7 +9,7 @@ COMMIT       构建对应的 git 短 sha；本地为 "dev"。
 import os
 import json
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 
 
 def _load_build_info():
