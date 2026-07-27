@@ -35,6 +35,7 @@ import version
 import log_utils
 import update_check
 import auto_updater
+import ocr_provider
 
 # 反馈通道：GitHub Issues（公开仓库任何人可提），可按需改为飞书/腾讯问卷链接
 FEEDBACK_URL = "https://github.com/big-William-1992/report-qc-app/issues"
@@ -228,6 +229,21 @@ class ReportQcApp(tk.Tk):
         # 监听内容去重
         self._last_alert_clip = ""
         self._last_alert_ts = 0.0
+
+        # 屏幕区域监控（OCR 自动识别患者姓名/性别/年龄/检查部位）
+        self.ocr_cfg = self._load_ocr_config()
+        self.ocr_region = tuple(self.ocr_cfg.get("region")) if self.ocr_cfg.get("region") else None
+        self.ocr_watch = bool(self.ocr_cfg.get("watch", False))
+        self._ocr_job = None
+        self.ocr_meta = {}            # 最近一次屏幕侧识别出的元信息
+        self._ocr_alert_sig = None   # 身份不符提示去重
+        self._ocr_alert_cooldown = 0.0
+        self.ocr_var = tk.BooleanVar(value=self.ocr_watch)
+        self.ocr_status = tk.StringVar(value="● 未开启屏幕监控")
+        if self.ocr_region:
+            x, y, w, h = self.ocr_region
+            self.ocr_status.set(f"● 区域已设定 {w}×{h}（监控未开启）")
+
         self.style = apply_theme(self)
 
         # 菜单栏（macOS 显示在屏幕顶部，Windows 显示在窗口标题栏下方）
@@ -791,6 +807,17 @@ class ReportQcApp(tk.Tk):
         self.clip_alert = tk.BooleanVar(value=True)
         ttk.Checkbutton(clip_bar, text="🔔 发现问题即弹窗提醒", variable=self.clip_alert).pack(side="left", padx=2)
 
+        # 屏幕区域监控（OCR 自动识别患者信息 + 与剪贴板交叉核对身份）
+        ocr_bar = ttk.Frame(left)
+        ocr_bar.pack(fill="x", pady=(6, 0))
+        ttk.Separator(ocr_bar, orient="horizontal").pack(fill="x", pady=(0, 6))
+        ttk.Button(ocr_bar, text="🎯 框选监控区域", width=14,
+                   command=self._select_ocr_region).pack(side="left", padx=2)
+        self.ocr_chk = ttk.Checkbutton(ocr_bar, text="🔄 屏幕区域识别（每10秒）",
+                                        variable=self.ocr_var, command=self._toggle_ocr)
+        self.ocr_chk.pack(side="left", padx=2)
+        ttk.Label(ocr_bar, textvariable=self.ocr_status, foreground=s["text_dim"]).pack(side="left", padx=6)
+
         # 结果区
         right = ttk.Frame(body, width=400)
         right.pack(side="right", fill="y", padx=(8, 0))
@@ -882,6 +909,179 @@ class ReportQcApp(tk.Tk):
         else:
             self.clip_status.set("● 未监听")
             self._update_status_bar()
+
+    # -------------------- 屏幕区域 OCR 监控 --------------------
+    def _ocr_config_path(self) -> str:
+        """OCR 区域/开关配置持久化路径（用户可写）。"""
+        if getattr(sys, "frozen", False):
+            d = os.path.join(os.path.expandvars("%APPDATA%"), "MedicalReportQC")
+        else:
+            d = os.path.join(os.path.expanduser("~"), ".config", "MedicalReportQC")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        return os.path.join(d, "ocr_config.json")
+
+    def _load_ocr_config(self) -> dict:
+        try:
+            with open(self._ocr_config_path(), encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return {}
+
+    def _save_ocr_config(self):
+        try:
+            cfg = {"region": list(self.ocr_region) if self.ocr_region else None,
+                   "watch": bool(self.ocr_watch)}
+            with open(self._ocr_config_path(), "w", encoding="utf-8") as fh:
+                json.dump(cfg, fh, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _select_ocr_region(self):
+        """透明全屏覆盖层，拖拽框选要监控的屏幕区域（如 PACS 患者信息栏）。"""
+        ok, reason = ocr_provider.availability()
+        if not ok:
+            messagebox.showwarning("OCR 不可用", reason)
+            return
+        sel = tk.Toplevel(self)
+        try:
+            sel.attributes("-fullscreen", True)
+        except Exception:
+            sel.geometry("3000x2000+0+0")
+        sel.attributes("-alpha", 0.28)
+        sel.configure(bg="black")
+        sel.attributes("-topmost", True)
+        sel.wait_visibility()
+        canvas = tk.Canvas(sel, cursor="cross", bg="black", highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+        hint = tk.Label(sel, text="拖拽框选要监控的屏幕区域（如 PACS 患者信息栏），松开确认；Esc 取消",
+                        bg="black", fg="white", font=(FAMILY, 14))
+        hint.place(relx=0.5, rely=0.04, anchor="center")
+        rect = [None]
+        start = [0, 0]
+
+        def on_down(e):
+            start[0], start[1] = e.x_root, e.y_root
+            if rect[0]:
+                canvas.delete(rect[0])
+            rect[0] = canvas.create_rectangle(e.x_root, e.y_root, e.x_root, e.y_root,
+                                              outline="#00E5FF", width=2)
+
+        def on_move(e):
+            if rect[0] is None:
+                return
+            canvas.coords(rect[0], start[0], start[1], e.x_root, e.y_root)
+
+        def on_up(e):
+            x0, y0 = min(start[0], e.x_root), min(start[1], e.y_root)
+            x1, y1 = max(start[0], e.x_root), max(start[1], e.y_root)
+            w, h = x1 - x0, y1 - y0
+            sel.destroy()
+            if w < 10 or h < 10:
+                messagebox.showinfo("提示", "选区过小，已取消。")
+                return
+            self.ocr_region = (x0, y0, w, h)
+            self._save_ocr_config()
+            self.ocr_status.set(f"● 区域已设定 {w}×{h} @({x0},{y0})")
+            if self.ocr_watch:
+                self._poll_ocr(force=True)
+
+        canvas.bind("<ButtonPress-1>", on_down)
+        canvas.bind("<B1-Motion>", on_move)
+        canvas.bind("<ButtonRelease-1>", on_up)
+        sel.bind("<Escape>", lambda e: sel.destroy())
+
+    def _toggle_ocr(self):
+        self.ocr_watch = self.ocr_var.get()
+        self._save_ocr_config()
+        if self.ocr_watch:
+            if not self.ocr_region:
+                messagebox.showinfo("提示", "请先点『🎯 框选监控区域』选择要监控的屏幕区域。")
+                self.ocr_var.set(False)
+                self.ocr_watch = False
+                return
+            ok, reason = ocr_provider.availability()
+            if not ok:
+                messagebox.showwarning("OCR 不可用", reason)
+                self.ocr_var.set(False)
+                self.ocr_watch = False
+                return
+            self.ocr_status.set("● 监控中（每10秒识别一次）…")
+            self._poll_ocr(force=True)
+        else:
+            self.ocr_status.set("● 已停止屏幕监控")
+            if getattr(self, "_ocr_job", None):
+                try:
+                    self.after_cancel(self._ocr_job)
+                except Exception:
+                    pass
+                self._ocr_job = None
+
+    def _poll_ocr(self, force=False):
+        """每 10 秒：截图框选区域 → OCR → 解析元信息 → 回填并驱动 R1/R3/R6 → 与剪贴板核对身份。"""
+        try:
+            if self.ocr_watch and self.ocr_region:
+                ok, reason = ocr_provider.availability()
+                if not ok:
+                    self.ocr_status.set(f"● OCR 不可用：{reason}")
+                    return
+                text = ocr_provider.region_to_text(self.ocr_region)
+                if text:
+                    meta = engine.extract_meta(text)
+                    self.ocr_meta = meta
+                    # 屏幕为权威来源：监控开启时覆盖回填元信息输入框
+                    changed = []
+                    for k in ("patient", "gender", "age", "modality", "applied_site", "laterality"):
+                        v = (meta.get(k) or "").strip()
+                        if v and self.vars[k].get().strip() != v:
+                            self.vars[k].set(v)
+                            changed.append(k)
+                    # 驱动质控（R1 性别矛盾 / R3 评分缺失 / R6 登记部位不符 自动生效）
+                    try:
+                        self._run()
+                    except Exception:
+                        pass
+                    # 与剪贴板（报告内容）交叉核对患者身份
+                    self._compare_ocr_clipboard(meta)
+                    if changed:
+                        names = ", ".join(self._META_CN.get(k, k) for k in changed)
+                        self.ocr_status.set(f"● 屏幕识别已更新：{names}")
+        except Exception as e:
+            self.ocr_status.set(f"● OCR 异常：{e}")
+        finally:
+            if getattr(self, "ocr_watch", False):
+                self._ocr_job = self.after(10000, lambda: self._poll_ocr())
+
+    def _compare_ocr_clipboard(self, ocr_meta):
+        """屏幕侧元信息 vs 剪贴板（报告）元信息：姓名/性别/年龄/申请部位不一致即告警。
+
+        核心价值：防止『报告文本』与『PACS 屏幕患者』张冠李戴。
+        """
+        clip = self._get_clipboard_text()
+        if not clip:
+            return
+        cmeta = engine.extract_meta(clip)
+        mismatches = []
+        for k in ("patient", "gender", "age", "applied_site"):
+            o, c = (ocr_meta.get(k) or "").strip(), (cmeta.get(k) or "").strip()
+            if o and c and o != c:
+                mismatches.append((k, o, c))
+        if mismatches:
+            detail = "；".join(f"{self._META_CN.get(k, k)} 屏幕『{o}』≠ 剪贴板『{c}』"
+                               for k, o, c in mismatches)
+            sig = hashlib.md5(detail.encode("utf-8", "ignore")).hexdigest()
+            now = time.time()
+            if sig != self._ocr_alert_sig and (now - self._ocr_alert_cooldown) > 8:
+                self._ocr_alert_sig = sig
+                self._ocr_alert_cooldown = now
+                self.ocr_status.set("● ⚠ 屏幕与剪贴板患者信息不符！")
+                messagebox.showwarning("⚠ 患者身份核对不符",
+                    "屏幕区域识别出的患者信息与剪贴板（报告）不一致，请核对是否张冠李戴：\n\n"
+                    + detail)
+        else:
+            self._ocr_alert_sig = None
 
     def _similar(self, a: str, b: str) -> float:
         """两段文本相似度（0~1），用于监听内容去重。"""

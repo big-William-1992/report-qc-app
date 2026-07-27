@@ -27,7 +27,11 @@ a = Analysis(
                    "tkinter.messagebox", "tkinter.scrolledtext", "sqlite3",
                    "engine", "samplelib", "ris", "license_utils",
                    "version", "log_utils", "update_check", "auto_updater", "webbrowser",
-                   "logging.handlers", "cryptography"],
+                   "logging.handlers", "cryptography",
+                   # 屏幕区域 OCR 监控（本地离线 RapidOCR）
+                   "ocr_provider", "rapidocr_onnxruntime",
+                   "rapidocr_onnxruntime.rapid_ocr_api", "rapidocr_onnxruntime.utils",
+                   "onnxruntime", "numpy", "PIL", "PIL.ImageGrab", "PIL.Image"],
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
