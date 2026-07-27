@@ -239,9 +239,7 @@ class ReportQcApp(tk.Tk):
         self._ocr_alert_sig = None   # 身份不符提示去重
         self._ocr_alert_cooldown = 0.0
         self._ocr_img_sig = None      # 上一帧截图指纹（变化检测，无变化不跑推理）
-        self._ocr_pending_key = None  # 待确认的识别结果签名（连续2次一致才生效）
-        self._ocr_pending_meta = None # 待确认的元信息缓存
-        self._ocr_confirmed_key = None  # 已确认并生效的结果签名
+        self._ocr_confirmed_key = None  # 最近一次生效的识别 key（用于去重刷新，避免重复回填/告警）
         self.ocr_var = tk.BooleanVar(value=self.ocr_watch)
         self.ocr_status = tk.StringVar(value="● 未开启屏幕监控")
         if self.ocr_region:
@@ -1024,14 +1022,20 @@ class ReportQcApp(tk.Tk):
                 self._ocr_job = None
 
     def _poll_ocr(self, force=False):
-        """每 10 秒：截图框选区域 →（变化检测）→ OCR → 连续2次一致确认 → 回填/告警。
+        """每 10 秒：截图框选区域 →（变化检测）→ OCR → 解析元信息 → 回填/告警。
 
-        省 CPU 与防误报两道闸：
+        防抖与防误报三道闸：
         1. 变化检测：截图缩为 32×32 灰度指纹比对，区域无变化则跳过 OCR 推理
            （PACS 界面大部分时间静止，可省 90%+ 的推理开销）；
-        2. 稳定性确认：识别出「新的患者信息」时不立即生效，下一轮结果一致才
-           回填与告警（防止界面切换瞬间截到半张图产生误报）。
-        force=True（手动触发/刚开启监控）时两道闸都跳过，立即出结果。
+        2. 置信度过滤：ocr_image 内置阈值（<0.55 的行丢弃），过滤明显噪声/乱码；
+        3. 姓名护栏：仅当识别到患者姓名（patient 字段非空）才回填 + 触发身份告警，
+           避免截到切换中的半张图/纯噪声产生误报。
+
+        注意：不再要求「连续两轮识别完全一致」才生效。真实屏幕存在轻微噪点 /
+        闪烁 / 抗锯齿抖动，两轮 OCR 结果必然有微小差异（某行时有时无、空格浮动），
+        硬双闸会导致 key 永远不一致 → 结果永远挂起不生效（即「OCR 被削弱」的回归根因）。
+        变化检测已能在屏幕静止时天然防抖（不重复刷新、不重复告警）。
+        force=True（手动触发 / 刚开启监控）时跳过防抖，立即出结果。
         """
         try:
             if self.ocr_watch and self.ocr_region:
@@ -1045,16 +1049,11 @@ class ReportQcApp(tk.Tk):
                     img_sig, self._ocr_img_sig)
                 self._ocr_img_sig = img_sig
                 if unchanged:
-                    if self._ocr_pending_meta is not None:
-                        # 上轮识别到新内容、这轮像素完全没变 → 结果必然一致，确认生效
-                        self._apply_ocr_meta(self._ocr_pending_meta,
-                                             self._ocr_pending_key)
-                        self._ocr_pending_key = self._ocr_pending_meta = None
-                    elif self.ocr_meta:
-                        # 屏幕没变但剪贴板可能换了报告 → 交叉核对仍要做（零推理成本）
+                    # 屏幕没变：跳过 OCR 推理（省 CPU）；剪贴板可能换了报告，仍核对
+                    if self.ocr_meta:
                         self._compare_ocr_clipboard(self.ocr_meta)
                     return
-                text = ocr_provider.ocr_image(img)   # 内置置信度过滤（<0.7 的行丢弃）
+                text = ocr_provider.ocr_image(img)   # 内置置信度过滤（<0.55 的行丢弃）
                 if not text:
                     return
                 meta = engine.extract_meta(text)
@@ -1063,18 +1062,24 @@ class ReportQcApp(tk.Tk):
                                          "modality", "applied_site", "laterality"))
                 if not key.strip("|"):
                     return   # 未解析出任何字段，忽略本帧
-                if force or key == self._ocr_confirmed_key:
-                    # 手动触发立即生效；与已确认结果相同则仅刷新核对
+                if (not force) and key == self._ocr_confirmed_key:
+                    # 与已确认结果相同：仅刷新剪贴板交叉核对，不重复回填/告警
+                    self._compare_ocr_clipboard(meta)
+                    return
+                # 新内容（或手动强制）：立即生效
+                if (meta.get("patient") or "").strip() or force:
+                    # 姓名护栏：识别到患者姓名才回填 + 告警（防半张图/纯噪声误报）
                     self._apply_ocr_meta(meta, key)
-                    self._ocr_pending_key = self._ocr_pending_meta = None
-                elif key == self._ocr_pending_key:
-                    # 连续两轮识别一致 → 确认生效
-                    self._apply_ocr_meta(meta, key)
-                    self._ocr_pending_key = self._ocr_pending_meta = None
+                    names = ", ".join(
+                        self._META_CN.get(k, k)
+                        for k in ("patient", "gender", "age", "modality",
+                                  "applied_site", "laterality")
+                        if (meta.get(k) or "").strip())
+                    self.ocr_status.set(f"● 屏幕识别已更新：{names}")
                 else:
-                    # 第一次见到新内容：挂起，等下一轮确认（防截到切换中的半张图）
-                    self._ocr_pending_key, self._ocr_pending_meta = key, meta
-                    self.ocr_status.set("● 检测到新内容，待下轮确认…")
+                    # 仅识别到部位/性别等、无姓名：更新内部 meta 供核对，不强制回填
+                    self.ocr_meta = meta
+                    self._compare_ocr_clipboard(meta)
         except Exception as e:
             self.ocr_status.set(f"● OCR 异常：{e}")
         finally:

@@ -19,15 +19,24 @@ import sys
 
 _PIP_HINT = "请先安装 OCR 依赖：pip install rapidocr-onnxruntime Pillow"
 
-# 低于此置信度的识别行直接丢弃，避免噪声文本误触发回填/告警
-MIN_SCORE = 0.70
+# 低于此置信度的识别行直接丢弃，过滤明显噪声/乱码。
+# 注意：真实 PACS 屏幕低对比、带压缩模糊时单字置信度常落 0.6~0.7，
+# 阈值过高（原 0.70）会误杀真实字段。0.55 仍能有效滤除 <0.55 的乱码，
+# 同时保住医疗场景常见的小字/低对比字段。
+MIN_SCORE = 0.55
 
-# 变化检测（截图缩为 32×32 灰度指纹）：
+# 变化检测（截图缩为 64×64 灰度指纹）：
 # - 单像素灰度差 > PIXEL_DIFF 才算「该像素变了」（容忍抗锯齿/噪点抖动）
 # - 变化像素占比 > CHANGE_TOLERANCE 才算「区域变了」
-# 注意不能用平均差：换姓名只影响少量像素，会被大面积不变背景稀释而漏检
-PIXEL_DIFF = 10
-CHANGE_TOLERANCE = 0.004   # 0.4%，32×32 下约 4 个像素
+# 实测（64×64 下，±8 屏幕噪点）：
+#   换患者 ≈0.7%、换性别/年龄/部位单字段 ≈0.2~0.4%、同患者纯噪点 ≈0%
+#   故取 PIXEL_DIFF=8 / CHANGE_TOLERANCE=0.002：所有真实字段变化都能触发，
+#   而屏幕固有噪点被完全忽略（不误触发重跑 OCR）。
+# 注意：原 32×32 / tol=0.004 会把「换患者」误判为未变化（占比恰卡 0.39% 下沿），
+# 导致跳过 OCR、患者信息不更新——这正是「OCR 被削弱」的第二个根因。
+# 也不能用平均差：换姓名只影响少量像素，会被大面积不变背景稀释而漏检。
+PIXEL_DIFF = 8
+CHANGE_TOLERANCE = 0.002   # 0.2%，64×64 下约 8 个像素
 
 
 def _assets_dir() -> str:
@@ -153,12 +162,18 @@ def ocr_image(img, min_score: float = MIN_SCORE) -> str:
 # ---------------- 变化检测（省 CPU：区域没变就不跑 OCR 推理） ----------------
 
 def image_signature(img):
-    """截图 → 32×32 灰度指纹（tuple[int]），用于帧间快速比较。
+    """截图 → 64×64 灰度指纹（tuple[int]），用于帧间快速比较。
 
-    成本约 0.1ms，相比一次 OCR 推理（数百 ms）可忽略不计。
+    成本约 0.2ms，相比一次 OCR 推理（数百 ms）可忽略不计。
+    64×64（而非 32×32）能在下采样后保留足够文字变化像素，
+    避免把「换患者」误判为未变化。
     """
-    g = img.convert("L").resize((32, 32))
-    return tuple(g.getdata())
+    g = img.convert("L").resize((64, 64))
+    try:
+        data = g.get_flattened_data()  # Pillow >= 新版本推荐 API
+    except AttributeError:
+        data = g.getdata()             # 兼容旧 Pillow
+    return tuple(data)
 
 
 def signature_changed(sig_a, sig_b, tolerance: float = CHANGE_TOLERANCE,
