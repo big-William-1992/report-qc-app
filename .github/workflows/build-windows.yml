@@ -57,6 +57,8 @@ jobs:
       - name: Verify OCR bundled in build
         # 阻断：确认 OCR 依赖真的装上了、且离线模型被打进了 dist（防止「假成功」）
         shell: bash
+        env:
+          PYTHONUTF8: "1"
         run: |
           python - <<'PY'
           import os, sys
@@ -68,12 +70,24 @@ jobs:
                   print("  import OK:", m)
               except Exception as e:
                   print("  import FAIL:", m, "->", e); ok = False
-          # 2) 离线 OCR 模型必须被打进 dist/assets/ocr_models
-          det = os.path.join("dist", "报告质控软件", "assets", "ocr_models", "ch_PP-OCRv3_det_infer.onnx")
-          if os.path.isfile(det):
-              print("  OCR model bundled OK:", det)
+          # 2) 离线 OCR 模型：源(assets) 与 打包后(dist) 都要核对（避免中文路径误报）
+          src_dir = os.path.join("assets", "ocr_models")
+          src_files = sorted(os.listdir(src_dir)) if os.path.isdir(src_dir) else []
+          print("  SRC assets/ocr_models:", src_files)
+          if not src_files:
+              print("  SRC OCR models MISSING (checkout 未拉到 onnx?)"); ok = False
+          # 在 dist 下递归找任意 ocr_models 目录
+          dist_onnx = []
+          if os.path.isdir("dist"):
+              for root, dirs, files in os.walk("dist"):
+                  if os.path.basename(root) == "ocr_models":
+                      dist_onnx = sorted(f for f in files if f.endswith(".onnx"))
+          print("  DIST ocr_models onnx found:", dist_onnx)
+          if len(dist_onnx) < 3:
+              print("  DIST OCR models MISSING (PyInstaller 未打包 assets/ocr_models)")
+              ok = False
           else:
-              print("  OCR model MISSING:", det); ok = False
+              print("  OCR models bundled OK")
           sys.exit(0 if ok else 1)
           PY
 
