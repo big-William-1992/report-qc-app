@@ -1,8 +1,16 @@
 # 星衍放射质控软件 · Python 依赖
 # 核心为纯标准库 Tkinter（零运行时依赖）；以下为「屏幕区域 OCR 监控」功能所需：
+# rapidocr-onnxruntime 的完整运行依赖（pip 会自动解析 Requires，但此处显式列出，
+# 确保 CI 打包与本地运行环境都能完整安装 OCR 所需的全部「插件」）：
 rapidocr-onnxruntime>=1.3.0   # 本地离线中文 OCR（模型已内置在 assets/ocr_models，无需联网）
 Pillow>=10.0.0                # 屏幕截图（PIL.ImageGrab）与图像预处理
-# onnxruntime 由 rapidocr-onnxruntime 自动带入
+numpy>=1.24                   # rapidocr / onnxruntime 基础依赖
+onnxruntime>=1.16             # OCR 推理引擎后端
+opencv-python>=4.5            # rapidocr 图像处理（cv2），OCR 必需插件，不可遗漏
+pyclipper>=1.3                # rapidocr 文本检测依赖
+Shapely>=2.0                  # rapidocr 文本检测依赖
+PyYAML>=6.0                   # rapidocr 配置加载
+six>=1.16                     # rapidocr 兼容层
 
 # 安装后运行：
 #   pip install -r requirements.txt

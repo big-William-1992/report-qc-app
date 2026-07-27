@@ -25,6 +25,11 @@ jobs:
       - name: Install PyInstaller + cryptography
         run: python -m pip install --upgrade pip pyinstaller cryptography
 
+      - name: Install OCR dependencies (rapidocr + plugins)
+        # 关键：屏幕区域 OCR 所需的全部「插件」（rapidocr/onnxruntime/opencv/pyclipper/Shapely 等）
+        # 必须在打包前装好，否则 PyInstaller 收不到这些模块，exe 内 OCR 会 ModuleNotFoundError。
+        run: python -m pip install -r requirements.txt
+
       - name: Write build info (供软件内检查更新比对)
         shell: bash
         run: |
@@ -48,6 +53,29 @@ jobs:
         # 非阻断：即使引擎冒烟测试出问题，也不影响 exe 产物的上传
         run: python build/smoke_test.py
         continue-on-error: true
+
+      - name: Verify OCR bundled in build
+        # 阻断：确认 OCR 依赖真的装上了、且离线模型被打进了 dist（防止「假成功」）
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, sys
+          ok = True
+          # 1) OCR Python 依赖必须能 import（装了 requirements 才会通过）
+          for m in ("rapidocr_onnxruntime", "onnxruntime", "cv2", "numpy", "PIL", "pyclipper", "shapely"):
+              try:
+                  __import__(m)
+                  print("  import OK:", m)
+              except Exception as e:
+                  print("  import FAIL:", m, "->", e); ok = False
+          # 2) 离线 OCR 模型必须被打进 dist/assets/ocr_models
+          det = os.path.join("dist", "报告质控软件", "assets", "ocr_models", "ch_PP-OCRv3_det_infer.onnx")
+          if os.path.isfile(det):
+              print("  OCR model bundled OK:", det)
+          else:
+              print("  OCR model MISSING:", det); ok = False
+          sys.exit(0 if ok else 1)
+          PY
 
       - name: Upload exe artifact
         uses: actions/upload-artifact@v4
