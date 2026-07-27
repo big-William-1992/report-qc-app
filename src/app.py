@@ -212,19 +212,16 @@ class ScrollableFrame(tk.Frame):
 
 
 # ----------------------------- 主应用 -----------------------------
-# 屏幕区域 OCR 监控策略：
-# - 轻量指纹比对轮询（仅检测变化，不跑 OCR 推理，成本 <1ms/次）
-# - 画面变化 → 立即跑 OCR（主路径：事件驱动，最省资源、最实时）
-# - 兜底：最长 OCR_FALLBACK_MS 强制跑一次 OCR，防止变化检测极端漏检导致
-#   患者身份核对永久失效（纯事件驱动在医学身份核对场景下有漏检风险，兜底保安全）
-# 满足用户诉求：① 舍弃「每 10 秒无条件跑 OCR」；②「画面变化才读取 OCR」为主 +
-# 「1 分钟监控一次」为兜底。OCR 实际仅在有变化时触发，日常几乎零推理开销。
-OCR_DETECT_POLL_MS = 3000     # 3s 轻量指纹比对（仅检测变化）
-OCR_FALLBACK_MS = 60000      # 60s 兜底强制 OCR 一次
-OCR_FALLBACK_S = OCR_FALLBACK_MS / 1000.0
+# 屏幕区域 OCR 策略（v2.3 起）：**不做任何后台轮询**。
+# 识别只在两个入口触发，每次触发只跑一遍：
+#   1) 用户按下自定义快捷键（Windows 全局热键，PACS 聚焦时可用）；
+#   2) 点击「🔍 识别并质控」按钮。
+# 触发后逐区域截图 → OCR → 回填 → 质控 → 与剪贴板交叉核对身份。
+# （历史上的 10s 无条件轮询 / 3s 变化检测 + 60s 兜底方案已按用户要求移除，
+#   避免后台持续截图/推理的资源占用与干扰。）
 
-# 多区域 OCR 角色：basic=基础信息（实时患者监护+结构化回填）
-# findings=影像描述 / impression=影像结论（按需识别并质控，可编辑自由文本回填）
+# 多区域 OCR 角色：basic=基础信息（结构化回填 影像号/姓名/性别/年龄/部位）
+# findings=影像描述 / impression=影像结论（可编辑自由文本回填）
 OCR_ROLE_CN = {"basic": "基础信息", "findings": "影像描述", "impression": "影像结论"}
 
 # ---------------- 「识别并质控」全局快捷键 ----------------
@@ -312,35 +309,22 @@ class ReportQcApp(tk.Tk):
         self._last_alert_clip = ""
         self._last_alert_ts = 0.0
 
-        # 屏幕区域监控（OCR 自动识别患者信息 / 影像描述 / 影像结论）
+        # 屏幕区域 OCR（识别患者信息 / 影像描述 / 影像结论，仅快捷键/按钮触发）
         self.ocr_cfg = self._load_ocr_config()
         # 多区域模型：role -> (x,y,w,h)，角色 basic/findings/impression
         self.ocr_regions = {k: tuple(v) for k, v in (self.ocr_cfg.get("regions") or {}).items()
                             if v}
-        # 兼容旧配置：单 region 视为 basic（实时患者监护区）
+        # 兼容旧配置：单 region 视为 basic（基础信息区）
         old = self.ocr_cfg.get("region")
         if old and "basic" not in self.ocr_regions:
             self.ocr_regions["basic"] = tuple(old)
-        self.ocr_region = self.ocr_regions.get("basic")  # 实时监护复用 basic 区
-        self.ocr_watch = bool(self.ocr_cfg.get("watch", False))
-        self._ocr_job = None
-        self.ocr_meta = {}            # 最近一次「已确认」的屏幕侧元信息
+        self.ocr_meta = {}            # 最近一次识别出的屏幕侧元信息
         self._ocr_alert_sig = None   # 身份不符提示去重
         self._ocr_alert_cooldown = 0.0
-        self._ocr_img_sig = None      # 上一帧截图指纹（变化检测，无变化不跑推理）
-        self._ocr_confirmed_key = None  # 最近一次生效的识别 key（用于去重刷新，避免重复回填/告警）
-        self._ocr_last_force_ts = 0.0   # 上次实际跑 OCR 的时间戳（兜底计时）
-        self._ocr_focus_paused = False  # 本软件聚焦时暂停屏幕 OCR（避免截到自己）
-        self.ocr_var = tk.BooleanVar(value=self.ocr_watch)
-        self.ocr_status = tk.StringVar(value="● 未开启屏幕监控")
+        self.ocr_status = tk.StringVar(value="● 待触发（按快捷键或点『识别并质控』）")
         self.ocr_regions_status = tk.StringVar(value="")
-        self._ocr_status("off", "● 未开启屏幕监控")
-        # 本软件聚焦/失焦时暂停/恢复屏幕 OCR（避免截到自身窗口）
-        self.bind("<Activate>", self._on_ocr_activate)
-        self.bind("<Deactivate>", self._on_ocr_deactivate)
+        self._ocr_status("off", "● 待触发（按快捷键或点『识别并质控』）")
         self._update_region_status()
-        if self.ocr_region:
-            self._ocr_status("off", "● 基础信息区已设定（监控未开启）")
 
         # 「识别并质控」快捷键（任意组合，持久化在 ocr_config.json）
         self.qc_hotkey = self.ocr_cfg.get("hotkey") or None   # {"mods":[...], "key":"F9"}
@@ -851,7 +835,7 @@ class ReportQcApp(tk.Tk):
         self.vars = {k: tk.StringVar() for k in
                      ["patient", "gender", "age", "modality", "applied_site", "laterality"]}
         rows = [
-            ("患者/编号", "patient"), ("性别（男/女）", "gender"),
+            ("影像号/姓名", "patient"), ("性别（男/女）", "gender"),
             ("年龄", "age"), ("检查部位（用于评分规则）", "modality"),
             ("申请部位（用于部位核查）", "applied_site"), ("侧别（左/右/双侧）", "laterality"),
         ]
@@ -914,16 +898,13 @@ class ReportQcApp(tk.Tk):
         self.clip_alert = tk.BooleanVar(value=True)
         ttk.Checkbutton(clip_bar, text="🔔 发现问题即弹窗提醒", variable=self.clip_alert).pack(side="left", padx=2)
 
-        # 屏幕区域监控（OCR 自动识别患者信息 + 与剪贴板交叉核对身份）
+        # 屏幕区域 OCR（识别患者信息 + 与剪贴板交叉核对身份；仅快捷键/按钮触发）
         ocr_bar = ttk.Frame(left)
         ocr_bar.pack(fill="x", pady=(6, 0))
         ttk.Separator(ocr_bar, orient="horizontal").pack(fill="x", pady=(0, 6))
         ttk.Button(ocr_bar, text="🎯 框选基础信息区", width=14,
                    command=lambda: self._select_ocr_region("basic")).pack(side="left", padx=2)
-        self.ocr_chk = ttk.Checkbutton(ocr_bar, text="🔄 屏幕区域识别",
-                                        variable=self.ocr_var, command=self._toggle_ocr)
-        self.ocr_chk.pack(side="left", padx=2)
-        # OCR 监控状态灯（颜色含义见 _ocr_status：灰=暂停/未开 青=监控中
+        # OCR 状态灯（颜色含义见 _ocr_status：灰=待触发
         # 绿=识别正常 黄=区域无患者信息 红=异常/身份不符）
         self.ocr_dot = tk.Canvas(ocr_bar, width=12, height=12, bd=0,
                                   highlightthickness=0, bg=THEME["bg"])
@@ -1020,10 +1001,9 @@ class ReportQcApp(tk.Tk):
         self.session_var.set(
             f"{'监听中' if watching else '未监听'} · 本次会话命中 {self.session_hits} 份{last}")
 
-    # -------------------- OCR 监控状态灯 + 聚焦暂停 --------------------
+    # -------------------- OCR 状态灯 --------------------
     _OCR_DOT_COLORS = {
-        "off": "#9AA0A6",        # 未开启 / 已暂停（灰）
-        "monitoring": "#00E5FF", # 监控中，等待画面变化（青）
+        "off": "#9AA0A6",        # 待触发（灰）
         "ok": "#2ECC71",         # 识别正常并已回填（绿）
         "empty": "#F1C40F",      # 区域识别不到患者信息，可能框错（黄）
         "alert": "#E74C3C",      # 屏幕与剪贴板患者信息不符（红）
@@ -1031,29 +1011,13 @@ class ReportQcApp(tk.Tk):
     }
 
     def _ocr_status(self, state, text):
-        """统一设置 OCR 状态灯颜色 + 文字（状态灯是屏幕监控的可视化指示）。"""
+        """统一设置 OCR 状态灯颜色 + 文字（最近一次识别结果的可视化指示）。"""
         color = self._OCR_DOT_COLORS.get(state, "#9AA0A6")
         try:
             self.ocr_dot.itemconfig(self._ocr_dot_id, fill=color)
         except Exception:
             pass
         self.ocr_status.set(text)
-
-    def _on_ocr_activate(self, e=None):
-        """本软件成为前台窗口（用户在操作本软件）→ 暂停屏幕 OCR，避免截到自身。"""
-        if getattr(self, "ocr_watch", False) and getattr(self, "ocr_region", None):
-            self._ocr_focus_paused = True
-            self._ocr_status("off", "⏸ 本窗口聚焦中，已暂停屏幕识别")
-
-    def _on_ocr_deactivate(self, e=None):
-        """本软件失去前台（用户切到 PACS 等）→ 恢复屏幕 OCR 监控。"""
-        if getattr(self, "ocr_watch", False) and getattr(self, "ocr_region", None):
-            self._ocr_focus_paused = False
-            self._ocr_status("monitoring", "● 监控中（画面变化时识别）…")
-            try:
-                self._poll_ocr(force=True)
-            except Exception:
-                pass
 
     def _toggle_clip(self):
         self.clip_watch = self.clip_var.get()
@@ -1098,7 +1062,6 @@ class ReportQcApp(tk.Tk):
     def _save_ocr_config(self):
         try:
             cfg = {"regions": {k: list(v) for k, v in self.ocr_regions.items()},
-                   "watch": bool(self.ocr_watch),
                    "hotkey": getattr(self, "qc_hotkey", None)}
             with open(self._ocr_config_path(), "w", encoding="utf-8") as fh:
                 json.dump(cfg, fh, ensure_ascii=False, indent=2)
@@ -1159,14 +1122,7 @@ class ReportQcApp(tk.Tk):
             self.ocr_regions[role] = (x0, y0, w, h)
             self._save_ocr_config()
             self._update_region_status()
-            if role == "basic":
-                # basic 区同时驱动实时患者监护
-                self.ocr_region = (x0, y0, w, h)
-                self._ocr_status("off", f"● 基础信息区已设定 {w}×{h}（监控未开启）")
-                if self.ocr_watch:
-                    self._poll_ocr(force=True)
-            else:
-                self._ocr_status("off", f"● {role_cn}区已设定 {w}×{h}")
+            self._ocr_status("off", f"● {role_cn}区已设定 {w}×{h}")
 
         canvas.bind("<ButtonPress-1>", on_down)
         canvas.bind("<B1-Motion>", on_move)
@@ -1182,8 +1138,6 @@ class ReportQcApp(tk.Tk):
         for r in ("basic", "findings", "impression"):
             parts.append(f"{OCR_ROLE_CN[r]}{'已设' if r in self.ocr_regions else '未设'}")
         self.ocr_regions_status.set("区域：" + " / ".join(parts))
-        # 实时患者监护复用 basic 区
-        self.ocr_region = self.ocr_regions.get("basic")
 
     def _compose_report(self, meta, findings_text, impression_text):
         """把三区识别结果拼成带分段标题的报告。
@@ -1192,7 +1146,7 @@ class ReportQcApp(tk.Tk):
         因此这里用标准标题包裹，后续 _run 的分区规则（R2/R5/R7/R10）自动生效。
         """
         head = []
-        for k in ("patient", "gender", "age", "modality", "applied_site", "laterality"):
+        for k in ("exam_no", "patient", "gender", "age", "modality", "applied_site", "laterality"):
             v = (meta.get(k) or "").strip()
             if v:
                 head.append(f"{self._META_CN.get(k, k)}：{v}")
@@ -1210,7 +1164,8 @@ class ReportQcApp(tk.Tk):
         notes = ["----- 分区域识别状态 -----"]
         if meta:
             filled = [self._META_CN.get(k, k) for k in
-                      ("patient", "gender", "age", "modality", "applied_site", "laterality")
+                      ("exam_no", "patient", "gender", "age",
+                       "modality", "applied_site", "laterality")
                       if (meta.get(k) or "").strip()]
             notes.append(f"  基础信息：已识别（{', '.join(filled)}）")
         else:
@@ -1247,10 +1202,19 @@ class ReportQcApp(tk.Tk):
             img_b = ocr_provider.capture_region(self.ocr_regions["basic"])
             text_b = ocr_provider.ocr_image(img_b) or ""
             meta = engine.extract_meta(text_b)
-            for k in ("patient", "gender", "age", "modality", "applied_site", "laterality"):
+            # 「影像号/姓名」字段：两者都有 → 组合显示；只有其一 → 单独显示
+            exam_no = (meta.get("exam_no") or "").strip()
+            name = (meta.get("patient") or "").strip()
+            ident = engine.format_patient_ident(exam_no, name)
+            if ident and self.vars["patient"].get().strip() != ident:
+                self.vars["patient"].set(ident)
+            for k in ("gender", "age", "modality", "applied_site", "laterality"):
                 v = (meta.get(k) or "").strip()
                 if v and self.vars[k].get().strip() != v:
                     self.vars[k].set(v)
+            # 记录屏幕侧元信息 + 与剪贴板（报告）交叉核对身份（防张冠李戴）
+            self.ocr_meta = meta
+            self._compare_ocr_clipboard(meta)
             # 2) 影像描述区 / 3) 影像结论区：自由文本回填
             img_f = ocr_provider.capture_region(self.ocr_regions["findings"])
             text_f = ocr_provider.ocr_image(img_f) or ""
@@ -1263,7 +1227,13 @@ class ReportQcApp(tk.Tk):
             self._run()
             # 5) 分区域状态 + 分区专属核查
             self._append_region_qc(meta, text_f, text_i)
-            self._ocr_status("ok", "● 已识别并质控（三区）")
+            if any((meta.get(k) or "").strip() for k in
+                   ("exam_no", "patient", "gender", "age",
+                    "modality", "applied_site", "laterality")):
+                self._ocr_status("ok", "● 已识别并质控（三区）")
+            else:
+                self._ocr_status("empty",
+                    "● 已质控，但基础信息区未识别到患者字段（请检查框选位置）")
         except Exception as e:
             self._ocr_status("error", f"● 识别并质控失败：{e}")
             messagebox.showerror("识别并质控失败", str(e))
@@ -1431,143 +1401,6 @@ class ReportQcApp(tk.Tk):
             self._capture_and_qc()
         finally:
             self._hotkey_busy = False
-
-    def _toggle_ocr(self):
-        self.ocr_watch = self.ocr_var.get()
-        self._save_ocr_config()
-        if self.ocr_watch:
-            if not self.ocr_region:
-                messagebox.showinfo("提示", "请先点『🎯 框选基础信息区』选择要监控的屏幕区域。")
-                self.ocr_var.set(False)
-                self.ocr_watch = False
-                return
-            ok, reason = ocr_provider.availability()
-            if not ok:
-                messagebox.showwarning("OCR 不可用", reason)
-                self.ocr_var.set(False)
-                self.ocr_watch = False
-                return
-            self._ocr_status("monitoring", "● 监控中（画面变化时识别）…")
-            self._poll_ocr(force=True)
-        else:
-            self.ocr_status.set("● 已停止屏幕监控")
-            if getattr(self, "_ocr_job", None):
-                try:
-                    self.after_cancel(self._ocr_job)
-                except Exception:
-                    pass
-                self._ocr_job = None
-
-    def _do_ocr_once(self, img, force=False):
-        """实际跑一次 OCR 并解析/回填/告警。返回 True 表示产生了新的有效结果。
-
-        内部：ocr_image（含灰度+CLAHE 预处理与置信度过滤）→ extract_meta →
-        姓名护栏（识别到患者姓名才回填+告警）→ 驱动 R1/R3/R6。
-        """
-        try:
-            text = ocr_provider.ocr_image(img)   # 内置预处理 + 置信度过滤（<0.55 丢弃）
-        except Exception as e:
-            self._ocr_status("error", f"● OCR 异常：{e}")
-            return False
-        if not text:
-            return False
-        meta = engine.extract_meta(text)
-        key = "|".join((meta.get(k) or "").strip()
-                       for k in ("patient", "gender", "age",
-                                 "modality", "applied_site", "laterality"))
-        if not key.strip("|"):
-            # 识别到文字但解析不出患者字段（如只框到工具栏/按钮文字）→
-            # 区域可能框错，黄色提示，帮助内测用户排查框选位置
-            self._ocr_status("empty", "● 区域未识别到患者信息（请确认框选了患者信息栏）")
-            return False
-        if (not force) and key == self._ocr_confirmed_key:
-            # 与已确认结果相同：仅刷新剪贴板交叉核对，不重复回填/告警
-            self._compare_ocr_clipboard(meta)
-            return False
-        if (meta.get("patient") or "").strip() or force:
-            # 姓名护栏：识别到患者姓名才回填 + 告警（防半张图/纯噪声误报）
-            self._apply_ocr_meta(meta, key)
-            names = ", ".join(
-                self._META_CN.get(k, k)
-                for k in ("patient", "gender", "age", "modality",
-                          "applied_site", "laterality")
-                if (meta.get(k) or "").strip())
-            self._ocr_status("ok", f"● 屏幕识别已更新：{names}")
-            return True
-        # 仅识别到部位/性别等、无姓名：更新内部 meta 供核对，不强制回填
-        self.ocr_meta = meta
-        self._compare_ocr_clipboard(meta)
-        return False
-
-    def _poll_ocr(self, force=False):
-        """屏幕区域监控调度：轻量指纹比对（3s）+ 变化才跑 OCR + 60s 兜底。
-
-        三道闸：
-        1. 变化检测：截图缩为 64×64 灰度指纹比对，区域无变化则跳过 OCR 推理
-           （PACS 界面大部分时间静止，可省 90%+ 的推理开销）；
-        2. 置信度过滤 + 灰度CLAHE预处理：ocr_image 内置（<0.55 的行丢弃 + 低质量图增强）；
-        3. 姓名护栏：仅当识别到患者姓名（patient 字段非空）才回填 + 触发身份告警，
-           避免截到切换中的半张图/纯噪声产生误报。
-
-        注意：不再要求「连续两轮识别完全一致」才生效（会导致真实屏幕噪点下永远挂起）。
-        force=True（手动触发 / 刚开启监控 / 兜底）时跳过去重，立即出结果。
-        """
-        try:
-            if self.ocr_watch and self.ocr_region:
-                if self._ocr_focus_paused:
-                    # 本软件正被操作：跳过截图（避免截到自身窗口），仅维持调度
-                    return
-                ok, reason = ocr_provider.availability()
-                if not ok:
-                    self._ocr_status("error", f"● OCR 不可用：{reason}")
-                    return
-                now = time.time()
-                img = ocr_provider.capture_region(self.ocr_region)
-                img_sig = ocr_provider.image_signature(img)
-                changed = force or ocr_provider.signature_changed(
-                    img_sig, self._ocr_img_sig)
-                self._ocr_img_sig = img_sig
-                if changed:
-                    # 画面有变化（或强制）→ 立即跑 OCR
-                    if self._do_ocr_once(img, force=force):
-                        self._ocr_last_force_ts = now
-                    return
-                # 屏幕未变化：是否到了 60s 兜底强制读取？
-                if (now - self._ocr_last_force_ts) >= OCR_FALLBACK_S:
-                    self._do_ocr_once(img, force=True)   # 兜底：最长 60s 必读一次
-                    self._ocr_last_force_ts = now
-                    return
-                # 未变化且未到兜底：剪贴板可能换了报告，仍做交叉核对（零推理成本）
-                if self.ocr_meta:
-                    self._compare_ocr_clipboard(self.ocr_meta)
-        except Exception as e:
-            self._ocr_status("error", f"● OCR 异常：{e}")
-        finally:
-            if getattr(self, "ocr_watch", False):
-                self._ocr_job = self.after(
-                    OCR_DETECT_POLL_MS, lambda: self._poll_ocr())
-
-    def _apply_ocr_meta(self, meta, key):
-        """确认后的屏幕元信息：回填输入框 → 驱动质控 → 与剪贴板交叉核对。"""
-        self.ocr_meta = meta
-        self._ocr_confirmed_key = key
-        # 屏幕为权威来源：监控开启时覆盖回填元信息输入框
-        changed = []
-        for k in ("patient", "gender", "age", "modality", "applied_site", "laterality"):
-            v = (meta.get(k) or "").strip()
-            if v and self.vars[k].get().strip() != v:
-                self.vars[k].set(v)
-                changed.append(k)
-        # 驱动质控（R1 性别矛盾 / R3 评分缺失 / R6 登记部位不符 自动生效）
-        try:
-            self._run()
-        except Exception:
-            pass
-        # 与剪贴板（报告内容）交叉核对患者身份
-        self._compare_ocr_clipboard(meta)
-        if changed:
-            names = ", ".join(self._META_CN.get(k, k) for k in changed)
-            self._ocr_status("ok", f"● 屏幕识别已更新：{names}")
 
     def _compare_ocr_clipboard(self, ocr_meta):
         """屏幕侧元信息 vs 剪贴板（报告）元信息：姓名/性别/年龄/申请部位不一致即告警。
@@ -1790,8 +1623,9 @@ class ReportQcApp(tk.Tk):
                 filled.append(k)
         return filled
 
-    _META_CN = {"patient": "患者", "gender": "性别", "age": "年龄",
-                "modality": "检查部位", "applied_site": "申请部位", "laterality": "侧别"}
+    _META_CN = {"patient": "姓名", "exam_no": "影像号", "gender": "性别",
+                "age": "年龄", "modality": "检查部位", "applied_site": "申请部位",
+                "laterality": "侧别"}
 
     def _auto_meta_btn(self):
         """手动触发：对当前报告文本自动识别并回填元信息。"""

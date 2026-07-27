@@ -592,7 +592,7 @@ def _parse_gender_from_text(text: str) -> Optional[str]:
     if not text:
         return None
     # 显式字段
-    m = re.search(r"(?:性别|患者|受检者)[:：\s]*([男女])", text)
+    m = re.search(r"(?:性\s*别|患\s*者|受\s*检\s*者)[:：\s]*([男女])", text)
     if m:
         return "male" if m.group(1) == "男" else "female"
     m = re.search(r"([男女])性", text)
@@ -619,7 +619,7 @@ def _extract_age(text: str) -> str:
     if not text:
         return ""
     # 显式：年龄：45 / 年龄 45岁
-    m = re.search(r"年龄[:：]?\s*(\d{1,3})\s*(?:岁|Y|y|歲)?", text)
+    m = re.search(r"年\s*龄[:：]?\s*(\d{1,3})\s*(?:岁|Y|y|歲)?", text)
     if m:
         return m.group(1)
     # 病史写法：男，45岁 / 女 32Y
@@ -726,19 +726,29 @@ def _extract_laterality(text: str) -> str:
     return ""
 
 
+def _lab_re(lab: str) -> str:
+    """标签 → 容忍 OCR 噪声的正则：允许标签字符间混入空格/制表符。
+
+    真实 PACS 截图 OCR 常把『姓名』识别成『姓 名』（字距大被拆行/拆词），
+    直接 re.escape 精确匹配会漏抽——这是「基础信息识别不精确」的常见根因之一。
+    """
+    return r"[ \t]*".join(re.escape(ch) for ch in lab)
+
+
 def _extract_patient(text: str) -> str:
     """抽取患者姓名（中文）。仅在有显式标签时返回，避免误填。
 
     优先匹配强标签：姓名 / 患者姓名 / 病人姓名 / 受检者姓名 / 就诊人姓名 /
     病员姓名；其次匹配『患者/病人/受检者/就诊人/病员』后紧跟的姓名（排除
     『患者诉』『患者因』等语病及性别值 男/女）。无法识别返回空串。
+    标签匹配容忍字符间空格（『姓 名：张三』也能抽取）。
     """
     if not text:
         return ""
-    _strong = ("姓名", "患者姓名", "病人姓名", "受检者姓名",
-               "就诊人姓名", "病员姓名")
+    _strong = ("患者姓名", "病人姓名", "受检者姓名",
+               "就诊人姓名", "病员姓名", "姓名")
     for lab in _strong:
-        m = re.search(re.escape(lab) + r"[:：\s]*([\u4e00-\u9fa5]{1,4})", text)
+        m = re.search(_lab_re(lab) + r"[:：\s]*([\u4e00-\u9fa5]{1,4})", text)
         if m:
             return m.group(1)
     _weak = ("患者", "病人", "受检者", "就诊人", "病员")
@@ -752,17 +762,59 @@ def _extract_patient(text: str) -> str:
     return ""
 
 
+def _extract_exam_no(text: str) -> str:
+    """抽取影像号/检查号（放射科用于唯一定位患者检查的编号）。
+
+    强标签：影像号 / 影像编号 / 检查号 / 检查编号 / 图像号 / 放射号 /
+    RIS号 / PACS号 / 门诊号 / 住院号；弱标签：编号（信息栏语境下通常即影像号）。
+    OCR 数字混淆归一：编号以数字为主时把 O/o→0、I/l→1（常见识别混淆）。
+    无法识别返回空串。
+    """
+    if not text:
+        return ""
+    _labels = ("影像编号", "影像号", "检查编号", "检查号", "图像号",
+               "放射号", "RIS号", "PACS号", "门诊号", "住院号", "编号")
+    for lab in _labels:
+        m = re.search(_lab_re(lab) + r"[:：\s]*([A-Za-z0-9\-]{3,20})", text)
+        if not m:
+            continue
+        no = m.group(1)
+        digits = sum(ch.isdigit() for ch in no)
+        if digits >= max(1, len(no) // 2):
+            # 以数字为主 → 修正 OCR 常见字符混淆
+            no = no.translate(str.maketrans("OoIl", "0011"))
+        return no
+    return ""
+
+
 def extract_meta(text: str) -> dict:
     """从报告正文抽取元信息，用于剪贴板/导入场景自动回填输入框。
 
-    返回 {patient, gender, age, modality, applied_site, laterality}
+    返回 {patient, exam_no, gender, age, modality, applied_site, laterality}
     （均为中文字符串，姓名可能为空）。抽取结果仅作提示，允许人工校正。
     """
     return {
         "patient": _extract_patient(text),
+        "exam_no": _extract_exam_no(text),
         "gender": _extract_gender_cn(text),
         "age": _extract_age(text),
         "modality": _extract_modality(text),
         "applied_site": _extract_site(text),
         "laterality": _extract_laterality(text),
     }
+
+
+def format_patient_ident(exam_no: str, name: str) -> str:
+    """组合『影像号/姓名』输入框显示值。
+
+    - 影像号与姓名都有 → ``影像号/姓名``（斜杠分隔）；
+    - 只有其一 → 单独显示；
+    - 都为空 → 空串。
+
+    纯函数，便于单测；app 在回填基础信息区时调用。
+    """
+    exam_no = (exam_no or "").strip()
+    name = (name or "").strip()
+    if exam_no and name:
+        return f"{exam_no}/{name}"
+    return exam_no or name

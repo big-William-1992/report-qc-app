@@ -62,6 +62,10 @@ class FakeApp:
     def _ocr_status(self, state, text):
         self.ocr_status.set(text)
 
+    def _compare_ocr_clipboard(self, ocr_meta):
+        # 测试中仅需存在该方法（身份交叉核对逻辑在 app 真实实现里已覆盖）
+        pass
+
     def _run(self):
         self._ran = True
 

@@ -41,6 +41,10 @@ MIN_SCORE = 0.55
 PIXEL_DIFF = 8
 CHANGE_TOLERANCE = 0.002   # 0.2%，64×64 下约 8 个像素
 
+# 区域高度低于此值视为「矮条状小字区域」（如 PACS 患者信息栏），
+# 预处理时先 2x 放大再增强，见 preprocess_for_ocr。
+SMALL_REGION_H = 96
+
 
 def _assets_dir() -> str:
     if getattr(sys, "frozen", False):
@@ -127,8 +131,12 @@ def preprocess_for_ocr(img):
     - 清晰图：灰度+CLAHE 命中率 100%，与原图(97~100%)持平或略优；
     - 重度退化图：原图仅 44%，灰度+CLAHE 救回至 91%。
     - 作用：去色消除彩色标签/网格线的颜色干扰，CLAHE 拉开低对比文字与背景。
-    - 不做放大/锐化：实测放大会稀释噪声、锐化等于对模糊图做逆滤波放大噪声，
-      二者都会显著拉低精度（重度退化图 84%→34%）。
+    - 常规图不做放大/锐化：实测放大会稀释噪声、锐化等于对模糊图做逆滤波放大
+      噪声，二者都会显著拉低精度（重度退化图 84%→34%）。
+    - 例外：**矮条状小字区域**（高 < SMALL_REGION_H，典型为 PACS 患者信息栏，
+      字高常仅 12~16px，低于检测模型的稳定字高下限）先做 2x 三次插值放大再
+      灰度+CLAHE。屏幕截图是无损像素文本（非压缩模糊图），放大不会放大噪声，
+      只把过小字体抬进 OCR 有效字高区间——针对「基础信息识别不精确」。
     返回 (H,W,3) uint8 numpy，供 RapidOCR 直接推理。
     """
     if hasattr(img, "mode"):           # PIL.Image
@@ -141,8 +149,12 @@ def preprocess_for_ocr(img):
         arr = np.asarray(img)
     if arr.ndim == 2:                  # numpy 灰度兜底
         arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2RGB)
+    arr = arr.astype(np.uint8)
+    # 矮条状小字区域（如患者信息栏）→ 2x 放大，抬高字高提升检出/识别率
+    if 0 < arr.shape[0] < SMALL_REGION_H:
+        arr = cv2.resize(arr, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
     # 转灰度 → CLAHE 增强 → 转回 3 通道（RapidOCR 对 3 通道最稳）
-    gray = cv2.cvtColor(arr.astype(np.uint8), cv2.COLOR_RGB2GRAY)
+    gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
     clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
     gray = clahe.apply(gray)
     return cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)

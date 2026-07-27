@@ -38,8 +38,11 @@ def render_pacs(fg=(150, 160, 172), seed=None, name="张伟", site="胸部 CT"):
 
 
 def apply_decision(new_key, confirmed_key, meta, force):
-    """复刻 _poll_ocr 的生效判定（行为契约，防回归）。
-    新 key 与已确认不同 → 生效；相同 → 仅刷新核对；force → 强制生效。
+    """一次性回填生效判定（行为契约，防回归）。
+
+    v2.3 起 OCR 由轮询改为「按下快捷键/点按钮后运行一次」，不再有 confirm-key
+    双闸；此处固化「新识别结果是否应回填输入框」的判定：
+    相同 key 视为无变化 → 不重复回填；force → 强制回填；有患者字段才允许回填。
     """
     if force:
         return True
