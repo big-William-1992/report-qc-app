@@ -185,9 +185,9 @@ param(
 
 Start-Sleep -Seconds 3
 
-$TMP = Join-Path $AppDir "update" "_extract"
-$BAK = Join-Path $AppDir "update" "_bak"
-$DBG = Join-Path $AppDir "update" "installer_debug.log"
+$TMP = Join-Path (Join-Path $AppDir "update") "_extract"
+$BAK = Join-Path (Join-Path $AppDir "update") "_bak"
+$DBG = Join-Path (Join-Path $AppDir "update") "installer_debug.log"
 function Log($m) { "$m" | Add-Content -Encoding UTF8 $DBG }
 
 New-Item -ItemType Directory -Path (Join-Path $AppDir "update") -Force | Out-Null
@@ -219,7 +219,7 @@ try {
 $EXCLUDE = @(".git", ".workbuddy", "keys", "update", "assets", "logs")
 
 # 备份用户私有数据：激活码 + 日志
-$lic = Join-Path $AppDir "assets" "license.dat"
+$lic = Join-Path (Join-Path $AppDir "assets") "license.dat"
 if (Test-Path $lic) { Copy-Item $lic (Join-Path $BAK "license.dat") -Force; Log "BACKUP lic OK" }
 $logsSrc = Join-Path $AppDir "logs"
 if (Test-Path $logsSrc) { Copy-Item $logsSrc (Join-Path $BAK "logs") -Recurse -Force; Log "BACKUP logs OK" }
@@ -255,7 +255,7 @@ foreach ($item in Get-ChildItem $TMP) {
 $licBak = Join-Path $BAK "license.dat"
 if (Test-Path $licBak) {
     New-Item -ItemType Directory -Path (Join-Path $AppDir "assets") -Force | Out-Null
-    Copy-Item $licBak (Join-Path $AppDir "assets" "license.dat") -Force
+    Copy-Item $licBak (Join-Path (Join-Path $AppDir "assets") "license.dat") -Force
     Log "RESTORE lic OK"
 }
 $logsBak = Join-Path $BAK "logs"
@@ -270,7 +270,7 @@ if (Test-Path $logsBak) {
 if ($PublishedAt -ne "") {
     New-Item -ItemType Directory -Path (Join-Path $AppDir "assets") -Force | Out-Null
     @{ build_time = $PublishedAt; commit = "from-release" } | ConvertTo-Json | `
-        Set-Content (Join-Path $AppDir "assets" "build_info.json") -Encoding UTF8
+        Set-Content (Join-Path (Join-Path $AppDir "assets") "build_info.json") -Encoding UTF8
     Log "BUILD_INFO written"
 }
 
