@@ -20,6 +20,7 @@ import subprocess
 import difflib
 import hashlib
 import time
+import threading
 import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -33,6 +34,7 @@ import license_utils
 import version
 import log_utils
 import update_check
+import auto_updater
 
 # 反馈通道：GitHub Issues（公开仓库任何人可提），可按需改为飞书/腾讯问卷链接
 FEEDBACK_URL = "https://github.com/big-William-1992/report-qc-app/issues"
@@ -134,6 +136,12 @@ def apply_theme(root):
                     borderwidth=0, padding=[20, 9], font=F(FAMILY, 10, "bold"))
     style.map("Primary.TButton",
               background=[("active", s["primary_d"]), ("pressed", s["primary_d"])])
+
+    # 顶栏「帮助」按钮：与 TButton 同几何（同 padding → 同高度），仅改配色以突出"新增"
+    style.configure("Help.TButton", background="#EF9F27", foreground="#1A2332",
+                    borderwidth=0, padding=[16, 8], font=F(FAMILY, 10, "bold"))
+    style.map("Help.TButton",
+              background=[("active", "#BA7517"), ("pressed", "#BA7517")])
 
     style.configure("TCheckbutton", background=s["panel"], foreground=s["text"],
                     font=F(FAMILY, 10))
@@ -282,8 +290,32 @@ class ReportQcApp(tk.Tk):
                  bg=s["header_bg"], fg="#B8E4EE", font=F(FAMILY, 10)).pack(side="left", padx=10, anchor="center")
         tk.Label(bar, text=f"v{version.APP_VERSION}", bg=s["header_bg"], fg="#B8E4EE",
                  font=F(FAMILY, 10, "bold")).pack(side="right", padx=14, anchor="center")
-        ttk.Button(bar, text="⚙ 规则维护", command=self._open_rules_editor).pack(
-            side="right", padx=8, anchor="center")
+        # 窗口内可见入口：帮助菜单（检查更新 / 问题反馈 / 导出诊断包 / 关于）。
+        # 解决 macOS 上 Tk 菜单栏显示在屏幕最顶部、用户不易发现的问题。
+        # 尺寸与「规则维护」按钮保持一致（同 width、同 TButton 几何）。
+        self._help_btn = ttk.Button(bar, text="❓ 帮助", style="Help.TButton", width=10,
+                                    command=self._post_header_help_menu)
+        self._help_btn.pack(side="right", padx=4, anchor="center")
+        ttk.Button(bar, text="⚙ 规则维护", width=10,
+                   command=self._open_rules_editor).pack(side="right", padx=8, anchor="center")
+
+    # -------------------- 顶栏帮助按钮（窗口内可见入口） --------------------
+    def _post_header_help_menu(self):
+        """顶栏「❓ 帮助」按钮：在窗口内弹出下拉菜单，提供与系统菜单栏一致的功能入口。"""
+        m = tk.Menu(self, tearoff=0)
+        m.add_command(label="输入激活码…", command=self._open_activation)
+        m.add_separator()
+        m.add_command(label="检查更新…", command=self._check_update_manual)
+        m.add_command(label="问题反馈…", command=self._open_feedback)
+        m.add_command(label="导出诊断包…", command=lambda: self._export_diagnostic(self))
+        m.add_separator()
+        m.add_command(label="关于星衍放射质控软件", command=self._show_about)
+        try:
+            x = self._help_btn.winfo_rootx()
+            y = self._help_btn.winfo_rooty() + self._help_btn.winfo_height()
+            m.tk_popup(x, y)
+        finally:
+            m.grab_release()
 
     # -------------------- 菜单栏 / 授权入口 --------------------
     def _build_menubar(self):
@@ -318,7 +350,9 @@ class ReportQcApp(tk.Tk):
                 f"版本标识：{commit}\n\n"
                 "第一代 · NER + 知识图谱 + 规则引擎（R1–R10）\n\n"
                 "本软件提供的报告质控结果仅供参考，不构成最终诊断依据；\n"
-                "所有结果均需由具备资质的放射科医师审核确认。")
+                "所有结果均需由具备资质的放射科医师审核确认。\n\n"
+                "开发者：谢君\n"
+                "联系方式：17380009231")
         messagebox.showinfo("关于", info)
 
     # -------------------- 内测支撑：更新 / 反馈 / 诊断 --------------------
@@ -351,7 +385,9 @@ class ReportQcApp(tk.Tk):
         status = res.get("status")
         msg = res.get("message", "")
         if status == "update":
-            if messagebox.askyesno("发现新版本", msg + "\n\n是否现在打开下载页面？"):
+            if messagebox.askyesno("发现新版本", msg + "\n\n是否下载并更新？（也可稍后到发布页手动下载）"):
+                self._start_update(res)
+            elif messagebox.askyesno("仅查看", "是否打开发布下载页？"):
                 webbrowser.open(res.get("url", update_check.RELEASE_PAGE))
         elif status == "latest":
             messagebox.showinfo("检查更新", msg)
@@ -371,8 +407,77 @@ class ReportQcApp(tk.Tk):
         if res.get("status") == "update":
             if messagebox.askyesno(
                     "发现新版本",
-                    res.get("message", "") + "\n\n是否现在打开下载页面？"):
-                webbrowser.open(res.get("url", update_check.RELEASE_PAGE))
+                    res.get("message", "") + "\n\n是否下载并更新？"):
+                self._start_update(res)
+
+    def _start_update(self, res):
+        """下载并更新流程：进度窗 → 下载 → 安装并重启确认。"""
+        win = tk.Toplevel(self)
+        win.title("下载更新")
+        win.geometry("420x180")
+        win.configure(bg=THEME["panel"])
+        win.transient(self)
+        win.grab_set()
+        win.lift()
+        try:
+            win.attributes("-topmost", True)
+        except Exception:
+            pass
+        tk.Label(win, text="正在下载新版本…", bg=THEME["panel"],
+                 fg=THEME["text"], font=F(FAMILY, 12)).pack(pady=(16, 6))
+        bar = ttk.Progressbar(win, orient="horizontal", length=340,
+                              mode="determinate")
+        bar.pack(padx=20)
+        pct = tk.Label(win, text="0%", bg=THEME["panel"], fg=THEME["text"],
+                       font=F(FAMILY, 10))
+        pct.pack(pady=(4, 2))
+        status_lbl = tk.Label(win, text="准备中…", bg=THEME["panel"],
+                              fg=THEME["text"], font=F(FAMILY, 10))
+        status_lbl.pack(pady=(2, 8))
+
+        dest = os.path.join(auto_updater.update_cache_dir(), "latest.tar.gz")
+
+        def on_progress(done, total):
+            frac = (done / total) if total else 0.0
+            kb_done = done // 1024
+            kb_total = total // 1024 if total else 0
+            self.after(0, lambda: (bar.config(value=frac * 100),
+                                   pct.config(text="%d%%" % int(frac * 100)),
+                                   status_lbl.config(
+                                       text="%d / %d KB" % (kb_done, kb_total))))
+
+        def worker():
+            try:
+                auto_updater.download(dest, on_progress, timeout=240)
+                self.after(0, lambda: self._finish_update(dest, win))
+            except Exception as e:  # noqa: BLE001
+                self.after(0, lambda: (win.destroy(),
+                                       messagebox.showerror("下载失败", str(e))))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_update(self, dest, win):
+        """下载完成：切换为「安装并重启」确认界面。"""
+        for w in list(win.winfo_children()):
+            w.destroy()
+        win.geometry("420x210")
+        tk.Label(win, text="下载完成，是否立即安装并重启？",
+                 bg=THEME["panel"], fg=THEME["text"],
+                 font=F(FAMILY, 12)).pack(pady=(18, 6))
+        tk.Label(win, text="安装会替换程序文件，并保留你的激活码与日志。",
+                 bg=THEME["panel"], fg=THEME["text"],
+                 font=F(FAMILY, 10)).pack()
+        bf = ttk.Frame(win)
+        bf.pack(pady=16)
+
+        def do_install():
+            auto_updater.install_and_relaunch(dest, res.get("published_at"))
+            win.after(400, lambda: os._exit(0))
+
+        ttk.Button(bf, text="安装并重启", command=do_install).pack(
+            side="left", padx=10)
+        ttk.Button(bf, text="稍后", command=win.destroy).pack(
+            side="left", padx=10)
 
     def _open_feedback(self):
         """问题反馈入口：引导导出诊断包 + 打开反馈通道 + 复制联系方式。"""
@@ -650,6 +755,10 @@ class ReportQcApp(tk.Tk):
         self.txt.tag_configure("hl_high", background=s["hl_high"], foreground="#7A1F1F")
         self.txt.tag_configure("hl_med", background=s["hl_med"], foreground="#6E4A06")
         self.txt.tag_configure("hl_low", background=s["hl_low"], foreground="#143C61")
+        # 手动粘贴报告后自动识别元信息并回填（与『复制即质控』监听、导入行为一致）
+        self.txt.bind("<<Paste>>",
+                      lambda e: self.after(60, lambda: self._auto_fill_meta(
+                          self.txt.get("1.0", "end"))))
 
         # 按钮栏（主操作，单行）
         bar = ttk.Frame(left)
@@ -958,19 +1067,23 @@ class ReportQcApp(tk.Tk):
         """自动抽取元信息并回填输入框（仅填空字段，不覆盖手动输入）。返回回填的字段列表。"""
         meta = engine.extract_meta(text)
         filled = []
-        for k in ("gender", "age", "modality", "applied_site", "laterality"):
+        for k in ("patient", "gender", "age", "modality", "applied_site", "laterality"):
             v = (meta.get(k) or "").strip()
             if v and not self.vars[k].get().strip():
                 self.vars[k].set(v)
                 filled.append(k)
         return filled
 
+    _META_CN = {"patient": "患者", "gender": "性别", "age": "年龄",
+                "modality": "检查部位", "applied_site": "申请部位", "laterality": "侧别"}
+
     def _auto_meta_btn(self):
         """手动触发：对当前报告文本自动识别并回填元信息。"""
         text = self.txt.get("1.0", "end")
         filled = self._auto_fill_meta(text)
         if filled:
-            messagebox.showinfo("自动识别", f"已自动识别并回填：{', '.join(filled)}")
+            names = ", ".join(self._META_CN.get(k, k) for k in filled)
+            messagebox.showinfo("自动识别", f"已自动识别并回填：{names}")
         else:
             messagebox.showinfo("自动识别", "未发现可自动识别的元信息，或字段均已填写。")
 
@@ -989,6 +1102,8 @@ class ReportQcApp(tk.Tk):
                 with open(p, encoding="utf-8") as fh:
                     self.txt.delete("1.0", "end")
                     self.txt.insert("1.0", fh.read())
+                # 导入后立即自动识别元信息（姓名/性别/检查部位等）并回填
+                self._auto_fill_meta(self.txt.get("1.0", "end"))
             except Exception as e:
                 show_error(f"读取失败：{e}")
 

@@ -23,6 +23,8 @@ dist/
 build/*.exe
 build/*.dmg
 build/*.app
+# 发卡工具本地打包产物（体积大，非源码），排除
+build/星衍发卡工具/
 # 保留打包脚本本身
 !build/*.spec
 !build/*.bat
@@ -37,5 +39,7 @@ Thumbs.db
 keys/private_key.pem
 # 运行时授权状态（含本机免责声明接受标记/激活状态），由软件生成，不入库
 assets/license.dat
+# 整个 keys/ 目录不入库：私钥仅本地发卡用、公钥已内嵌客户端（license_utils.py）
+keys/
 # 构建信息（供软件内检查更新比对），仅 CI 打包时写入，本地不入库避免陈旧值
 assets/build_info.json

@@ -61,13 +61,36 @@ ANATOMY_SYNONYMS = {
 
 # 部位归一化（用于登记部位不符：申请部位词 → 规范部位族）
 SITE_NORM = {
+    # 头颈
     "头颅": "head", "颅脑": "head", "头部": "head", "脑": "head", "脑实质": "head",
-    "胸部": "chest", "双肺": "chest", "心肺": "chest",
-    "腹部": "abdomen", "全腹": "abdomen",
-    "盆腔": "pelvis", "骨盆": "pelvis",
-    "腰椎": "lumbar", "脊柱": "spine",
+    "颅内": "head", "眼眶": "head", "鼻咽": "head", "鼻窦": "head", "腮腺": "head",
+    # 脊柱（颈/胸/腰/骶）
+    "颈椎": "cspine", "胸椎": "tspine", "骶椎": "sacrum",
+    "椎间盘": "spine", "脊柱": "spine", "腰椎": "lumbar",
+    # 胸部
+    "胸部": "chest", "双肺": "chest", "心肺": "chest", "肺": "chest", "纵隔": "chest",
+    "心脏": "chest", "冠脉": "chest", "冠状动脉": "chest",
+    # 腹部
+    "腹部": "abdomen", "全腹": "abdomen", "上腹": "abdomen", "下腹": "abdomen",
+    "肝胆": "abdomen", "胰": "abdomen", "脾": "abdomen", "肾上腺": "abdomen",
+    "肾": "abdomen", "双肾": "abdomen", "腹膜": "abdomen", "胃肠": "abdomen",
+    # 盆腔
+    "盆腔": "pelvis", "骨盆": "pelvis", "前列腺": "pelvis", "子宫": "pelvis",
+    "附件": "pelvis", "膀胱": "pelvis",
+    # 四肢关节
+    "左肩": "shoulder", "右肩": "shoulder", "肩关节": "shoulder",
+    "左肘": "elbow", "右肘": "elbow", "左腕": "wrist", "右腕": "wrist",
     "左髋": "hip", "右髋": "hip", "髋关节": "hip", "股骨头": "hip",
     "左膝": "knee", "右膝": "knee", "膝关节": "knee",
+    "左踝": "ankle", "右踝": "ankle", "四肢": "limb", "上肢": "limb", "下肢": "limb",
+}
+
+# 英文规范值 → 中文标准部位族名（回填界面用，统一显示 胸部/腹部/盆腔 等）
+SITE_CANON = {
+    "head": "头颅", "cspine": "颈椎", "tspine": "胸椎", "sacrum": "骶椎",
+    "spine": "脊柱", "lumbar": "腰椎", "chest": "胸部", "abdomen": "腹部",
+    "pelvis": "盆腔", "shoulder": "肩关节", "elbow": "肘关节", "wrist": "腕关节",
+    "hip": "髋关节", "knee": "膝关节", "ankle": "踝关节", "limb": "四肢",
 }
 
 VALID_UNITS = {"cm", "mm", "HU", "mm/s", "ml", "°", "mmhg"}
@@ -624,24 +647,66 @@ def _extract_modality(text: str) -> str:
     return ""
 
 
+def _site_from_text(s: str) -> str:
+    """在给定文本中按 特异性→通用 顺序匹配部位，返回中文标准部位族名。"""
+    if not s:
+        return ""
+    for k in sorted(SITE_NORM, key=len, reverse=True):
+        if k in s:
+            return SITE_CANON.get(SITE_NORM[k], SITE_NORM[k])
+    return ""
+
+
+_RISKY_SINGLE = {"脑"}  # 全文降级扫描时排除的高误判单字键
+
+
+def _site_from_fulltext(s: str) -> str:
+    """全文降级匹配：行为同 _site_from_text，但排除高误判单字（如 '脑'）。"""
+    if not s:
+        return ""
+    for k in sorted(SITE_NORM, key=len, reverse=True):
+        if k in s and k not in _RISKY_SINGLE:
+            return SITE_CANON.get(SITE_NORM[k], SITE_NORM[k])
+    return ""
+
+
+def _meta_header_region(text: str) -> str:
+    """取报告开头到『影像/检查所见』之前的区域（登记/申请部位通常在开头）。"""
+    m = re.search(r"(影像所见|检查所见|所见|影像表现|检查表现|超声所见|描述|表现|影像描述|检查描述)", text)
+    if m:
+        return text[:m.start()]
+    return text[:400]
+
+
 def _extract_site(text: str) -> str:
-    """抽取登记/申请部位，归一化到 SITE_NORM 的中文 key（如『胸部』『盆腔』）。"""
+    """抽取登记/申请部位，归一化到 SITE_NORM 的中文 key（如『胸部』『盆腔』）。
+
+    优先级：显式标签字段（申请部位/检查部位…）> 仅扫描元信息头部
+    （避免正文偶发提及如『未见脑转移』误判为头颅）。
+    """
     if not text:
         return ""
-    # 显式字段优先：申请部位 / 检查部位 / 检查名称 / 部位
-    for label in ("申请部位", "检查部位", "检查名称", "部位"):
-        m = re.search(label + r"[:：]?\s*([^\s，,。；;：]+)", text)
+    # 1) 显式字段优先（标签后的内容最可靠）
+    for label in ("申请部位", "检查部位", "检查名称", "检查项目", "扫描部位", "检查范围", "部位"):
+        m = re.search(label + r"[:：]?\s*([^\n，,。；;：]+)", text)
         if m:
-            kw = m.group(1)
-            for k in SITE_NORM:
-                if k in kw:
-                    return k
-            return kw
-    # 否则从正文部位词推断
-    for k in SITE_NORM:
-        if k in text:
-            return k
-    return ""
+            val = m.group(1).strip()
+            # 去掉拖尾的成像/扫描方式词，保留部位主体
+            core = re.split(r"(?:CT|MR|MRI|PET|DR|CR|平扫|增强|三维|重建|摄片|扫描|超声|造影|图像|检查|及|和)", val)[0]
+            core = core.strip(" 、,，")
+            site = _site_from_text(core)
+            if site:
+                return site
+            # 退一步：整值再匹配一次（兼容 胸腹部 这类复合写法，长词优先）
+            site = _site_from_text(val)
+            if site:
+                return site
+    # 2) 无显式字段：先扫元信息头部区域，避免正文偶发提及误判
+    hdr = _site_from_text(_meta_header_region(text))
+    if hdr:
+        return hdr
+    # 3) 降级：全文扫描（排除高误判单字，如 '脑' 在 '未见脑转移' 中的偶发提及）
+    return _site_from_fulltext(text)
 
 
 def _extract_laterality(text: str) -> str:
@@ -661,13 +726,40 @@ def _extract_laterality(text: str) -> str:
     return ""
 
 
+def _extract_patient(text: str) -> str:
+    """抽取患者姓名（中文）。仅在有显式标签时返回，避免误填。
+
+    优先匹配强标签：姓名 / 患者姓名 / 病人姓名 / 受检者姓名 / 就诊人姓名 /
+    病员姓名；其次匹配『患者/病人/受检者/就诊人/病员』后紧跟的姓名（排除
+    『患者诉』『患者因』等语病及性别值 男/女）。无法识别返回空串。
+    """
+    if not text:
+        return ""
+    _strong = ("姓名", "患者姓名", "病人姓名", "受检者姓名",
+               "就诊人姓名", "病员姓名")
+    for lab in _strong:
+        m = re.search(re.escape(lab) + r"[:：\s]*([\u4e00-\u9fa5]{1,4})", text)
+        if m:
+            return m.group(1)
+    _weak = ("患者", "病人", "受检者", "就诊人", "病员")
+    _verb = ("诉", "因", "于", "为", "示", "查", "主", "既", "现",
+             "无", "有", "自", "近", "术", "见", "拟")
+    for lab in _weak:
+        m = re.search(re.escape(lab) + r"[:：\s]+([\u4e00-\u9fa5]{1,4})", text)
+        if m and m.group(1) not in ("男", "女", "不详", "未知") \
+                and m.group(1)[0] not in _verb:
+            return m.group(1)
+    return ""
+
+
 def extract_meta(text: str) -> dict:
     """从报告正文抽取元信息，用于剪贴板/导入场景自动回填输入框。
 
-    返回 {gender, age, modality, applied_site, laterality}（均为中文字符串）。
-    抽取结果仅作提示，允许人工校正。
+    返回 {patient, gender, age, modality, applied_site, laterality}
+    （均为中文字符串，姓名可能为空）。抽取结果仅作提示，允许人工校正。
     """
     return {
+        "patient": _extract_patient(text),
         "gender": _extract_gender_cn(text),
         "age": _extract_age(text),
         "modality": _extract_modality(text),

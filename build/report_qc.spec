@@ -26,7 +26,7 @@ a = Analysis(
     hiddenimports=["tkinter", "tkinter.ttk", "tkinter.filedialog",
                    "tkinter.messagebox", "tkinter.scrolledtext", "sqlite3",
                    "engine", "samplelib", "ris", "license_utils",
-                   "version", "log_utils", "update_check", "webbrowser",
+                   "version", "log_utils", "update_check", "auto_updater", "webbrowser",
                    "logging.handlers", "cryptography"],
     hookspath=[],
     runtime_hooks=[],

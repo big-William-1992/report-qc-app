@@ -19,6 +19,9 @@ import version
 _REPO = "big-William-1992/report-qc-app"
 RELEASE_API = f"https://api.github.com/repos/{_REPO}/releases/latest"
 RELEASE_PAGE = f"https://github.com/{_REPO}/releases/latest"
+# 源码分发（BUILD_TIME 为空）时，退回比对云端 tarball 内 src/version.py 的 APP_VERSION
+# 用 api.github.com 的 tarball 接口（raw.githubusercontent 在部分网络不可达）
+_TARBALL_URL = f"https://api.github.com/repos/{_REPO}/tarball/latest"
 
 
 def _parse_iso(s):
@@ -35,6 +38,47 @@ def _fetch_latest(timeout=8):
                  "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
+
+
+def _fetch_cloud_version(timeout=8):
+    """从云端 tarball 内 src/version.py 解析 APP_VERSION（源码分发回退比对用）。
+
+    用 api.github.com 的 tarball 接口而非 raw.githubusercontent，
+    后者在部分网络/代理下不可达（实测 502）。tarball 仅数十 KB，内存解析即可。
+    """
+    import re
+    import io
+    import tarfile
+    req = urllib.request.Request(
+        _TARBALL_URL,
+        headers={"User-Agent": "xingyan-qc-update",
+                 "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = r.read()
+    tf = tarfile.open(fileobj=io.BytesIO(data))
+    for m in tf.getmembers():
+        if m.name.endswith("src/version.py"):
+            f = tf.extractfile(m)
+            text = f.read().decode("utf-8", "ignore") if f else ""
+            mm = re.search(r'APP_VERSION\s*=\s*["\']([0-9]+(?:\.[0-9]+)*)["\']', text)
+            return mm.group(1) if mm else None
+    return None
+
+
+def _ver_tuple(v):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except Exception:
+        return (0,)
+
+
+def _ver_gt(a, b):
+    """a > b（按点分版本号）。"""
+    ta, tb = _ver_tuple(a), _ver_tuple(b)
+    n = max(len(ta), len(tb))
+    ta = ta + (0,) * (n - len(ta))
+    tb = tb + (0,) * (n - len(tb))
+    return ta > tb
 
 
 def check_update_sync(timeout=8):
@@ -56,9 +100,23 @@ def check_update_sync(timeout=8):
     local_bt = (getattr(version, "BUILD_TIME", "") or "").strip()
 
     if not local_bt:
-        result["status"] = "unknown"
-        result["message"] = (f"当前为开发/源码版本（v{version.APP_VERSION}）。\n"
-                             f"云端最新发布于：{published or '未知'}")
+        # 源码分发：BUILD_TIME 为空，退回比对云端 APP_VERSION
+        try:
+            cloud_ver = _fetch_cloud_version(timeout=timeout)
+        except Exception:
+            cloud_ver = None
+        if cloud_ver and _ver_gt(cloud_ver, version.APP_VERSION):
+            result["status"] = "update"
+            result["message"] = (f"发现新版本 v{cloud_ver}！\n"
+                                 f"你当前：v{version.APP_VERSION}\n\n"
+                                 f"建议下载并更新。")
+        elif cloud_ver:
+            result["status"] = "latest"
+            result["message"] = (f"已是最新版本（v{version.APP_VERSION}）。")
+        else:
+            result["status"] = "unknown"
+            result["message"] = (f"当前为开发/源码版本（v{version.APP_VERSION}）。\n"
+                                 f"云端最新发布于：{published or '未知'}")
         return result
 
     pub_dt = _parse_iso(published)
