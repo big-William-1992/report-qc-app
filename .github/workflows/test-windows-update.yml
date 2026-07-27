@@ -1,0 +1,27 @@
+name: Test Windows Auto-Update
+
+# 在「Build Windows」成功产出最新便携 zip 后，于真实 Windows runner 上
+# 用仓库内真实的 Windows 安装器（PowerShell）跑完整自动更新流程并断言。
+on:
+  workflow_run:
+    workflows: ["Build Windows (exe + installer)"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-win-update:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run Windows auto-update end-to-end test
+        run: python tests/test_windows_update.py
+        shell: bash

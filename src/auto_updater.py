@@ -1,17 +1,27 @@
 """
-auto_updater.py — 自动下载并更新（macOS 源码分发模型，纯标准库零依赖）
+auto_updater.py — 自动下载并更新（零依赖，纯标准库）
 
-策略：
-  1) 下载 GitHub 源码 tarball（含最新发布源码）到本地缓存。
-  2) 主程序退出后，由一个**独立进程**的安装脚本替换应用目录里的
-     src/ assets/ 等文件（删除旧文件再写入新文件）。
-  3) 保留用户私有数据：assets/license.dat（激活码）、logs/（日志与诊断包）。
-  4) 清除 macOS 隔离属性（com.apple.quarantine），避免无签名源码被拦截。
-  5) 通过「启动星衍质控软件.command」重新启动。
+分发模型与策略：
+  macOS：源码 + .command 启动脚本。
+    1) 下载 GitHub 源码 tarball（含最新发布源码）到本地缓存。
+    2) 主程序退出后，由**独立进程**的安装脚本替换应用目录里的
+       src/ assets/ 等文件（删除旧文件再写入新文件）。
+    3) 保留用户私有数据：assets/license.dat（激活码）、logs/（日志）。
+    4) 清除 macOS 隔离属性，避免无签名源码被拦截。
+    5) 通过「启动星衍质控软件.command」重新启动。
 
-为什么这样设计：当前分发是“源码 + .command 启动脚本”，不是打包 .app，
-因此完全绕开 Gatekeeper 对 .app 的代码签名/公证要求，自动更新在 Mac 上
-也能无阻碍运行。Windows 分支预留（下载 ReportQcSetup.exe 并运行安装包）。
+  Windows：PyInstaller 打包的便携 exe（报告质控软件.exe + _internal/）。
+    1) 下载 Releases 里的 report-qc-portable.zip 到本地缓存。
+    2) 主程序退出后，由**独立的 PowerShell 安装器**解包并替换
+       exe 与 _internal/（删除不在新包里的旧文件，清理残留）。
+    3) 保留用户私有数据：assets/license.dat、logs/。
+    4) 通过 报告质控软件.exe 重新启动。
+    之所以用独立 PowerShell 进程（而非让 exe 自己替换自己），是为了避免
+    Windows 文件锁：主 exe 退出后安装器才能安全覆盖 exe 本体。
+
+为什么这样设计：macOS 分发绕开 Gatekeeper 对 .app 的签名/公证要求；
+Windows 便携版无需安装即可替换，安装版（ReportQcSetup.exe）作为人工
+兜底入口保留。两套逻辑均通过 AU_NO_LAUNCH=1 跳过重启，便于自动化测试。
 """
 import os
 import sys
@@ -23,18 +33,49 @@ import urllib.request
 
 APP_NAME = "星衍放射质控软件"
 
-# GitHub 源码 tarball（任何 tag 都可用，无需额外 CI 产物）
+IS_WINDOWS = sys.platform.startswith("win")
+
+# macOS：源码 tarball（任何 tag 都可用，无需额外 CI 产物）
 TARBALL_URL = "https://api.github.com/repos/big-William-1992/report-qc-app/tarball/latest"
+# Windows：Releases 里的便携 zip（解压即得 报告质控软件.exe + _internal/）
+PORTABLE_ZIP_URL = ("https://github.com/big-William-1992/report-qc-app/"
+                    "releases/download/latest/report-qc-portable.zip")
 RELEASE_PAGE = "https://github.com/big-William-1992/report-qc-app/releases/latest"
 
 # 应用目录中永不触碰的项（用户私有 / 运行时 / 密钥）
-_EXCLUDE = {".git", ".workbuddy", "keys", "update"}
+# macOS 安装器会删 assets 后再用 tarball 的 assets 覆盖（tarball 含此目录）；
+# Windows 安装器保留 assets（zip 不含 assets，里面是用户激活码/配置）。
+_MAC_EXCLUDE = {".git", ".workbuddy", "keys", "update"}
+_WIN_EXCLUDE = {".git", ".workbuddy", "keys", "update", "assets", "logs"}
 
-# 需要备份并恢复的显式用户数据（相对应用根目录）
+# macOS 需备份并恢复的用户数据（相对应用根目录）
 _PRESERVE_FILES = [os.path.join("assets", "license.dat")]
 _PRESERVE_DIRS = ["logs"]
 
-# 独立安装脚本源码（仅用标准库，由主程序退出后运行，不依赖本模块导入）
+
+def app_dir():
+    """应用根目录。
+
+    - 冻结（PyInstaller）时：exe 所在目录（报告质控软件.exe + _internal/）。
+    - 源码运行时：src/auto_updater.py 的上两级。
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def update_cache_dir():
+    d = os.path.join(app_dir(), "update")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def default_archive_name():
+    """下载产物的缓存文件名（平台相关）。"""
+    return "latest.zip" if IS_WINDOWS else "latest.tar.gz"
+
+
+# ---- macOS 安装器（独立 Python 进程）---------------------------------------
 _INSTALLER_SRC = r'''import os, sys, shutil, tarfile, subprocess, time, json
 
 APP_DIR = sys.argv[1]
@@ -46,7 +87,7 @@ TMP = os.path.join(APP_DIR, "update", "_extract")
 shutil.rmtree(TMP, ignore_errors=True)
 os.makedirs(TMP, exist_ok=True)
 with tarfile.open(TAR) as tf:
-    tf.extractall(TMP)
+    tf.extractall(TMP, filter="data")
 roots = [d for d in os.listdir(TMP) if os.path.isdir(os.path.join(TMP, d))]
 SRC = os.path.join(TMP, roots[0]) if roots else TMP
 
@@ -134,22 +175,100 @@ except Exception:
 '''
 
 
-def app_dir():
-    """应用根目录：src/auto_updater.py 的上两级。"""
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# ---- Windows 安装器（独立 PowerShell 进程）--------------------------------
+_INSTALLER_PS_WIN = r'''
+param(
+    [string]$AppDir,
+    [string]$Zip,
+    [string]$PublishedAt = ""
+)
+
+Start-Sleep -Seconds 3
+
+$TMP = Join-Path $AppDir "update" "_extract"
+$BAK = Join-Path $AppDir "update" "_bak"
+if (Test-Path $TMP) { Remove-Item $TMP -Recurse -Force }
+if (Test-Path $BAK) { Remove-Item $BAK -Recurse -Force }
+New-Item -ItemType Directory -Path $TMP -Force | Out-Null
+New-Item -ItemType Directory -Path $BAK -Force | Out-Null
+
+# 解包便携 zip（顶层为 报告质控软件.exe + _internal/）
+Expand-Archive -Path $Zip -DestinationPath $TMP -Force
+
+# 永不删除的项（用户私有 / 运行时 / 密钥 / 用户数据）
+$EXCLUDE = @(".git", ".workbuddy", "keys", "update", "assets", "logs")
+
+# 备份用户私有数据：激活码 + 日志
+$lic = Join-Path $AppDir "assets" "license.dat"
+if (Test-Path $lic) { Copy-Item $lic (Join-Path $BAK "license.dat") -Force }
+$logsSrc = Join-Path $AppDir "logs"
+if (Test-Path $logsSrc) { Copy-Item $logsSrc (Join-Path $BAK "logs") -Recurse -Force }
+
+# 新包顶层条目
+$newItems = Get-ChildItem $TMP | Select-Object -ExpandProperty Name
+
+# 删除旧版中：不在排除集、且不在新包顶层中的项（清理残留旧 _internal / 旧 dll 等）
+foreach ($item in Get-ChildItem $AppDir) {
+    if ($EXCLUDE -contains $item.Name) { continue }
+    if ($newItems -contains $item.Name) { continue }
+    Remove-Item $item.FullName -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# 写入新文件（覆盖 exe 与 _internal）
+foreach ($item in Get-ChildItem $TMP) {
+    $dest = Join-Path $AppDir $item.Name
+    if ($item.PSIsContainer) {
+        if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+        Copy-Item $item.FullName $dest -Recurse -Force
+    } else {
+        Copy-Item $item.FullName $dest -Force
+    }
+}
+
+# 恢复用户私有数据
+$licBak = Join-Path $BAK "license.dat"
+if (Test-Path $licBak) {
+    New-Item -ItemType Directory -Path (Join-Path $AppDir "assets") -Force | Out-Null
+    Copy-Item $licBak (Join-Path $AppDir "assets" "license.dat") -Force
+}
+$logsBak = Join-Path $BAK "logs"
+if (Test-Path $logsBak) {
+    $logsDest = Join-Path $AppDir "logs"
+    if (Test-Path $logsDest) { Remove-Item $logsDest -Recurse -Force }
+    Copy-Item $logsBak $logsDest -Recurse -Force
+}
+
+# 记录 build_info，形成版本比对闭环
+if ($PublishedAt -ne "") {
+    New-Item -ItemType Directory -Path (Join-Path $AppDir "assets") -Force | Out-Null
+    @{ build_time = $PublishedAt; commit = "from-release" } | ConvertTo-Json | `
+        Set-Content (Join-Path $AppDir "assets" "build_info.json") -Encoding UTF8
+}
+
+# 重新启动（AU_NO_LAUNCH=1 时跳过，仅验证文件替换）
+if ($env:AU_NO_LAUNCH -ne "1") {
+    $exe = Join-Path $AppDir "报告质控软件.exe"
+    if (Test-Path $exe) { Start-Process -FilePath $exe }
+}
+
+# 清理
+if (Test-Path $TMP) { Remove-Item $TMP -Recurse -Force }
+if (Test-Path $BAK) { Remove-Item $BAK -Recurse -Force }
+if (Test-Path $Zip) { Remove-Item $Zip -Force }
+'''
 
 
-def update_cache_dir():
-    base = os.path.expanduser("~/Library/Application Support/" + APP_NAME)
-    d = os.path.join(base, "update")
-    os.makedirs(d, exist_ok=True)
-    return d
+def _download_url():
+    return PORTABLE_ZIP_URL if IS_WINDOWS else TARBALL_URL
 
 
 def download(dest, progress_cb=None, timeout=180):
-    """流式下载 tarball 到 dest。progress_cb(done, total) 回调（done/total 单位字节）。"""
+    """流式下载更新包到 dest。progress_cb(done, total) 回调（单位字节）。
+
+    平台自动选择：macOS 下载源码 tarball，Windows 下载便携 zip。
+    """
     req = urllib.request.Request(
-        TARBALL_URL,
+        _download_url(),
         headers={"User-Agent": "xingyan-qc-update",
                  "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -167,21 +286,36 @@ def download(dest, progress_cb=None, timeout=180):
     return dest
 
 
-def make_installer(app_dir_path, tar_path):
-    """写出独立安装脚本，返回脚本路径。"""
-    path = os.path.join(update_cache_dir(), "update_install.py")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(_INSTALLER_SRC)
+def make_installer(app_dir_path, archive_path):
+    """写出独立安装脚本，返回脚本路径（平台相关）。"""
+    if IS_WINDOWS:
+        path = os.path.join(update_cache_dir(), "win_update.ps1")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(_INSTALLER_PS_WIN)
+    else:
+        path = os.path.join(update_cache_dir(), "update_install.py")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(_INSTALLER_SRC)
     return path
 
 
-def install_and_relaunch(tar_path, published_at=None):
-    """启动独立安装进程（detached）。调用方随后应退出主程序。"""
+def install_and_relaunch(archive_path, published_at=None):
+    """启动独立安装进程（detached）。调用方随后应退出主程序。
+
+    - macOS：用系统 Python 运行 update_install.py。
+    - Windows：用 PowerShell 运行 win_update.ps1（独立于 exe，避免文件锁）。
+    """
     appdir = app_dir()
-    script = make_installer(appdir, tar_path)
-    args = [sys.executable, script, appdir, tar_path]
-    if published_at:
-        args.append(published_at)
+    script = make_installer(appdir, archive_path)
+    if IS_WINDOWS:
+        args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", script, appdir, archive_path]
+        if published_at:
+            args.append(published_at)
+    else:
+        args = [sys.executable, script, appdir, archive_path]
+        if published_at:
+            args.append(published_at)
     subprocess.Popen(
         args,
         start_new_session=True,

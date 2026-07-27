@@ -435,7 +435,8 @@ class ReportQcApp(tk.Tk):
                               fg=THEME["text"], font=F(FAMILY, 10))
         status_lbl.pack(pady=(2, 8))
 
-        dest = os.path.join(auto_updater.update_cache_dir(), "latest.tar.gz")
+        dest = os.path.join(auto_updater.update_cache_dir(),
+                             auto_updater.default_archive_name())
 
         def on_progress(done, total):
             frac = (done / total) if total else 0.0

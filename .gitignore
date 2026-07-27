@@ -43,3 +43,5 @@ assets/license.dat
 keys/
 # 构建信息（供软件内检查更新比对），仅 CI 打包时写入，本地不入库避免陈旧值
 assets/build_info.json
+# 自动更新运行时缓存（下载的 tarball/zip、独立安装器、解包临时目录）
+update/
