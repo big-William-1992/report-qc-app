@@ -187,22 +187,42 @@ Start-Sleep -Seconds 3
 
 $TMP = Join-Path $AppDir "update" "_extract"
 $BAK = Join-Path $AppDir "update" "_bak"
+$DBG = Join-Path $AppDir "update" "installer_debug.log"
+function Log($m) { "$m" | Add-Content -Encoding UTF8 $DBG }
+
+New-Item -ItemType Directory -Path (Join-Path $AppDir "update") -Force | Out-Null
+"START $(Get-Date) AppDir=$AppDir Zip=$Zip" | Set-Content -Encoding UTF8 $DBG
+
 if (Test-Path $TMP) { Remove-Item $TMP -Recurse -Force }
 if (Test-Path $BAK) { Remove-Item $BAK -Recurse -Force }
 New-Item -ItemType Directory -Path $TMP -Force | Out-Null
 New-Item -ItemType Directory -Path $BAK -Force | Out-Null
 
 # 解包便携 zip（顶层为 报告质控软件.exe + _internal/）
-Expand-Archive -Path $Zip -DestinationPath $TMP -Force
+try {
+    Expand-Archive -Path $Zip -DestinationPath $TMP -Force -ErrorAction Stop
+    $extracted = @(Get-ChildItem $TMP)
+    Log "EXPAND OK items=$($extracted.Count) names=$($extracted.Name -join ',')"
+} catch {
+    Log "EXPAND FAIL ($_); 回退 tar.exe"
+    try {
+        & tar.exe -xf $Zip -C $TMP 2>&1 | Out-Null
+        $extracted = @(Get-ChildItem $TMP)
+        Log "TAR OK items=$($extracted.Count) names=$($extracted.Name -join ',')"
+    } catch {
+        Log "TAR FAIL: $_"
+        exit 1
+    }
+}
 
 # 永不删除的项（用户私有 / 运行时 / 密钥 / 用户数据）
 $EXCLUDE = @(".git", ".workbuddy", "keys", "update", "assets", "logs")
 
 # 备份用户私有数据：激活码 + 日志
 $lic = Join-Path $AppDir "assets" "license.dat"
-if (Test-Path $lic) { Copy-Item $lic (Join-Path $BAK "license.dat") -Force }
+if (Test-Path $lic) { Copy-Item $lic (Join-Path $BAK "license.dat") -Force; Log "BACKUP lic OK" }
 $logsSrc = Join-Path $AppDir "logs"
-if (Test-Path $logsSrc) { Copy-Item $logsSrc (Join-Path $BAK "logs") -Recurse -Force }
+if (Test-Path $logsSrc) { Copy-Item $logsSrc (Join-Path $BAK "logs") -Recurse -Force; Log "BACKUP logs OK" }
 
 # 新包顶层条目
 $newItems = Get-ChildItem $TMP | Select-Object -ExpandProperty Name
@@ -212,16 +232,22 @@ foreach ($item in Get-ChildItem $AppDir) {
     if ($EXCLUDE -contains $item.Name) { continue }
     if ($newItems -contains $item.Name) { continue }
     Remove-Item $item.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    Log "DEL $($item.Name)"
 }
 
 # 写入新文件（覆盖 exe 与 _internal）
 foreach ($item in Get-ChildItem $TMP) {
     $dest = Join-Path $AppDir $item.Name
-    if ($item.PSIsContainer) {
-        if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
-        Copy-Item $item.FullName $dest -Recurse -Force
-    } else {
-        Copy-Item $item.FullName $dest -Force
+    try {
+        if ($item.PSIsContainer) {
+            if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+            Copy-Item $item.FullName $dest -Recurse -Force -ErrorAction Stop
+        } else {
+            Copy-Item $item.FullName $dest -Force -ErrorAction Stop
+        }
+        Log "COPY $($item.Name) OK"
+    } catch {
+        Log "COPY $($item.Name) FAIL: $_"
     }
 }
 
@@ -230,12 +256,14 @@ $licBak = Join-Path $BAK "license.dat"
 if (Test-Path $licBak) {
     New-Item -ItemType Directory -Path (Join-Path $AppDir "assets") -Force | Out-Null
     Copy-Item $licBak (Join-Path $AppDir "assets" "license.dat") -Force
+    Log "RESTORE lic OK"
 }
 $logsBak = Join-Path $BAK "logs"
 if (Test-Path $logsBak) {
     $logsDest = Join-Path $AppDir "logs"
     if (Test-Path $logsDest) { Remove-Item $logsDest -Recurse -Force }
     Copy-Item $logsBak $logsDest -Recurse -Force
+    Log "RESTORE logs OK"
 }
 
 # 记录 build_info，形成版本比对闭环
@@ -243,6 +271,7 @@ if ($PublishedAt -ne "") {
     New-Item -ItemType Directory -Path (Join-Path $AppDir "assets") -Force | Out-Null
     @{ build_time = $PublishedAt; commit = "from-release" } | ConvertTo-Json | `
         Set-Content (Join-Path $AppDir "assets" "build_info.json") -Encoding UTF8
+    Log "BUILD_INFO written"
 }
 
 # 重新启动（AU_NO_LAUNCH=1 时跳过，仅验证文件替换）
@@ -255,6 +284,7 @@ if ($env:AU_NO_LAUNCH -ne "1") {
 if (Test-Path $TMP) { Remove-Item $TMP -Recurse -Force }
 if (Test-Path $BAK) { Remove-Item $BAK -Recurse -Force }
 if (Test-Path $Zip) { Remove-Item $Zip -Force }
+Log "DONE"
 '''
 
 

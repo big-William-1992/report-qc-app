@@ -63,11 +63,18 @@ def main():
     script = au.make_installer(SUD, ZIP)
     print("[3] 运行安装器:", script)
     env = dict(os.environ, AU_NO_LAUNCH="1")
-    rc = subprocess.run(
+    proc = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
          "-File", script, SUD, ZIP, PUB],
-        env=env, capture_output=True, text=True, timeout=300).returncode
-    print("    installer rc:", rc)
+        env=env, capture_output=True, text=True, timeout=300)
+    print("    installer rc:", proc.returncode)
+    if proc.stdout.strip():
+        print("    installer stdout:\n" + proc.stdout)
+    if proc.stderr.strip():
+        print("    installer stderr:\n" + proc.stderr)
+    dbg = os.path.join(SUD, "update", "installer_debug.log")
+    if os.path.exists(dbg):
+        print("    installer_debug.log:\n" + open(dbg, encoding="utf-8", errors="replace").read())
     time.sleep(2)  # 等待清理
 
     # 4) 断言
