@@ -162,3 +162,5 @@ jobs:
       - name: Run Windows auto-update end-to-end test
         run: python tests/test_windows_update.py
         shell: bash
+        env:
+          PYTHONUTF8: "1"
