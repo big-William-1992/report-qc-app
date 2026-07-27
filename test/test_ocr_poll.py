@@ -41,6 +41,14 @@ class FakeApp:
         self._applied = []
         self._compared = []
         self._ocr_job = None
+        self._ocr_focus_paused = False
+        self._ocr_light_state = None   # 记录状态灯语义色（off/monitoring/ok/empty/alert/error）
+        self.ocr_dot = object()
+        self._ocr_dot_id = 1
+
+    def _ocr_status(self, state, text):
+        self._ocr_light_state = state
+        self.ocr_status.set(text)
 
     def _apply_ocr_meta(self, meta, key):
         self._applied.append((meta, key))
@@ -56,6 +64,8 @@ class FakeApp:
 def bind(fake):
     fake._poll_ocr = ReportQcApp._poll_ocr.__get__(fake)
     fake._do_ocr_once = ReportQcApp._do_ocr_once.__get__(fake)
+    fake._on_ocr_activate = ReportQcApp._on_ocr_activate.__get__(fake)
+    fake._on_ocr_deactivate = ReportQcApp._on_ocr_deactivate.__get__(fake)
     return fake
 
 
@@ -112,6 +122,43 @@ class PollScheduleTest(unittest.TestCase):
         self.f._ocr_last_force_ts = _time.time()
         self.f._poll_ocr(force=True)
         self.assertEqual(len(self.f._applied), 1, "force 应跑 OCR")
+
+    def test_focus_paused_skips_ocr(self):
+        # 本软件聚焦（用户正在操作）→ _on_ocr_activate 暂停并灯转灰；
+        # 之后轮询跳过截图，不跑 OCR，但维持调度
+        self._patch_sig((1, 2, 3), True)
+        self.f._on_ocr_activate()
+        self.f._poll_ocr(force=False)
+        self.assertEqual(len(self.f._applied), 0, "聚焦暂停时不应跑 OCR")
+        self.assertIsNotNone(self.f._ocr_job, "聚焦暂停时仍应维持调度")
+        self.assertEqual(self.f._ocr_light_state, "off", "聚焦暂停状态灯应为灰色 off")
+
+    def test_deactivate_resumes_ocr(self):
+        # 本软件失去前台（用户切去 PACS）→ _on_ocr_deactivate 恢复并立即 force 一次
+        self._patch_sig((1, 2, 3), True)
+        self.f._ocr_focus_paused = True
+        self.f._on_ocr_deactivate()
+        self.assertEqual(self.f._ocr_focus_paused, False, "失焦应解除暂停")
+        self.assertIn(self.f._ocr_light_state, ("monitoring", "ok"),
+                      "恢复监控灯应转青(monitoring)或识别成功转绿(ok)")
+        self.assertEqual(len(self.f._applied), 1, "恢复时应立即 force 跑一次 OCR")
+
+    def test_light_ok_when_recognized(self):
+        # 画面变化且识别出患者信息 → 状态灯转绿 ok
+        self._patch_sig((1, 2, 3), True)
+        self.f._ocr_last_force_ts = _time.time()
+        self.f._poll_ocr(force=False)
+        self.assertEqual(self.f._ocr_light_state, "ok", "识别成功状态灯应为绿色 ok")
+
+    def test_light_empty_when_no_patient(self):
+        # 识别到文字但解析不出患者字段（框错区域）→ 状态灯转黄 empty
+        self._patch_sig((1, 2, 3), True)
+        self.f._ocr_last_force_ts = _time.time()
+        with mock.patch.object(appmod.ocr_provider, "ocr_image",
+                                lambda img: "PACS 工作站 工具栏 放大"):
+            self.f._poll_ocr(force=False)
+        self.assertEqual(self.f._ocr_light_state, "empty", "无患者信息状态灯应为黄色 empty")
+        self.assertEqual(len(self.f._applied), 0, "空区域不应回填")
 
 
 if __name__ == "__main__":

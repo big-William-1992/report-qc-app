@@ -253,11 +253,16 @@ class ReportQcApp(tk.Tk):
         self._ocr_img_sig = None      # 上一帧截图指纹（变化检测，无变化不跑推理）
         self._ocr_confirmed_key = None  # 最近一次生效的识别 key（用于去重刷新，避免重复回填/告警）
         self._ocr_last_force_ts = 0.0   # 上次实际跑 OCR 的时间戳（兜底计时）
+        self._ocr_focus_paused = False  # 本软件聚焦时暂停屏幕 OCR（避免截到自己）
         self.ocr_var = tk.BooleanVar(value=self.ocr_watch)
         self.ocr_status = tk.StringVar(value="● 未开启屏幕监控")
+        self._ocr_status("off", "● 未开启屏幕监控")
+        # 本软件聚焦/失焦时暂停/恢复屏幕 OCR（避免截到自身窗口）
+        self.bind("<Activate>", self._on_ocr_activate)
+        self.bind("<Deactivate>", self._on_ocr_deactivate)
         if self.ocr_region:
             x, y, w, h = self.ocr_region
-            self.ocr_status.set(f"● 区域已设定 {w}×{h}（监控未开启）")
+            self._ocr_status("off", f"● 区域已设定 {w}×{h}（监控未开启）")
 
         self.style = apply_theme(self)
 
@@ -828,9 +833,15 @@ class ReportQcApp(tk.Tk):
         ttk.Separator(ocr_bar, orient="horizontal").pack(fill="x", pady=(0, 6))
         ttk.Button(ocr_bar, text="🎯 框选监控区域", width=14,
                    command=self._select_ocr_region).pack(side="left", padx=2)
-        self.ocr_chk = ttk.Checkbutton(ocr_bar, text="🔄 屏幕区域识别（每10秒）",
+        self.ocr_chk = ttk.Checkbutton(ocr_bar, text="🔄 屏幕区域识别",
                                         variable=self.ocr_var, command=self._toggle_ocr)
         self.ocr_chk.pack(side="left", padx=2)
+        # OCR 监控状态灯（颜色含义见 _ocr_status：灰=暂停/未开 青=监控中
+        # 绿=识别正常 黄=区域无患者信息 红=异常/身份不符）
+        self.ocr_dot = tk.Canvas(ocr_bar, width=12, height=12, bd=0,
+                                  highlightthickness=0, bg=THEME["bg"])
+        self.ocr_dot.pack(side="left", padx=(2, 4))
+        self._ocr_dot_id = self.ocr_dot.create_oval(1, 1, 11, 11, fill="#9AA0A6", outline="")
         ttk.Label(ocr_bar, textvariable=self.ocr_status, foreground=s["text_dim"]).pack(side="left", padx=6)
 
         # 结果区
@@ -905,6 +916,41 @@ class ReportQcApp(tk.Tk):
         self.session_var.set(
             f"{'监听中' if watching else '未监听'} · 本次会话命中 {self.session_hits} 份{last}")
 
+    # -------------------- OCR 监控状态灯 + 聚焦暂停 --------------------
+    _OCR_DOT_COLORS = {
+        "off": "#9AA0A6",        # 未开启 / 已暂停（灰）
+        "monitoring": "#00E5FF", # 监控中，等待画面变化（青）
+        "ok": "#2ECC71",         # 识别正常并已回填（绿）
+        "empty": "#F1C40F",      # 区域识别不到患者信息，可能框错（黄）
+        "alert": "#E74C3C",      # 屏幕与剪贴板患者信息不符（红）
+        "error": "#E74C3C",      # OCR 异常 / 不可用（红）
+    }
+
+    def _ocr_status(self, state, text):
+        """统一设置 OCR 状态灯颜色 + 文字（状态灯是屏幕监控的可视化指示）。"""
+        color = self._OCR_DOT_COLORS.get(state, "#9AA0A6")
+        try:
+            self.ocr_dot.itemconfig(self._ocr_dot_id, fill=color)
+        except Exception:
+            pass
+        self.ocr_status.set(text)
+
+    def _on_ocr_activate(self, e=None):
+        """本软件成为前台窗口（用户在操作本软件）→ 暂停屏幕 OCR，避免截到自身。"""
+        if getattr(self, "ocr_watch", False) and getattr(self, "ocr_region", None):
+            self._ocr_focus_paused = True
+            self._ocr_status("off", "⏸ 本窗口聚焦中，已暂停屏幕识别")
+
+    def _on_ocr_deactivate(self, e=None):
+        """本软件失去前台（用户切到 PACS 等）→ 恢复屏幕 OCR 监控。"""
+        if getattr(self, "ocr_watch", False) and getattr(self, "ocr_region", None):
+            self._ocr_focus_paused = False
+            self._ocr_status("monitoring", "● 监控中（画面变化时识别）…")
+            try:
+                self._poll_ocr(force=True)
+            except Exception:
+                pass
+
     def _toggle_clip(self):
         self.clip_watch = self.clip_var.get()
         if self.clip_watch:
@@ -971,8 +1017,10 @@ class ReportQcApp(tk.Tk):
         sel.wait_visibility()
         canvas = tk.Canvas(sel, cursor="cross", bg="black", highlightthickness=0)
         canvas.pack(fill="both", expand=True)
-        hint = tk.Label(sel, text="拖拽框选要监控的屏幕区域（如 PACS 患者信息栏），松开确认；Esc 取消",
-                        bg="black", fg="white", font=(FAMILY, 14))
+        hint = tk.Label(sel, text="拖拽框选要监控的屏幕区域（如 PACS 患者信息栏），松开确认；Esc 取消\n"
+                                  "（多显示器：请在本窗口所在屏幕上完成框选）",
+                        bg="black", fg="white", font=(FAMILY, 14), justify="center",
+                        wraplength=720)
         hint.place(relx=0.5, rely=0.04, anchor="center")
         rect = [None]
         start = [0, 0]
@@ -999,7 +1047,7 @@ class ReportQcApp(tk.Tk):
                 return
             self.ocr_region = (x0, y0, w, h)
             self._save_ocr_config()
-            self.ocr_status.set(f"● 区域已设定 {w}×{h} @({x0},{y0})")
+            self._ocr_status("off", f"● 区域已设定 {w}×{h} @({x0},{y0})")
             if self.ocr_watch:
                 self._poll_ocr(force=True)
 
@@ -1023,7 +1071,7 @@ class ReportQcApp(tk.Tk):
                 self.ocr_var.set(False)
                 self.ocr_watch = False
                 return
-            self.ocr_status.set("● 监控中（每10秒识别一次）…")
+            self._ocr_status("monitoring", "● 监控中（画面变化时识别）…")
             self._poll_ocr(force=True)
         else:
             self.ocr_status.set("● 已停止屏幕监控")
@@ -1043,7 +1091,7 @@ class ReportQcApp(tk.Tk):
         try:
             text = ocr_provider.ocr_image(img)   # 内置预处理 + 置信度过滤（<0.55 丢弃）
         except Exception as e:
-            self.ocr_status.set(f"● OCR 异常：{e}")
+            self._ocr_status("error", f"● OCR 异常：{e}")
             return False
         if not text:
             return False
@@ -1052,7 +1100,10 @@ class ReportQcApp(tk.Tk):
                        for k in ("patient", "gender", "age",
                                  "modality", "applied_site", "laterality"))
         if not key.strip("|"):
-            return False   # 未解析出任何字段，忽略本帧
+            # 识别到文字但解析不出患者字段（如只框到工具栏/按钮文字）→
+            # 区域可能框错，黄色提示，帮助内测用户排查框选位置
+            self._ocr_status("empty", "● 区域未识别到患者信息（请确认框选了患者信息栏）")
+            return False
         if (not force) and key == self._ocr_confirmed_key:
             # 与已确认结果相同：仅刷新剪贴板交叉核对，不重复回填/告警
             self._compare_ocr_clipboard(meta)
@@ -1065,7 +1116,7 @@ class ReportQcApp(tk.Tk):
                 for k in ("patient", "gender", "age", "modality",
                           "applied_site", "laterality")
                 if (meta.get(k) or "").strip())
-            self.ocr_status.set(f"● 屏幕识别已更新：{names}")
+            self._ocr_status("ok", f"● 屏幕识别已更新：{names}")
             return True
         # 仅识别到部位/性别等、无姓名：更新内部 meta 供核对，不强制回填
         self.ocr_meta = meta
@@ -1087,9 +1138,12 @@ class ReportQcApp(tk.Tk):
         """
         try:
             if self.ocr_watch and self.ocr_region:
+                if self._ocr_focus_paused:
+                    # 本软件正被操作：跳过截图（避免截到自身窗口），仅维持调度
+                    return
                 ok, reason = ocr_provider.availability()
                 if not ok:
-                    self.ocr_status.set(f"● OCR 不可用：{reason}")
+                    self._ocr_status("error", f"● OCR 不可用：{reason}")
                     return
                 now = time.time()
                 img = ocr_provider.capture_region(self.ocr_region)
@@ -1111,7 +1165,7 @@ class ReportQcApp(tk.Tk):
                 if self.ocr_meta:
                     self._compare_ocr_clipboard(self.ocr_meta)
         except Exception as e:
-            self.ocr_status.set(f"● OCR 异常：{e}")
+            self._ocr_status("error", f"● OCR 异常：{e}")
         finally:
             if getattr(self, "ocr_watch", False):
                 self._ocr_job = self.after(
@@ -1137,7 +1191,7 @@ class ReportQcApp(tk.Tk):
         self._compare_ocr_clipboard(meta)
         if changed:
             names = ", ".join(self._META_CN.get(k, k) for k in changed)
-            self.ocr_status.set(f"● 屏幕识别已更新：{names}")
+            self._ocr_status("ok", f"● 屏幕识别已更新：{names}")
 
     def _compare_ocr_clipboard(self, ocr_meta):
         """屏幕侧元信息 vs 剪贴板（报告）元信息：姓名/性别/年龄/申请部位不一致即告警。
@@ -1161,7 +1215,7 @@ class ReportQcApp(tk.Tk):
             if sig != self._ocr_alert_sig and (now - self._ocr_alert_cooldown) > 8:
                 self._ocr_alert_sig = sig
                 self._ocr_alert_cooldown = now
-                self.ocr_status.set("● ⚠ 屏幕与剪贴板患者信息不符！")
+                self._ocr_status("alert", "● ⚠ 屏幕与剪贴板患者信息不符！")
                 messagebox.showwarning("⚠ 患者身份核对不符",
                     "屏幕区域识别出的患者信息与剪贴板（报告）不一致，请核对是否张冠李戴：\n\n"
                     + detail)
@@ -2001,6 +2055,19 @@ def main():
                                 getattr(version, "BUILD_TIME", "") or "dev")
 
     # ---------- 启动授权检查 ----------
+    # Windows 高 DPI：在创建任何 Tk 窗口前声明 DPI 感知（PROCESS_SYSTEM_DPI_AWARE），
+    # 使 Tk 逻辑坐标与 ImageGrab 物理坐标一致，避免在高缩放屏（如 150%）上
+    # OCR 框选区域错位（Tk 报逻辑像素、ImageGrab 截物理像素，两者不一致会偏/缩放）。
+    import sys as _sys
+    if _sys.platform.startswith("win"):
+        try:
+            import ctypes
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            except Exception:
+                ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
     app = ReportQcApp()
     # macOS 关键：必须先把主窗口显示出来，再弹 transient 子窗口（免责声明/激活）。
     # 若先 withdraw 主窗口，macOS 的 transient 子窗口会因父窗口隐藏而不渲染，
