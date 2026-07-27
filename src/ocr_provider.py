@@ -19,6 +19,16 @@ import sys
 
 _PIP_HINT = "请先安装 OCR 依赖：pip install rapidocr-onnxruntime Pillow"
 
+# 低于此置信度的识别行直接丢弃，避免噪声文本误触发回填/告警
+MIN_SCORE = 0.70
+
+# 变化检测（截图缩为 32×32 灰度指纹）：
+# - 单像素灰度差 > PIXEL_DIFF 才算「该像素变了」（容忍抗锯齿/噪点抖动）
+# - 变化像素占比 > CHANGE_TOLERANCE 才算「区域变了」
+# 注意不能用平均差：换姓名只影响少量像素，会被大面积不变背景稀释而漏检
+PIXEL_DIFF = 10
+CHANGE_TOLERANCE = 0.004   # 0.4%，32×32 下约 4 个像素
+
 
 def _assets_dir() -> str:
     if getattr(sys, "frozen", False):
@@ -94,8 +104,12 @@ def _grab_region(bbox) -> object:
     return ImageGrab.grab(bbox=(x, y, x + w, y + h))
 
 
-def ocr_image(img) -> str:
-    """对 PIL.Image 做 OCR，返回识别文本（按行拼接）。"""
+def ocr_image(img, min_score: float = MIN_SCORE) -> str:
+    """对 PIL.Image 做 OCR，返回识别文本（按行拼接）。
+
+    min_score：置信度阈值，低于该值的行被丢弃（防止模糊/噪声文本误触发
+    回填与身份告警）。传 0 可关闭过滤。
+    """
     eng = _get_engine()
     if eng is None:
         raise RuntimeError(_engine_err or _PIP_HINT)
@@ -115,13 +129,50 @@ def ocr_image(img) -> str:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
         payload = item[1]
+        txt, score = "", None
         if isinstance(payload, (list, tuple)):
             txt = payload[0] if payload else ""
+            if len(payload) > 1:
+                score = payload[1]
         else:
             txt = payload
+            if len(item) > 2:
+                score = item[2]
+        try:
+            score = float(score) if score is not None else None
+        except (TypeError, ValueError):
+            score = None
+        # 有分数且低于阈值 → 丢弃；无分数（老版本格式）→ 保留
+        if score is not None and score < min_score:
+            continue
         if txt:
             lines.append(txt)
     return "\n".join(lines).strip()
+
+
+# ---------------- 变化检测（省 CPU：区域没变就不跑 OCR 推理） ----------------
+
+def image_signature(img):
+    """截图 → 32×32 灰度指纹（tuple[int]），用于帧间快速比较。
+
+    成本约 0.1ms，相比一次 OCR 推理（数百 ms）可忽略不计。
+    """
+    g = img.convert("L").resize((32, 32))
+    return tuple(g.getdata())
+
+
+def signature_changed(sig_a, sig_b, tolerance: float = CHANGE_TOLERANCE,
+                      pixel_diff: int = PIXEL_DIFF) -> bool:
+    """两帧指纹是否发生了实质变化（显著变化像素占比 > tolerance）。
+
+    任一指纹为 None（首帧）视为「有变化」，保证第一次一定跑 OCR。
+    """
+    if sig_a is None or sig_b is None:
+        return True
+    if len(sig_a) != len(sig_b):
+        return True
+    changed = sum(1 for a, b in zip(sig_a, sig_b) if abs(a - b) > pixel_diff)
+    return (changed / float(len(sig_a))) > tolerance
 
 
 def region_to_text(bbox) -> str:

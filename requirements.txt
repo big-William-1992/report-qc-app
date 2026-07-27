@@ -6,7 +6,8 @@ rapidocr-onnxruntime>=1.3.0   # 本地离线中文 OCR（模型已内置在 asse
 Pillow>=10.0.0                # 屏幕截图（PIL.ImageGrab）与图像预处理
 numpy>=1.24                   # rapidocr / onnxruntime 基础依赖
 onnxruntime>=1.16             # OCR 推理引擎后端
-opencv-python>=4.5            # rapidocr 图像处理（cv2），OCR 必需插件，不可遗漏
+opencv-python-headless>=4.5   # rapidocr 图像处理（cv2）。headless 版无 GUI/dll 冗余，
+                              # 打包体积比 opencv-python 小 30~40MB，功能对 OCR 完全等价
 pyclipper>=1.3                # rapidocr 文本检测依赖
 Shapely>=2.0                  # rapidocr 文本检测依赖
 PyYAML>=6.0                   # rapidocr 配置加载

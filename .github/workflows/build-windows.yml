@@ -30,6 +30,15 @@ jobs:
         # 必须在打包前装好，否则 PyInstaller 收不到这些模块，exe 内 OCR 会 ModuleNotFoundError。
         run: python -m pip install -r requirements.txt
 
+      - name: Force opencv headless (瘦身 30~40MB)
+        # rapidocr-onnxruntime 自身依赖声明会把完整版 opencv-python 拉进来，
+        # 与 headless 并存时 PyInstaller 会打进完整版的 GUI dll，白白多几十 MB。
+        # 因此装完依赖后强制卸载完整版，只保留 headless（cv2 模块名相同，功能对 OCR 等价）。
+        run: |
+          python -m pip uninstall -y opencv-python opencv-contrib-python
+          python -m pip install --force-reinstall opencv-python-headless
+          python -c "import cv2; print('cv2 OK (headless):', cv2.__version__)"
+
       - name: Write build info (供软件内检查更新比对)
         shell: bash
         run: |
@@ -70,6 +79,17 @@ jobs:
                   print("  import OK:", m)
               except Exception as e:
                   print("  import FAIL:", m, "->", e); ok = False
+          # 1.5) 必须是 headless 版 opencv（完整版混入会让 exe 多 30~40MB GUI dll）
+          from importlib import metadata
+          def has(pkg):
+              try: metadata.version(pkg); return True
+              except Exception: return False
+          if has("opencv-python") or has("opencv-contrib-python"):
+              print("  FAIL: full opencv-python present, should be headless only"); ok = False
+          elif has("opencv-python-headless"):
+              print("  opencv headless OK:", metadata.version("opencv-python-headless"))
+          else:
+              print("  FAIL: no opencv package found"); ok = False
           # 2) 离线 OCR 模型：源(assets) 与 打包后(dist) 都要核对（避免中文路径误报）
           src_dir = os.path.join("assets", "ocr_models")
           src_files = sorted(os.listdir(src_dir)) if os.path.isdir(src_dir) else []
