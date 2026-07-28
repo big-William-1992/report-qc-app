@@ -58,11 +58,17 @@ def init_db(path: str = None) -> None:
             conn.execute("ALTER TABLE samples ADD COLUMN laterality TEXT")
         except sqlite3.OperationalError:
             pass
+        # 向后兼容：旧库无 user_id 列时追加（记录质控责任人工号）
+        try:
+            conn.execute("ALTER TABLE samples ADD COLUMN user_id TEXT")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
 
 
 def save_sample(report: str, meta: dict, findings: list, scores: dict,
-                path: str = None, anonymize: bool = False) -> int:
+                path: str = None, anonymize: bool = False,
+                user_id: str = None) -> int:
     init_db(path)
     m = dict(meta)
     if anonymize:
@@ -70,8 +76,9 @@ def save_sample(report: str, meta: dict, findings: list, scores: dict,
     with sqlite3.connect(path or db_path()) as conn:
         cur = conn.execute(
             """INSERT INTO samples
-               (ts, patient, gender, age, modality, applied_site, laterality, report_text, findings_json, scores_json)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+               (ts, patient, gender, age, modality, applied_site, laterality,
+                user_id, report_text, findings_json, scores_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 datetime.datetime.now().isoformat(timespec="seconds"),
                 m.get("patient", ""),
@@ -80,6 +87,7 @@ def save_sample(report: str, meta: dict, findings: list, scores: dict,
                 m.get("modality", ""),
                 m.get("applied_site", ""),
                 m.get("laterality", ""),
+                (user_id or "").strip(),
                 report,
                 json.dumps([f.__dict__ for f in findings], ensure_ascii=False),
                 json.dumps(scores, ensure_ascii=False),
@@ -93,7 +101,8 @@ def list_samples(path: str = None) -> list:
     with sqlite3.connect(path or db_path()) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, ts, patient, gender, modality, applied_site FROM samples ORDER BY id DESC"
+            "SELECT id, ts, patient, gender, modality, applied_site, user_id "
+            "FROM samples ORDER BY id DESC"
         ).fetchall()
         return [dict(r) for r in rows]
 

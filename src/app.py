@@ -33,6 +33,7 @@ import ris
 import license_utils
 import version
 import log_utils
+import accounts
 import update_check
 import auto_updater
 import ocr_provider
@@ -303,6 +304,8 @@ class ReportQcApp(tk.Tk):
         self.current_findings = []
         self.current_scores = {}
         self.anon_var = tk.BooleanVar(value=False)
+        # 当前登录账号（工号）：质控责任到人，保存样本时写入 user_id
+        self.current_user = ""
         # 误报反馈闭环：会话级忽略名单（key 由 _ig_key 生成），可从配置文件持久化
         self.ignored = set(self.engine.rules_config.get("ignores", []))
         # 监听内容去重
@@ -362,6 +365,9 @@ class ReportQcApp(tk.Tk):
         ttk.Label(sb, text="监听", foreground=THEME["text_dim"]).pack(side="left", padx=(0, 8))
         self.session_var = tk.StringVar(value="未监听 · 本次会话命中 0 份")
         ttk.Label(sb, textvariable=self.session_var, foreground=THEME["primary"]).pack(side="left")
+        # 当前登录账号（工号）状态：质控责任到人的落点
+        self.user_var = tk.StringVar(value="👤 未登录")
+        ttk.Label(sb, textvariable=self.user_var, foreground=THEME["text_dim"]).pack(side="left", padx=(12, 0))
         # 授权入口：主动激活 / 重新激活（默认显示"激活"，激活成功后变"重新激活"）
         self._activate_btn = ttk.Button(sb, text="激活", width=9,
                                         command=self._open_activation)
@@ -426,8 +432,18 @@ class ReportQcApp(tk.Tk):
 
     # -------------------- 菜单栏 / 授权入口 --------------------
     def _build_menubar(self):
-        """构建顶部菜单栏，提供激活入口与关于信息。"""
+        """构建顶部菜单栏，提供账号入口、激活入口与关于信息。"""
         menubar = tk.Menu(self)
+        # 账号菜单：登录/切换/创建/退出，使质控责任到人
+        acct_menu = tk.Menu(menubar, tearoff=0)
+        self._acct_label_var = tk.StringVar(value="账号")
+        acct_menu.add_command(labelvariable=self._acct_label_var, command=self._show_account_info)
+        acct_menu.add_separator()
+        acct_menu.add_command(label="切换账号…", command=self._switch_account)
+        acct_menu.add_command(label="创建账号…", command=lambda: self._create_account_dialog(first=False))
+        acct_menu.add_separator()
+        acct_menu.add_command(label="退出登录并切换…", command=self._logout_and_switch)
+        menubar.add_cascade(label="账号", menu=acct_menu)
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="输入激活码…", command=self._open_activation)
         help_menu.add_separator()
@@ -461,6 +477,190 @@ class ReportQcApp(tk.Tk):
                 "开发者：谢君\n"
                 "联系方式：17380009231")
         messagebox.showinfo("关于", info)
+
+    # -------------------- 账号：登录 / 创建 / 切换 --------------------
+    def _update_user_status(self):
+        """刷新状态栏与菜单的账号显示。"""
+        u = (self.current_user or "").strip()
+        if u:
+            name = accounts.get_name(u)
+            label = f"👤 {u}" + (f"（{name}）" if name else "")
+            self.user_var.set(label)
+            self._acct_label_var.set(f"账号：{u}")
+        else:
+            self.user_var.set("👤 未登录")
+            self._acct_label_var.set("账号：未登录")
+
+    def _show_account_info(self):
+        u = (self.current_user or "").strip()
+        if not u:
+            messagebox.showinfo("账号", "当前未登录。可在「账号」菜单选择「切换账号」登录。")
+            return
+        name = accounts.get_name(u)
+        messagebox.showinfo("当前账号",
+                            f"工号：{u}\n姓名：{name or '（未填写）'}\n\n"
+                            f"此后保存的质控样本将记录为该工号，便于责任追溯。")
+
+    def _require_login(self):
+        """启动登录关口：无账号→强制创建首个账号；有账号→登录。返回工号或 None。"""
+        if accounts.count_accounts() == 0:
+            ok, emp_id = self._create_account_dialog(first=True)
+            if not ok:
+                return None
+            self.current_user = emp_id
+        else:
+            ok, emp_id = self._login_dialog()
+            if not ok:
+                return None
+            self.current_user = emp_id
+        accounts.set_session(self.current_user)
+        self._update_user_status()
+        return self.current_user
+
+    def _login_dialog(self, prefill: str = ""):
+        """登录对话框。返回 (ok, emp_id)。可在「创建账号」按钮中嵌套创建流程。"""
+        res = {"ok": False, "emp_id": ""}
+        win = tk.Toplevel(self)
+        win.title("登录")
+        win.geometry("320x220")
+        win.configure(bg=THEME["panel"])
+        win.transient(self)
+        win.grab_set()
+        try:
+            win.attributes("-topmost", True)
+        except Exception:
+            pass
+        tk.Label(win, text="登录星衍放射质控软件", bg=THEME["panel"],
+                 fg=THEME["text"], font=F(FAMILY, 13, "bold")).pack(pady=(14, 10))
+
+        f = ttk.Frame(win)
+        f.pack(padx=18, fill="x")
+        ttk.Label(f, text="工号").grid(row=0, column=0, sticky="e", padx=(0, 8), pady=4)
+        ttk.Label(f, text="密码").grid(row=1, column=0, sticky="e", padx=(0, 8), pady=4)
+        eid = ttk.Entry(f, width=22)
+        epw = ttk.Entry(f, width=22, show="*")
+        eid.grid(row=0, column=1, pady=4)
+        epw.grid(row=1, column=1, pady=4)
+        if prefill:
+            eid.insert(0, prefill)
+        eid.focus_set()
+
+        err = ttk.Label(win, text="", foreground="#C62828")
+        err.pack(pady=(2, 0))
+
+        def do_login():
+            emp_id = eid.get().strip()
+            if not accounts.verify_account(emp_id, epw.get()):
+                err.config(text="工号或密码错误")
+                return
+            res["ok"] = True
+            res["emp_id"] = emp_id
+            win.destroy()
+
+        def do_create():
+            win.destroy()
+            ok, new_id = self._create_account_dialog(first=False)
+            if ok:
+                res["ok"] = True
+                res["emp_id"] = new_id
+
+        bar = ttk.Frame(win)
+        bar.pack(pady=(10, 4))
+        ttk.Button(bar, text="登录", command=do_login, width=10).pack(side="left", padx=6)
+        ttk.Button(bar, text="创建账号", command=do_create, width=10).pack(side="left", padx=6)
+        ttk.Button(bar, text="取消", command=win.destroy, width=10).pack(side="left", padx=6)
+        win.bind("<Return>", lambda e: do_login())
+
+        self.wait_window(win)
+        # 登录成功后确保会话与状态一致（do_create 路径已设置）
+        if res["ok"]:
+            accounts.set_session(res["emp_id"])
+            self.current_user = res["emp_id"]
+            self._update_user_status()
+        return res["ok"], res["emp_id"]
+
+    def _create_account_dialog(self, first: bool = False):
+        """创建账号对话框。返回 (ok, emp_id)。first=True 时禁止取消（必须创建首个账号）。"""
+        res = {"ok": False, "emp_id": ""}
+        win = tk.Toplevel(self)
+        win.title("创建账号" if first else "创建新账号")
+        win.geometry("340x300")
+        win.configure(bg=THEME["panel"])
+        win.transient(self)
+        win.grab_set()
+        try:
+            win.attributes("-topmost", True)
+        except Exception:
+            pass
+        tk.Label(win, text="创建账号（用户名即工号）" if first else "创建新账号",
+                 bg=THEME["panel"], fg=THEME["text"], font=F(FAMILY, 13, "bold")).pack(pady=(14, 8))
+        if first:
+            ttk.Label(win, text="首次使用需先创建账号，质控将责任到人",
+                      foreground=THEME["text_dim"]).pack(pady=(0, 6))
+
+        f = ttk.Frame(win)
+        f.pack(padx=18, fill="x")
+        ttk.Label(f, text="工号").grid(row=0, column=0, sticky="e", padx=(0, 8), pady=4)
+        ttk.Label(f, text="姓名(可选)").grid(row=1, column=0, sticky="e", padx=(0, 8), pady=4)
+        ttk.Label(f, text="密码").grid(row=2, column=0, sticky="e", padx=(0, 8), pady=4)
+        ttk.Label(f, text="确认密码").grid(row=3, column=0, sticky="e", padx=(0, 8), pady=4)
+        eid = ttk.Entry(f, width=22)
+        ename = ttk.Entry(f, width=22)
+        epw = ttk.Entry(f, width=22, show="*")
+        epw2 = ttk.Entry(f, width=22, show="*")
+        eid.grid(row=0, column=1, pady=4)
+        ename.grid(row=1, column=1, pady=4)
+        epw.grid(row=2, column=1, pady=4)
+        epw2.grid(row=3, column=1, pady=4)
+        eid.focus_set()
+
+        err = ttk.Label(win, text="", foreground="#C62828")
+        err.pack(pady=(2, 0))
+
+        def do_create():
+            emp_id = eid.get().strip()
+            pw = epw.get()
+            if pw != epw2.get():
+                err.config(text="两次输入的密码不一致")
+                return
+            ok, msg = accounts.create_account(emp_id, pw, ename.get().strip())
+            if not ok:
+                err.config(text=msg)
+                return
+            res["ok"] = True
+            res["emp_id"] = emp_id
+            accounts.set_session(emp_id)
+            self.current_user = emp_id
+            self._update_user_status()
+            win.destroy()
+
+        bar = ttk.Frame(win)
+        bar.pack(pady=(10, 4))
+        ttk.Button(bar, text="创建", command=do_create, width=10).pack(side="left", padx=6)
+        if not first:
+            ttk.Button(bar, text="取消", command=win.destroy, width=10).pack(side="left", padx=6)
+        win.bind("<Return>", lambda e: do_create())
+
+        self.wait_window(win)
+        return res["ok"], res["emp_id"]
+
+    def _switch_account(self):
+        """切换账号：重新登录（保留当前会话数据，仅更换责任人）。"""
+        ok, emp_id = self._login_dialog(prefill=self.current_user)
+        if ok:
+            messagebox.showinfo("已切换", f"已切换至工号 {emp_id}")
+
+    def _logout_and_switch(self):
+        """退出登录并切换：清除会话后重新登录。"""
+        accounts.clear_session()
+        self.current_user = ""
+        self._update_user_status()
+        ok, emp_id = self._login_dialog()
+        if ok:
+            messagebox.showinfo("已登录", f"已登录工号 {emp_id}")
+        else:
+            # 取消登录则退回未登录态（保存样本时 user_id 为空，仍可使用）
+            self._update_user_status()
 
     # -------------------- 内测支撑：更新 / 反馈 / 诊断 --------------------
     def _check_update_manual(self):
@@ -1679,7 +1879,8 @@ class ReportQcApp(tk.Tk):
         report = self._build_report()
         meta = {k: self.vars[k].get().strip() for k in self.vars}
         sid = samplelib.save_sample(report, meta, self.current_findings, self.current_scores,
-                                    anonymize=self.anon_var.get())
+                                    anonymize=self.anon_var.get(),
+                                    user_id=self.current_user)
         self._refresh_samples()
         self.clip_status.set(f"● 已捕获并入库 #{sid}（{len(self.current_findings)} 项）")
 
@@ -1848,7 +2049,8 @@ class ReportQcApp(tk.Tk):
         report = self._build_report()
         meta = {k: self.vars[k].get().strip() for k in self.vars}
         sid = samplelib.save_sample(report, meta, self.current_findings, self.current_scores,
-                                    anonymize=self.anon_var.get())
+                                    anonymize=self.anon_var.get(),
+                                    user_id=self.current_user)
         self._refresh_samples()
         tag = "（已脱敏）" if self.anon_var.get() else ""
         messagebox.showinfo("已保存", f"样本已存入样本库（ID={sid}）{tag}")
@@ -1990,10 +2192,10 @@ class ReportQcApp(tk.Tk):
 
         lib = ttk.LabelFrame(f, text="📚  样本库")
         lib.pack(fill="both", expand=True)
-        cols = ("id", "ts", "patient", "gender", "modality", "applied_site")
+        cols = ("id", "ts", "patient", "user_id", "gender", "modality", "applied_site")
         self.tree = ttk.Treeview(lib, columns=cols, show="headings", height=10)
-        for c, t, w in zip(cols, ["ID", "时间", "患者", "性别", "部位", "申请部位"],
-                          [60, 150, 120, 70, 130, 130]):
+        for c, t, w in zip(cols, ["ID", "时间", "患者", "工号", "性别", "部位", "申请部位"],
+                          [60, 150, 120, 100, 70, 130, 130]):
             self.tree.heading(c, text=t)
             self.tree.column(c, width=w)
         self.tree.pack(fill="both", expand=True, side="left")
@@ -2018,7 +2220,8 @@ class ReportQcApp(tk.Tk):
         for sm in samplelib.list_samples():
             self.tree.insert("", "end", values=(
                 sm["id"], sm["ts"], sm.get("name") or sm.get("patient", ""),
-                sm["gender"], sm["modality"], sm["applied_site"]))
+                sm.get("user_id", ""), sm["gender"], sm["modality"],
+                sm["applied_site"]))
 
     def _export_report(self):
         """把样本明细 + 错误类型分布 + 每日趋势导出为 CSV（utf-8-sig，Excel 中文不乱码）。"""
@@ -2037,12 +2240,13 @@ class ReportQcApp(tk.Tk):
             with open(path, "w", newline="", encoding="utf-8-sig") as fh:
                 w = csv.writer(fh)
                 w.writerow(["【样本明细】"])
-                w.writerow(["ID", "时间", "患者", "性别", "年龄", "检查部位",
+                w.writerow(["ID", "时间", "患者", "工号", "性别", "年龄", "检查部位",
                             "申请部位", "侧别", "命中数", "报告字数"])
                 for sm in rows:
                     fj = sm.get("findings_json") or "[]"
                     n = len(json.loads(fj)) if fj else 0
                     w.writerow([sm["id"], sm["ts"], sm.get("name") or sm.get("patient", ""),
+                              sm.get("user_id", ""),
                               sm["gender"],
                                 sm.get("age", ""), sm["modality"], sm["applied_site"],
                                 sm.get("laterality", ""), n, len(sm.get("report_text", "") or "")])
@@ -2172,7 +2376,8 @@ class ReportQcApp(tk.Tk):
         txt.pack(fill="both", expand=True, padx=10, pady=10)
         txt.insert("end", f"时间: {sm.get('ts','')}\n患者: {sm.get('name') or sm.get('patient','')}  "
                           f"性别: {sm.get('gender','')} 年龄: {sm.get('age','')}\n"
-                          f"检查部位: {sm.get('modality','')} 申请部位: {sm.get('applied_site','')} 侧别: {sm.get('laterality','')}\n")
+                          f"检查部位: {sm.get('modality','')} 申请部位: {sm.get('applied_site','')} 侧别: {sm.get('laterality','')}\n"
+                          f"质控人(工号): {sm.get('user_id','') or '（未登录）'}\n")
         txt.insert("end", "\n----- 报告原文 -----\n" + sm.get("report_text", ""))
         txt.insert("end", "\n\n----- 质控发现 -----\n")
         for fd in (sm.get("findings_json") and __import__("json").loads(sm["findings_json"]) or []):
@@ -2317,7 +2522,8 @@ class ReportQcApp(tk.Tk):
             findings = self.engine.run(it["report_text"], meta)
             scores = score(findings)
             samplelib.save_sample(it["report_text"], meta, findings, scores,
-                                  anonymize=self.anon_var.get())
+                                  anonymize=self.anon_var.get(),
+                                  user_id=self.current_user)
             n += 1
         self._refresh_samples()
         self.ris_status.set(f"✅ 已质控并入库 {n} 条")
@@ -2379,6 +2585,11 @@ def main():
     elif status == "activated":
         app.session_var.set("已激活 · 未监听")
         app._activate_btn.configure(text="重新激活")
+
+    # 3. 账号登录关口：无账号强制创建首个账号，有账号则需登录（质控责任到人）
+    if not app._require_login():
+        app.destroy()
+        return
 
     # ---------- 授权通过，启动后静默检查更新（延迟 3s 避免与启动争抢）----------
     app.after(3000, app._check_update_background)
