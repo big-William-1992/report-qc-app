@@ -436,8 +436,8 @@ class ReportQcApp(tk.Tk):
         menubar = tk.Menu(self)
         # 账号菜单：登录/切换/创建/退出，使质控责任到人
         acct_menu = tk.Menu(menubar, tearoff=0)
-        self._acct_label_var = tk.StringVar(value="账号")
-        acct_menu.add_command(labelvariable=self._acct_label_var, command=self._show_account_info)
+        self._acct_menu = acct_menu
+        acct_menu.add_command(label="当前账号", command=self._show_account_info)
         acct_menu.add_separator()
         acct_menu.add_command(label="切换账号…", command=self._switch_account)
         acct_menu.add_command(label="创建账号…", command=lambda: self._create_account_dialog(first=False))
@@ -486,10 +486,14 @@ class ReportQcApp(tk.Tk):
             name = accounts.get_name(u)
             label = f"👤 {u}" + (f"（{name}）" if name else "")
             self.user_var.set(label)
-            self._acct_label_var.set(f"账号：{u}")
+            menu_label = f"当前账号：{u}"
         else:
             self.user_var.set("👤 未登录")
-            self._acct_label_var.set("账号：未登录")
+            menu_label = "当前账号：未登录"
+        try:
+            self._acct_menu.entryconfigure(0, label=menu_label)
+        except Exception:
+            pass
 
     def _show_account_info(self):
         u = (self.current_user or "").strip()
