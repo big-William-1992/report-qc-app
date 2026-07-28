@@ -110,6 +110,26 @@ POSITIVE_STRONG = ["结节", "占位", "肿块", "骨折", "扩张", "增大", "
 NORMAL_CLAIM = ["未见异常", "未见明显异常", "无明显异常", "无异常", "未见异常征象",
                 "未见明显异常征象", "未见占位", "未见占位性病变", "未见明确异常", "未见异常改变"]
 
+# 良恶性定性标记（用于前后文定性矛盾 R14-NATURE）
+MALIGNANT_MARKERS = ["恶性", "癌", "转移", "浸润", "侵犯", "恶变", "ca", "mt"]
+BENIGN_MARKERS = ["良性", "炎性", "炎症", "符合良性", "考虑良性"]
+
+# 描述段内「先见后无」检测的阳性/阴性动词
+_PRESENCE_VERBS = ["见", "示", "可见", "探及", "发现", "查见", "考虑", "提示", "显示"]
+_ABSENCE_VERBS = ["未见", "消失", "吸收", "已吸收", "消退"]
+LESION_WORDS = ["结节", "占位", "肿块", "病灶", "囊肿", "结石", "骨折", "积液",
+                "阴影", "斑片", "异常信号"]
+
+# 需做左右侧一致性比对的成对解剖结构
+# —— 跨段比对(R14)用此表：排除已被 R2 覆盖的「肺/肾/股骨头」规范器官族，避免重复告警
+ORGAN_SIDE_LIST = ["肝", "肾上腺", "卵巢", "睾丸", "附件", "股骨", "肱骨",
+                  "甲状腺", "乳腺", "腮腺", "膝关节", "髋关节", "肩关节"]
+# —— 段内跨句比对(R15)用此表：含全部成对器官（含 R2 覆盖的，因 R15 仅查描述段内部，不与 R2 重叠）
+ORGAN_SIDE_LIST_INTERNAL = ORGAN_SIDE_LIST + ["肺", "肾", "股骨头"]
+
+_CN_NUM = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
+           "七": 7, "八": 8, "九": 9, "十": 10, "双": 2, "单": 1}
+
 
 def _norm_laterality(s):
     """把侧别写法归一化为 'left'/'right'/'bilateral'；无法识别返回 None。"""
@@ -163,6 +183,55 @@ def _split_sentences(text: str) -> list:
     parts = re.split(r"(?<=[。！？!?；;\n])", text)
     return [p.strip() for p in parts if p and p.strip()]
 
+
+def _cn_to_int(tok):
+    """中文数字/阿拉伯数字 → int；无法解析返回 None。"""
+    if tok is None:
+        return None
+    tok = str(tok).strip()
+    if tok.isdigit():
+        return int(tok)
+    return _CN_NUM.get(tok)
+
+
+def _extract_lesion_count(text: str):
+    """抽取文本中明确的病灶计数（枚/个），无法判定（如『多发/数枚』）返回 None。"""
+    if not text:
+        return None
+    m = re.search(r"([一二三四五六七八九十两双单\d])\s*枚", text)
+    if m:
+        return _cn_to_int(m.group(1))
+    m = re.search(r"([一二三四五六七八九十两双单\d])\s*个\s*(?:结节|占位|肿块|病灶|囊肿|结石|骨折|积液)", text)
+    if m:
+        return _cn_to_int(m.group(1))
+    return None
+
+
+def _has_marker_unnegated(text: str, markers) -> bool:
+    """文本中是否存在未受否定修饰的标记词（用于良恶性判定，避免『未见恶性』误判为恶性）。"""
+    if not text:
+        return False
+    for sent in _split_sentences(text):
+        s = sent.lower()
+        if not any(k.lower() in s for k in markers):
+            continue
+        if re.search(r"未见|未示|未见明显|不除外|不考虑|除外|待排|未见\s*明确", sent):
+            continue
+        return True
+    return False
+
+
+def _organ_sides_in_text(text: str, organ: str) -> set:
+    """返回文本中提及某器官的方位集合（left/right）。兼容『左肺』与『肝左叶』两种语序。"""
+    sides = set()
+    if (re.search(r"左\s*" + re.escape(organ), text)
+            or re.search(re.escape(organ) + r"\s*左", text)):
+        sides.add("left")
+    if (re.search(r"右\s*" + re.escape(organ), text)
+            or re.search(re.escape(organ) + r"\s*右", text)):
+        sides.add("right")
+    return sides
+
 # 放射报告常见同音/近音错别字（多由语音录入产生）：错词 → 正确词
 # 该词典现由 assets/rules_config.json 维护（用户可在 GUI 中增删）；此处为读取失败的兜底默认值。
 TYPO_MAP_DEFAULT = {
@@ -177,6 +246,27 @@ TYPO_MAP_DEFAULT = {
     "般片": "斑片", "斑偏": "斑片", "政象": "征象",
     "纵格": "纵隔", "临吧": "淋巴", "淋巴结解": "淋巴结节",
     "囊中": "囊肿", "水种": "水肿",
+    # —— 器官名形近/音近错字（typed + voice）——
+    "子官": "子宫", "字宫": "子宫",
+    "前裂腺": "前列腺", "前例腺": "前列腺",
+    "腮线": "腮腺",
+    "骨拆": "骨折",
+    "蜘蛛膜": "蛛网膜",
+    "申状腺": "甲状腺",
+    "食官": "食管",
+    "兰尾": "阑尾",
+    "纵膈": "纵隔",
+    # —— 疾病/征象名错字 ——
+    "肺结合": "肺结核", "费炎": "肺炎",
+    "曾生": "增生", "积夜": "积液",
+    "息内": "息肉", "精脉曲张": "静脉曲张",
+    "动肪瘤": "动脉瘤", "哽死": "梗死",
+    "坎影": "龛影", "憩事": "憩室",
+    "溃殇": "溃疡", "浸闰": "浸润",
+    "珍断": "诊断", "征像": "征象",
+    "曾强": "增强", "造形": "造影",
+    "覆查": "复查", "随防": "随访",
+    "坐肺": "左肺",
 }
 
 # 规则配置文件路径（与 samples.db 同目录：assets/rules_config.json）
@@ -332,7 +422,9 @@ class RuleEngine:
                 + self._r9_conflict(text)
                 + self._r10_template(text)
                 + self._r11_context(text, meta, secs)
-                + self._r12_sentence(text, ents))
+                + self._r12_sentence(text, ents)
+                + self._r14_cross(text, secs)
+                + self._r15_internal(text))
 
     def auto_fix(self, text: str, findings: List[Finding]):
         """自动修正：仅确定性错别字(R8)可安全替换；矛盾/规范/缺失类错误无法判定正确值，不改文本。
@@ -609,6 +701,13 @@ class RuleEngine:
             out.append(Finding("R11-ABNORMAL", "上下文逻辑错误-描述结论矛盾", "high",
                 "影像描述提示阳性征（异常表现），但影像结论称『未见异常/正常』，二者矛盾",
                 i_txt[:30], (-1, -1)))
+        # R11-3 信息框性别 vs 正文解析性别 矛盾（上下文不一致）
+        rg_meta = _norm_gender(meta.get("gender"))
+        rg_text = _parse_gender_from_text(text)
+        if rg_meta and rg_text and rg_meta != rg_text:
+            out.append(Finding("R11-GENDER", "上下文逻辑错误-性别矛盾", "high",
+                f"患者基础信息性别为『{_zh(rg_meta)}』，但报告正文解析出性别『{_zh(rg_text)}』，二者矛盾",
+                "", (-1, -1)))
         return out
 
     # R12 同一句话逻辑错误（句级自相矛盾）
@@ -631,6 +730,93 @@ class RuleEngine:
                 out.append(Finding("R12-SENTENCE", "同一句话逻辑错误", "high",
                     f"同一句话内既称『未见异常』又描述阳性征（自相矛盾）：『{sent[:30]}…』",
                     sent[:30], (-1, -1)))
+        return out
+
+    # R14 前后文逻辑错误（描述段 ↔ 结论段 一致性）
+    def _r14_cross(self, text, secs) -> List[Finding]:
+        out = []
+        f_txt, i_txt = secs["findings"], secs["impression"]
+        if not f_txt or not i_txt:
+            return out
+        # R14-1 描述正常 → 结论异常（与 R11-ABNORMAL 方向相反，互补覆盖）
+        if _claims_normal(f_txt) and _has_positive(i_txt):
+            out.append(Finding("R14-NORMAL", "前后文逻辑错误-描述正常结论异常", "high",
+                "影像描述称『未见异常/正常』，但影像结论给出阳性诊断，结论与描述不符",
+                i_txt[:30], (-1, -1)))
+        # R14-2 良恶性定性矛盾（描述段与结论段方向相反）
+        f_mal = _has_marker_unnegated(f_txt, MALIGNANT_MARKERS)
+        f_ben = _has_marker_unnegated(f_txt, BENIGN_MARKERS)
+        i_mal = _has_marker_unnegated(i_txt, MALIGNANT_MARKERS)
+        i_ben = _has_marker_unnegated(i_txt, BENIGN_MARKERS)
+        if (f_mal and i_ben) or (f_ben and i_mal):
+            out.append(Finding("R14-NATURE", "前后文逻辑错误-良恶性矛盾", "high",
+                "影像描述与影像结论在病灶良恶性定性上相互矛盾（一称恶性倾向、一称良性倾向）",
+                "", (-1, -1)))
+        # R14-3 病灶数量前后不一致
+        cf = _extract_lesion_count(f_txt)
+        ci = _extract_lesion_count(i_txt)
+        if cf is not None and ci is not None and cf != ci:
+            out.append(Finding("R14-COUNT", "前后文逻辑错误-数量不一致", "medium",
+                f"影像描述段提及病灶约 {cf} 枚/个，影像结论段提及约 {ci} 枚/个，数量前后不一致",
+                "", (-1, -1)))
+        # R14-4 同器官左右跨段矛盾（超越 R2 的有限规范器官族，覆盖文本级左右写法）
+        for o in ORGAN_SIDE_LIST:
+            fs = _organ_sides_in_text(f_txt, o)
+            isd = _organ_sides_in_text(i_txt, o)
+            if len(fs) == 1 and len(isd) == 1 and fs != isd:
+                out.append(Finding("R14-SIDE", "前后文逻辑错误-左右矛盾", "high",
+                    f"同一器官「{o}」在影像描述为『{'左' if 'left' in fs else '右'}』侧、"
+                    f"影像结论为『{'左' if 'left' in isd else '右'}』侧，方位前后矛盾",
+                    "", (-1, -1)))
+                break
+        return out
+
+    # R15 上下文逻辑错误（同一描述段内跨句一致性）
+    def _r15_internal(self, text) -> List[Finding]:
+        out = []
+        secs = self._split_for_r5(text)
+        f_txt = secs["findings"]
+        if not f_txt:
+            return out
+        sents = _split_sentences(f_txt)
+        # R15-1 段首称未见异常但段内描述阳性征
+        if sents and _claims_normal(sents[0]) and _has_positive(f_txt):
+            out.append(Finding("R15-NORMAL", "上下文逻辑错误-段内自相矛盾", "high",
+                "影像描述段开头称『未见异常/正常』，但段内又描述阳性征，前后矛盾",
+                sents[0][:30], (-1, -1)))
+        # R15-2 同器官在描述段内前后左右矛盾
+        for o in ORGAN_SIDE_LIST_INTERNAL:
+            per = [(sent, _organ_sides_in_text(sent, o)) for sent in sents
+                   if len(_organ_sides_in_text(sent, o)) == 1]
+            flagged = False
+            for i in range(len(per)):
+                for j in range(i + 1, len(per)):
+                    if per[i][1] != per[j][1]:
+                        out.append(Finding("R15-SIDE", "上下文逻辑错误-左右自相矛盾", "high",
+                            f"影像描述段内同一器官「{o}」前后方位不一致："
+                            f"『{per[i][0][:18]}…』与『{per[j][0][:18]}…』",
+                            "", (-1, -1)))
+                        flagged = True
+                        break
+                if flagged:
+                    break
+        # R15-3 同一病灶先见后无（描述段内跨句）
+        for lw in LESION_WORDS:
+            pres = absn = None
+            for idx, sent in enumerate(sents):
+                has_pres = (lw in sent
+                            and any(re.search(re.escape(v), sent) for v in _PRESENCE_VERBS)
+                            and not any(re.search(re.escape(v), sent) for v in _ABSENCE_VERBS))
+                has_abs = lw in sent and any(re.search(re.escape(v), sent) for v in _ABSENCE_VERBS)
+                if has_pres:
+                    pres = idx
+                if has_abs:
+                    absn = idx
+            if pres is not None and absn is not None and absn > pres:
+                out.append(Finding("R15-PRESENCE", "上下文逻辑错误-先见后无", "medium",
+                    f"影像描述段内对同一「{lw}」先描述存在、后又称未见/消失，前后矛盾",
+                    "", (-1, -1)))
+                break
         return out
 
 
