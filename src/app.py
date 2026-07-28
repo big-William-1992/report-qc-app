@@ -833,11 +833,12 @@ class ReportQcApp(tk.Tk):
         meta = ttk.LabelFrame(f, text="📋  报告元信息")
         meta.pack(fill="x", padx=2, pady=(0, 10))
         self.vars = {k: tk.StringVar() for k in
-                     ["patient", "gender", "age", "modality", "applied_site", "laterality"]}
+                     ["exam_no", "name", "gender", "age",
+                      "applied_site", "modality", "laterality"]}
         rows = [
-            ("影像号/姓名", "patient"), ("性别（男/女）", "gender"),
-            ("年龄", "age"), ("检查部位（用于评分规则）", "modality"),
-            ("申请部位（用于部位核查）", "applied_site"), ("侧别（左/右/双侧）", "laterality"),
+            ("影像号", "exam_no"), ("姓名", "name"), ("性别（男/女）", "gender"),
+            ("年龄", "age"), ("检查部位", "applied_site"),
+            ("成像方式（CT/MR等）", "modality"), ("侧别（左/右/双侧）", "laterality"),
         ]
         for i, (lab, key) in enumerate(rows):
             r, c = i // 3, (i % 3) * 2
@@ -852,28 +853,37 @@ class ReportQcApp(tk.Tk):
         left = ttk.Frame(body)
         left.pack(side="left", fill="both", expand=True, padx=(0, 8))
 
-        ttk.Label(left, text="📝  报告文本（粘贴或导入；可用『患者信息/检查所见/诊断印象』分段）",
-                  foreground=s["text_dim"]).pack(anchor="w", pady=(0, 6))
-        self.txt = scrolledtext.ScrolledText(left, wrap="word",
-                                              font=F(FAMILY, 11), bg=s["panel"], fg=s["text"],
-                                              insertbackground=s["primary"], relief="solid",
-                                              borderwidth=1, highlightthickness=1,
-                                              highlightbackground=s["border"])
-        self.txt.pack(fill="both", expand=True)
-        self.txt.tag_configure("hl_high", background=s["hl_high"], foreground="#7A1F1F")
-        self.txt.tag_configure("hl_med", background=s["hl_med"], foreground="#6E4A06")
-        self.txt.tag_configure("hl_low", background=s["hl_low"], foreground="#143C61")
-        # 手动粘贴报告后自动识别元信息并回填（与『复制即质控』监听、导入行为一致）
-        self.txt.bind("<<Paste>>",
-                      lambda e: self.after(60, lambda: self._auto_fill_meta(
-                          self.txt.get("1.0", "end"))))
+        # 影像描述框 / 影像结论框（独立控件：分别编辑、OCR 回填、跨框质控）
+        fb = ttk.LabelFrame(left, text="🩻  影像描述（检查所见）")
+        fb.pack(fill="both", expand=True, pady=(0, 6))
+        self.findings_txt = scrolledtext.ScrolledText(fb, wrap="word",
+                                                       font=F(FAMILY, 11), bg=s["panel"], fg=s["text"],
+                                                       insertbackground=s["primary"], relief="solid",
+                                                       borderwidth=1, highlightthickness=1,
+                                                       highlightbackground=s["border"])
+        self.findings_txt.pack(fill="both", expand=True, padx=4, pady=4)
+        ib = ttk.LabelFrame(left, text="📑  影像结论（诊断印象）")
+        ib.pack(fill="both", expand=True, pady=(0, 6))
+        self.impression_txt = scrolledtext.ScrolledText(ib, wrap="word",
+                                                        font=F(FAMILY, 11), bg=s["panel"], fg=s["text"],
+                                                        insertbackground=s["primary"], relief="solid",
+                                                        borderwidth=1, highlightthickness=1,
+                                                        highlightbackground=s["border"])
+        self.impression_txt.pack(fill="both", expand=True, padx=4, pady=4)
+        for w in (self.findings_txt, self.impression_txt):
+            w.tag_configure("hl_high", background=s["hl_high"], foreground="#7A1F1F")
+            w.tag_configure("hl_med", background=s["hl_med"], foreground="#6E4A06")
+            w.tag_configure("hl_low", background=s["hl_low"], foreground="#143C61")
+        # 粘贴整份报告到描述框时，按标题自动拆分到两框并回填元信息
+        self.findings_txt.bind("<<Paste>>", lambda e: self.after(60, self._on_paste_report))
 
         # 按钮栏（主操作，单行）
         bar = ttk.Frame(left)
         bar.pack(fill="x", pady=(10, 0))
         ttk.Button(bar, text="▶ 运行质控", style="Primary.TButton", command=self._run).pack(side="left", padx=3)
         ttk.Button(bar, text="📂 导入文件", command=self._import).pack(side="left", padx=3)
-        ttk.Button(bar, text="🗑 清空", command=lambda: self.txt.delete("1.0", "end")).pack(side="left", padx=3)
+        ttk.Button(bar, text="🗑 清空", command=lambda: (self.findings_txt.delete("1.0", "end"),
+                                                  self.impression_txt.delete("1.0", "end"))).pack(side="left", padx=3)
         ttk.Button(bar, text="💾 存入样本库", command=self._save).pack(side="left", padx=3)
         ttk.Button(bar, text="🔍 自动识别元信息", command=self._auto_meta_btn).pack(side="left", padx=3)
         ttk.Button(bar, text="✏️ 自动修正并复制", style="Primary.TButton",
@@ -1145,8 +1155,10 @@ class ReportQcApp(tk.Tk):
         引擎按『检查所见/影像描述→findings』『诊断印象/结论→impression』分段，
         因此这里用标准标题包裹，后续 _run 的分区规则（R2/R5/R7/R10）自动生效。
         """
+        meta = dict(meta or {})
+        meta["name"] = (meta.get("name") or meta.get("patient") or "").strip()
         head = []
-        for k in ("exam_no", "patient", "gender", "age", "modality", "applied_site", "laterality"):
+        for k in ("exam_no", "name", "gender", "age", "modality", "applied_site", "laterality"):
             v = (meta.get(k) or "").strip()
             if v:
                 head.append(f"{self._META_CN.get(k, k)}：{v}")
@@ -1159,12 +1171,14 @@ class ReportQcApp(tk.Tk):
 
     def _append_region_qc(self, meta, findings_text, impression_text):
         """在质控结果区追加『分区域识别状态 + 分区专属核查』，便于用户逐项订正。"""
+        meta = dict(meta or {})
+        meta["name"] = (meta.get("name") or meta.get("patient") or "").strip()
         f_len = len((findings_text or "").strip())
         i_len = len((impression_text or "").strip())
         notes = ["----- 分区域识别状态 -----"]
         if meta:
             filled = [self._META_CN.get(k, k) for k in
-                      ("exam_no", "patient", "gender", "age",
+                      ("exam_no", "name", "gender", "age",
                        "modality", "applied_site", "laterality")
                       if (meta.get(k) or "").strip()]
             notes.append(f"  基础信息：已识别（{', '.join(filled)}）")
@@ -1198,16 +1212,16 @@ class ReportQcApp(tk.Tk):
             messagebox.showwarning("OCR 不可用", reason)
             return
         try:
-            # 1) 基础信息区：结构化解析 + 回填元信息
+            # 1) 基础信息区：结构化解析 + 回填元信息（影像号 / 姓名 分别填入）
             img_b = ocr_provider.capture_region(self.ocr_regions["basic"])
             text_b = ocr_provider.ocr_image(img_b) or ""
             meta = engine.extract_meta(text_b)
-            # 「影像号/姓名」字段：两者都有 → 组合显示；只有其一 → 单独显示
             exam_no = (meta.get("exam_no") or "").strip()
-            name = (meta.get("patient") or "").strip()
-            ident = engine.format_patient_ident(exam_no, name)
-            if ident and self.vars["patient"].get().strip() != ident:
-                self.vars["patient"].set(ident)
+            name = (meta.get("patient") or "").strip()  # 引擎以 'patient' 承载姓名
+            if exam_no and self.vars["exam_no"].get().strip() != exam_no:
+                self.vars["exam_no"].set(exam_no)
+            if name and self.vars["name"].get().strip() != name:
+                self.vars["name"].set(name)
             for k in ("gender", "age", "modality", "applied_site", "laterality"):
                 v = (meta.get(k) or "").strip()
                 if v and self.vars[k].get().strip() != v:
@@ -1215,20 +1229,21 @@ class ReportQcApp(tk.Tk):
             # 记录屏幕侧元信息 + 与剪贴板（报告）交叉核对身份（防张冠李戴）
             self.ocr_meta = meta
             self._compare_ocr_clipboard(meta)
-            # 2) 影像描述区 / 3) 影像结论区：自由文本回填
+            # 2) 影像描述区 / 3) 影像结论区：自由文本回填到对应框
             img_f = ocr_provider.capture_region(self.ocr_regions["findings"])
             text_f = ocr_provider.ocr_image(img_f) or ""
             img_i = ocr_provider.capture_region(self.ocr_regions["impression"])
             text_i = ocr_provider.ocr_image(img_i) or ""
-            # 4) 拼装报告 + 运行质控
-            report = self._compose_report(meta, text_f, text_i)
-            self.txt.delete("1.0", "end")
-            self.txt.insert("1.0", report)
+            # 4) 写入两框 + 运行质控
+            self.findings_txt.delete("1.0", "end")
+            self.findings_txt.insert("1.0", (text_f or "").strip())
+            self.impression_txt.delete("1.0", "end")
+            self.impression_txt.insert("1.0", (text_i or "").strip())
             self._run()
             # 5) 分区域状态 + 分区专属核查
             self._append_region_qc(meta, text_f, text_i)
             if any((meta.get(k) or "").strip() for k in
-                   ("exam_no", "patient", "gender", "age",
+                   ("exam_no", "name", "gender", "age",
                     "modality", "applied_site", "laterality")):
                 self._ocr_status("ok", "● 已识别并质控（三区）")
             else:
@@ -1412,10 +1427,11 @@ class ReportQcApp(tk.Tk):
             return
         cmeta = engine.extract_meta(clip)
         mismatches = []
-        for k in ("patient", "gender", "age", "applied_site"):
-            o, c = (ocr_meta.get(k) or "").strip(), (cmeta.get(k) or "").strip()
+        for label, key in (("name", "patient"), ("gender", "gender"),
+                           ("age", "age"), ("applied_site", "applied_site")):
+            o, c = (ocr_meta.get(key) or "").strip(), (cmeta.get(key) or "").strip()
             if o and c and o != c:
-                mismatches.append((k, o, c))
+                mismatches.append((label, o, c))
         if mismatches:
             detail = "；".join(f"{self._META_CN.get(k, k)} 屏幕『{o}』≠ 剪贴板『{c}』"
                                for k, o, c in mismatches)
@@ -1452,9 +1468,7 @@ class ReportQcApp(tk.Tk):
                 elif data and data != last:
                     self._last_clip = data
                     if len(data.strip()) >= 15:
-                        self.txt.delete("1.0", "end")
-                        self.txt.insert("1.0", data)
-                        self._auto_fill_meta(data)
+                        self._set_report_text(data)
                         try:
                             self._run()
                         except Exception as e:
@@ -1494,7 +1508,7 @@ class ReportQcApp(tk.Tk):
         if box is None:
             return
         ts = datetime.datetime.now().strftime("%H:%M:%S")
-        chars = len(self.txt.get("1.0", "end").strip())
+        chars = len(self._build_report().strip())
         line = f"[{ts}] 复制 {chars} 字 · 命中 {n_findings} 项" + (" · 已入库" if saved else "")
         box.configure(state="normal")
         box.insert("end", line + "\n")
@@ -1616,20 +1630,44 @@ class ReportQcApp(tk.Tk):
         """自动抽取元信息并回填输入框（仅填空字段，不覆盖手动输入）。返回回填的字段列表。"""
         meta = engine.extract_meta(text)
         filled = []
-        for k in ("patient", "gender", "age", "modality", "applied_site", "laterality"):
-            v = (meta.get(k) or "").strip()
-            if v and not self.vars[k].get().strip():
-                self.vars[k].set(v)
-                filled.append(k)
+        # 引擎以 'patient' 承载姓名；映射为界面独立字段 name / exam_no
+        mapping = [("exam_no", "exam_no"), ("patient", "name"),
+                   ("gender", "gender"), ("age", "age"),
+                   ("modality", "modality"), ("applied_site", "applied_site"),
+                   ("laterality", "laterality")]
+        for src, dst in mapping:
+            v = (meta.get(src) or "").strip()
+            if v and not self.vars[dst].get().strip():
+                self.vars[dst].set(v)
+                filled.append(dst)
         return filled
 
-    _META_CN = {"patient": "姓名", "exam_no": "影像号", "gender": "性别",
-                "age": "年龄", "modality": "检查部位", "applied_site": "申请部位",
+    # 报告正文拆分：整份报告（含/不含分段标题）→ 描述框/结论框
+    def _set_report_text(self, text):
+        secs = engine.RuleEngine._split_for_r5(text)
+        self.findings_txt.delete("1.0", "end")
+        self.findings_txt.insert("1.0", secs["findings"].strip())
+        self.impression_txt.delete("1.0", "end")
+        self.impression_txt.insert("1.0", secs["impression"].strip())
+        self._auto_fill_meta(text)
+
+    def _build_report(self):
+        meta = {k: self.vars[k].get().strip() for k in self.vars}
+        return self._compose_report(meta,
+                                     self.findings_txt.get("1.0", "end"),
+                                     self.impression_txt.get("1.0", "end"))
+
+    def _on_paste_report(self):
+        """粘贴整份报告到描述框：自动拆分到两框并回填元信息。"""
+        self._set_report_text(self.findings_txt.get("1.0", "end"))
+
+    _META_CN = {"name": "姓名", "exam_no": "影像号", "gender": "性别",
+                "age": "年龄", "modality": "成像方式", "applied_site": "检查部位",
                 "laterality": "侧别"}
 
     def _auto_meta_btn(self):
         """手动触发：对当前报告文本自动识别并回填元信息。"""
-        text = self.txt.get("1.0", "end")
+        text = self._build_report()
         filled = self._auto_fill_meta(text)
         if filled:
             names = ", ".join(self._META_CN.get(k, k) for k in filled)
@@ -1638,7 +1676,7 @@ class ReportQcApp(tk.Tk):
             messagebox.showinfo("自动识别", "未发现可自动识别的元信息，或字段均已填写。")
 
     def _save_silent(self):
-        report = self.txt.get("1.0", "end")
+        report = self._build_report()
         meta = {k: self.vars[k].get().strip() for k in self.vars}
         sid = samplelib.save_sample(report, meta, self.current_findings, self.current_scores,
                                     anonymize=self.anon_var.get())
@@ -1650,10 +1688,7 @@ class ReportQcApp(tk.Tk):
         if p:
             try:
                 with open(p, encoding="utf-8") as fh:
-                    self.txt.delete("1.0", "end")
-                    self.txt.insert("1.0", fh.read())
-                # 导入后立即自动识别元信息（姓名/性别/检查部位等）并回填
-                self._auto_fill_meta(self.txt.get("1.0", "end"))
+                    self._set_report_text(fh.read())
             except Exception as e:
                 show_error(f"读取失败：{e}")
 
@@ -1665,7 +1700,7 @@ class ReportQcApp(tk.Tk):
         return f"{fd.rule_id}|{(getattr(fd, 'message', '') or '')[:24]}"
 
     def _run(self):
-        report = self.txt.get("1.0", "end")
+        report = self._build_report()
         meta = {k: self.vars[k].get().strip() for k in self.vars}
         findings = self.engine.run(report, meta)
         # 误报反馈闭环：过滤掉已在忽略名单中的条目（会话级 + 持久化）
@@ -1675,16 +1710,22 @@ class ReportQcApp(tk.Tk):
 
         self._out_ranges = {}
         self._txt_marks = {}
-        for tag in ("hl_high", "hl_med", "hl_low", "mk_click", "flash_find"):
-            self.txt.tag_remove(tag, "1.0", "end")
+        for w in (self.findings_txt, self.impression_txt):
+            for tag in ("hl_high", "hl_med", "hl_low", "mk_click", "flash_find"):
+                w.tag_remove(tag, "1.0", "end")
+            w.tag_bind("mk_click", "<Button-1>", self._on_txt_click)
+        # 报告分段偏移：将每条 finding 的全局偏移映射到描述框/结论框内局部偏移
+        f_start = self._section_start(report, "检查所见：\n")
+        i_start = self._section_start(report, "诊断印象：\n")
         for i, fd in enumerate(findings, 1):
             st, en = fd.span
-            if st >= 0 and en > st:
-                self.txt.tag_add(SEV_TAG.get(fd.severity, "hl_med"),
-                                 f"1.0+{st}c", f"1.0+{en}c")
-                self.txt.tag_add("mk_click", f"1.0+{st}c", f"1.0+{en}c")
-                self._txt_marks[i] = (st, en)
-        self.txt.tag_bind("mk_click", "<Button-1>", self._on_txt_click)
+            box, lo, hi = self._map_span(st, en, f_start, i_start)
+            if box is None:
+                continue
+            w = self.impression_txt if box == "impression" else self.findings_txt
+            w.tag_add(SEV_TAG.get(fd.severity, "hl_med"), f"1.0+{lo}c", f"1.0+{hi}c")
+            w.tag_add("mk_click", f"1.0+{lo}c", f"1.0+{hi}c")
+            self._txt_marks[i] = (box, lo, hi)
 
         self.out.delete("1.0", "end")
         if not findings:
@@ -1716,48 +1757,73 @@ class ReportQcApp(tk.Tk):
             f"规范性 {sc['规范性']['score']} | 及时性 {sc['及时性']['score']}")
 
     # ---------- 结果区 ↔ 原文 双向定位 ----------
+    @staticmethod
+    def _section_start(report, header):
+        idx = report.find(header)
+        return idx + len(header) if idx >= 0 else -1
+
+    def _map_span(self, st, en, f_start, i_start):
+        """将 finding 的全局偏移映射到 (box, local_st, local_en)。"""
+        if st < 0 or en <= st:
+            return None, -1, -1
+        if i_start >= 0 and st >= i_start:
+            return "impression", st - i_start, en - i_start
+        if f_start >= 0 and st >= f_start:
+            return "findings", st - f_start, en - f_start
+        return None, -1, -1
+
     def _locate_finding(self, fd):
-        """返回 finding 在报告文本中的字符偏移 (st, en)；无法定位返回 None。"""
+        """返回 finding 所在的 (box, local_st, local_en)；无法定位返回 None。"""
         st, en = fd.span
         if st >= 0 and en > st:
-            return st, en
+            report = self._build_report()
+            f_start = self._section_start(report, "检查所见：\n")
+            i_start = self._section_start(report, "诊断印象：\n")
+            box, lo, hi = self._map_span(st, en, f_start, i_start)
+            if box:
+                return box, lo, hi
         snip = (getattr(fd, "snippet", "") or "").strip()
         if snip:
-            pos = self.txt.search(snip, "1.0", stopindex="end")
-            if pos:
-                st_off = self.txt.count("1.0", pos)[0]
-                return st_off, st_off + len(snip)
+            for box, w in (("findings", self.findings_txt), ("impression", self.impression_txt)):
+                pos = w.search(snip, "1.0", stopindex="end")
+                if pos:
+                    st_off = w.count("1.0", pos)[0]
+                    return box, st_off, st_off + len(snip)
         return None
 
-    def _flash_text(self, st, en):
+    def _flash_box(self, box, st, en):
+        w = self.impression_txt if box == "impression" else self.findings_txt
         tag = "flash_find"
-        self.txt.tag_configure(tag, background="#FFE082")
+        w.tag_configure(tag, background="#FFE082")
         for k in range(6):
             t = k * 220
-            self.txt.after(t, lambda add=(k % 2 == 0):
-                (self.txt.tag_add(tag, f"1.0+{st}c", f"1.0+{en}c") if add
-                 else self.txt.tag_remove(tag, f"1.0+{st}c", f"1.0+{en}c")))
-        self.txt.after(6 * 220 + 120, lambda: self.txt.tag_remove(tag, "1.0", "end"))
+            w.after(t, lambda add=(k % 2 == 0):
+                (w.tag_add(tag, f"1.0+{st}c", f"1.0+{en}c") if add
+                 else w.tag_remove(tag, f"1.0+{st}c", f"1.0+{en}c")))
+        w.after(6 * 220 + 120, lambda: w.tag_remove(tag, "1.0", "end"))
 
     def _goto_finding(self, i):
-        """点结果条目 → 原文滚动并闪烁高亮。"""
+        """点结果条目 → 对应框滚动并闪烁高亮。"""
         fd = self.current_findings[i - 1] if 0 < i <= len(self.current_findings) else None
         if fd is None:
             return
-        self.txt.focus_set()
         loc = self._locate_finding(fd)
         if not loc:
             return
-        st, en = loc
-        self.txt.see(f"1.0+{st}c")
-        self._flash_text(st, en)
+        box, st, en = loc
+        w = self.impression_txt if box == "impression" else self.findings_txt
+        w.focus_set()
+        w.see(f"1.0+{st}c")
+        self._flash_box(box, st, en)
 
     def _on_txt_click(self, event):
         """点原文高亮 → 定位回结果条目。"""
-        idx = self.txt.index(f"@{event.x},{event.y}")
-        off = self.txt.count("1.0", idx)[0]
-        for i, (st, en) in self._txt_marks.items():
-            if st <= off <= en:
+        w = event.widget
+        box = "impression" if w is self.impression_txt else "findings"
+        idx = w.index(f"@{event.x},{event.y}")
+        off = w.count("1.0", idx)[0]
+        for i, (b, st, en) in self._txt_marks.items():
+            if b == box and st <= off <= en:
                 self._goto_result(i)
                 return
 
@@ -1777,9 +1843,9 @@ class ReportQcApp(tk.Tk):
         self.out.focus_set()
 
     def _save(self):
-        if not self.current_findings and self.txt.get("1.0", "end").strip():
+        if not self.current_findings and self._build_report().strip():
             self._run()
-        report = self.txt.get("1.0", "end")
+        report = self._build_report()
         meta = {k: self.vars[k].get().strip() for k in self.vars}
         sid = samplelib.save_sample(report, meta, self.current_findings, self.current_scores,
                                     anonymize=self.anon_var.get())
@@ -1790,7 +1856,7 @@ class ReportQcApp(tk.Tk):
     def _auto_fix_copy(self):
         """发现错别字后：先弹预览框逐条确认 → 仅应用被选中的改动 → 回填 → 复制系统剪贴板。
         矛盾类错误不自动改，提示人工。"""
-        report = self.txt.get("1.0", "end")
+        report = self._build_report()
         if not report.strip():
             messagebox.showwarning("提示", "报告内容为空，无法修正。")
             return
@@ -1825,8 +1891,7 @@ class ReportQcApp(tk.Tk):
             new_fixed = new_fixed[:s] + fx["correct"] + new_fixed[e:]
 
         # 回填并重新质控，刷新高亮与结果
-        self.txt.delete("1.0", "end")
-        self.txt.insert("1.0", new_fixed)
+        self._set_report_text(new_fixed)
         self._run()
         # 复制到系统剪贴板
         self.clipboard_clear()
@@ -1952,7 +2017,8 @@ class ReportQcApp(tk.Tk):
             self.tree.delete(r)
         for sm in samplelib.list_samples():
             self.tree.insert("", "end", values=(
-                sm["id"], sm["ts"], sm["patient"], sm["gender"], sm["modality"], sm["applied_site"]))
+                sm["id"], sm["ts"], sm.get("name") or sm.get("patient", ""),
+                sm["gender"], sm["modality"], sm["applied_site"]))
 
     def _export_report(self):
         """把样本明细 + 错误类型分布 + 每日趋势导出为 CSV（utf-8-sig，Excel 中文不乱码）。"""
@@ -1976,7 +2042,8 @@ class ReportQcApp(tk.Tk):
                 for sm in rows:
                     fj = sm.get("findings_json") or "[]"
                     n = len(json.loads(fj)) if fj else 0
-                    w.writerow([sm["id"], sm["ts"], sm["patient"], sm["gender"],
+                    w.writerow([sm["id"], sm["ts"], sm.get("name") or sm.get("patient", ""),
+                              sm["gender"],
                                 sm.get("age", ""), sm["modality"], sm["applied_site"],
                                 sm.get("laterality", ""), n, len(sm.get("report_text", "") or "")])
                 w.writerow([])
@@ -2103,7 +2170,7 @@ class ReportQcApp(tk.Tk):
                                         relief="solid", borderwidth=1,
                                         highlightthickness=1, highlightbackground=THEME["border"])
         txt.pack(fill="both", expand=True, padx=10, pady=10)
-        txt.insert("end", f"时间: {sm.get('ts','')}\n患者: {sm.get('patient','')}  "
+        txt.insert("end", f"时间: {sm.get('ts','')}\n患者: {sm.get('name') or sm.get('patient','')}  "
                           f"性别: {sm.get('gender','')} 年龄: {sm.get('age','')}\n"
                           f"检查部位: {sm.get('modality','')} 申请部位: {sm.get('applied_site','')} 侧别: {sm.get('laterality','')}\n")
         txt.insert("end", "\n----- 报告原文 -----\n" + sm.get("report_text", ""))
@@ -2229,13 +2296,12 @@ class ReportQcApp(tk.Tk):
             return
         idx = int(self.ris_tree.item(sel[0], "values")[0]) - 1
         it = self._ris_rows[idx]
-        self.vars["patient"].set(it["patient"])
-        self.vars["gender"].set(it["gender"])
-        self.vars["age"].set(it["age"])
-        self.vars["modality"].set(it["modality"])
-        self.vars["applied_site"].set(it["applied_site"])
-        self.txt.delete("1.0", "end")
-        self.txt.insert("1.0", it["report_text"])
+        self.vars["name"].set(it.get("patient", ""))
+        self.vars["gender"].set(it.get("gender", ""))
+        self.vars["age"].set(it.get("age", ""))
+        self.vars["modality"].set(it.get("modality", ""))
+        self.vars["applied_site"].set(it.get("applied_site", ""))
+        self._set_report_text(it["report_text"])
         self.notebook.select(self.tab_qc)
         self._run()
 
@@ -2245,7 +2311,9 @@ class ReportQcApp(tk.Tk):
             return
         n = 0
         for it in self._ris_rows:
-            meta = {k: it.get(k, "") for k in ("patient", "gender", "age", "modality", "applied_site")}
+            meta = {"name": it.get("patient", ""), "gender": it.get("gender", ""),
+                    "age": it.get("age", ""), "modality": it.get("modality", ""),
+                    "applied_site": it.get("applied_site", "")}
             findings = self.engine.run(it["report_text"], meta)
             scores = score(findings)
             samplelib.save_sample(it["report_text"], meta, findings, scores,

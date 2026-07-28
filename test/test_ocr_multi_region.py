@@ -49,12 +49,15 @@ class FakeApp:
         self.ocr_regions = dict(regions or {})
         self.ocr_region = self.ocr_regions.get("basic")
         self.vars = {k: _Status() for k in
-                     ["patient", "gender", "age", "modality", "applied_site", "laterality"]}
+                     ["exam_no", "name", "gender", "age",
+                      "modality", "applied_site", "laterality"]}
         self.ocr_regions_status = _Status()
         self.out = _FakeText()
-        self.txt = _FakeText()
-        self._META_CN = {"patient": "姓名", "gender": "性别", "age": "年龄",
-                         "modality": "检查部位", "applied_site": "申请部位", "laterality": "侧别"}
+        self.findings_txt = _FakeText()
+        self.impression_txt = _FakeText()
+        self._META_CN = {"name": "姓名", "exam_no": "影像号", "gender": "性别",
+                         "age": "年龄", "modality": "成像方式", "applied_site": "检查部位",
+                         "laterality": "侧别"}
         self.ocr_status = _Status()
         self._ran = False
         self._msg = None
@@ -88,10 +91,11 @@ class TestComposeReport(unittest.TestCase):
         self.app = bind(FakeApp())
 
     def test_compose_includes_sections(self):
-        meta = {"patient": "张三", "gender": "男", "age": "54", "modality": "胸部"}
+        meta = {"name": "张三", "exam_no": "CT123", "gender": "男", "age": "54", "modality": "胸部"}
         r = self.app._compose_report(meta, "肺纹理增多", "支气管炎")
         self.assertIn("【患者信息】", r)
         self.assertIn("姓名：张三", r)
+        self.assertIn("影像号：CT123", r)
         self.assertIn("检查所见：", r)
         self.assertIn("肺纹理增多", r)
         self.assertIn("诊断印象：", r)
@@ -157,13 +161,10 @@ class TestCaptureAndQc(unittest.TestCase):
     def test_capture_fills_meta_and_report(self):
         self.app._capture_and_qc()
         self.assertTrue(self.app._ran)
-        self.assertEqual(self.app.vars["patient"].get(), "张三")
+        self.assertEqual(self.app.vars["name"].get(), "张三")
         self.assertEqual(self.app.vars["modality"].get(), "胸部")
-        report = self.app.txt.report
-        self.assertIn("检查所见：", report)
-        self.assertIn("双肺纹理增多", report)
-        self.assertIn("诊断印象：", report)
-        self.assertIn("支气管炎", report)
+        self.assertIn("双肺纹理增多", self.app.findings_txt.report)
+        self.assertIn("支气管炎", self.app.impression_txt.report)
         # 分区域状态写入结果区
         self.assertIn("分区域识别状态", "".join(self.app.out.lines))
 

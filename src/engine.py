@@ -102,6 +102,67 @@ MODALITY_SCORE = {"乳腺": "BI-RADS", "钼靶": "BI-RADS", "乳腺x线": "BI-RA
 POSITIVE_MARKERS = ["结节", "占位", "阴影", "肿块", "异常信号", "斑片", "渗出", "骨折", "扩张", "增大"]
 NEGATIVE_MARKERS = ["未见", "无", "阴性", "通畅", "清晰", "正常", "未见明显", "未见异常"]
 
+# 强阳性征（用于『描述异常→结论正常』与『同一句话逻辑错误』判定，覆盖面更广）
+POSITIVE_STRONG = ["结节", "占位", "肿块", "骨折", "扩张", "增大", "囊肿", "结石", "出血",
+                   "水肿", "癌", "瘤", "病变", "异常信号", "斑片", "渗出", "增厚", "狭窄",
+                   "积液", "缺血", "梗死", "钙化灶"]
+# 明确的『正常/未见异常』声明（用于矛盾判定；不把『正常』二字单独算，避免误伤『形态正常』等）
+NORMAL_CLAIM = ["未见异常", "未见明显异常", "无明显异常", "无异常", "未见异常征象",
+                "未见明显异常征象", "未见占位", "未见占位性病变", "未见明确异常", "未见异常改变"]
+
+
+def _norm_laterality(s):
+    """把侧别写法归一化为 'left'/'right'/'bilateral'；无法识别返回 None。"""
+    if not s:
+        return None
+    s = str(s).strip()
+    if s in LATERALITY:
+        return LATERALITY[s]
+    # 兼容口语/书面写法：左侧/右侧/双侧/两边/左右
+    if "双" in s or "两" in s or "左右" in s:
+        return "bilateral"
+    if "左" in s and "右" not in s:
+        return "left"
+    if "右" in s and "左" not in s:
+        return "right"
+    return None
+
+
+def _detect_side_in_text(text: str) -> set:
+    """扫描文本中提及的方位集合（left/right/bilateral）。"""
+    if not text:
+        return set()
+    sides = set()
+    if re.search(r"左\s*(侧|肺|肾|肝|乳|肾上腺|卵巢|睾丸|附件|股骨|肱骨|膝|髋|肩|肘|腕|踝|叶|上|下|腹|盆|位)", text):
+        sides.add("left")
+    if re.search(r"右\s*(侧|肺|肾|肝|乳|肾上腺|卵巢|睾丸|附件|股骨|肱骨|膝|髋|肩|肘|腕|踝|叶|上|下|腹|盆|位)", text):
+        sides.add("right")
+    if re.search(r"双侧|两侧|左右|两边", text):
+        sides.add("bilateral")
+    return sides
+
+
+def _claims_normal(text: str) -> bool:
+    """文本是否明确声明『未见异常/正常』（用于描述-结论矛盾）。"""
+    if not text:
+        return False
+    return any(k in text for k in NORMAL_CLAIM)
+
+
+def _has_positive(text: str) -> bool:
+    """文本是否包含强阳性征（异常表现）。"""
+    if not text:
+        return False
+    return any(k in text for k in POSITIVE_STRONG)
+
+
+def _split_sentences(text: str) -> list:
+    """按中英文句末标点 + 换行切分为句子（保留标点）。"""
+    if not text:
+        return []
+    parts = re.split(r"(?<=[。！？!?；;\n])", text)
+    return [p.strip() for p in parts if p and p.strip()]
+
 # 放射报告常见同音/近音错别字（多由语音录入产生）：错词 → 正确词
 # 该词典现由 assets/rules_config.json 维护（用户可在 GUI 中增删）；此处为读取失败的兜底默认值。
 TYPO_MAP_DEFAULT = {
@@ -259,6 +320,7 @@ class RuleEngine:
     def run(self, text: str, meta: dict) -> List[Finding]:
         ner = ChineseRadiologyNER()
         ents = ner.extract(text)
+        secs = self._split_for_r5(text)
         return (self._r1_gender(text, ents, meta)
                 + self._r2_laterality(text, ents)
                 + self._r3_score(text, meta)
@@ -268,7 +330,9 @@ class RuleEngine:
                 + self._r7_internal(text, ents)
                 + self._r8_typo(text)
                 + self._r9_conflict(text)
-                + self._r10_template(text))
+                + self._r10_template(text)
+                + self._r11_context(text, meta, secs)
+                + self._r12_sentence(text, ents))
 
     def auto_fix(self, text: str, findings: List[Finding]):
         """自动修正：仅确定性错别字(R8)可安全替换；矛盾/规范/缺失类错误无法判定正确值，不改文本。
@@ -313,8 +377,10 @@ class RuleEngine:
             expect = self.kg.expected_gender_for_organ(e.text)  # "male"/"female"
             if expect and expect != rg and e.text not in seen:
                 seen.add(e.text)
+                box = {"findings": "影像描述段", "impression": "影像结论段"}.get(e.section, "报告正文")
                 out.append(Finding("R1-GENDER", "性别矛盾", "high",
-                    f"{src}性别为{_zh(rg)}，但文中出现{_zh(expect)}性专属器官「{e.text}」",
+                    f"{src}性别为{_zh(rg)}，但{box}出现{_zh(expect)}性专属器官「{e.text}」"
+                    f"（{'男性不应有子宫/卵巢等' if expect=='female' else '女性不应有前列腺/睾丸等'}）",
                     e.text, (e.start, e.end)))
         return out
 
@@ -517,6 +583,54 @@ class RuleEngine:
         if cfg.get("require_followup") and not re.search(r"随访|建议|复查|随诊", text):
             out.append(Finding("R10-TEMPLATE", "模板缺失-随访建议", sev,
                 "报告未给出随访/复查建议，建议补充", "", (-1, -1)))
+        return out
+
+    # R11 上下文逻辑错误（信息框 vs 描述框/结论框 跨框比对）
+    def _r11_context(self, text, meta, secs) -> List[Finding]:
+        out = []
+        f_txt, i_txt = secs["findings"], secs["impression"]
+        # R11-1 左右一致性：信息框侧别 与 描述/结论提及的方位 比对
+        info_side = _norm_laterality(meta.get("laterality"))
+        if info_side and info_side != "bilateral":
+            for label, seg in (("影像描述", f_txt), ("影像结论", i_txt)):
+                sides = _detect_side_in_text(seg)
+                if not sides or "bilateral" in sides:
+                    continue
+                if info_side == "left" and "right" in sides and "left" not in sides:
+                    out.append(Finding("R11-SIDE", "上下文逻辑错误-左右矛盾", "high",
+                        f"患者基础信息侧别为『左』，但{label}中仅提及『右侧』（未见左侧），方位不一致",
+                        seg[:24], (-1, -1)))
+                elif info_side == "right" and "left" in sides and "right" not in sides:
+                    out.append(Finding("R11-SIDE", "上下文逻辑错误-左右矛盾", "high",
+                        f"患者基础信息侧别为『右』，但{label}中仅提及『左侧』（未见右侧），方位不一致",
+                        seg[:24], (-1, -1)))
+        # R11-2 描述异常 → 结论正常 矛盾
+        if _has_positive(f_txt) and _claims_normal(i_txt):
+            out.append(Finding("R11-ABNORMAL", "上下文逻辑错误-描述结论矛盾", "high",
+                "影像描述提示阳性征（异常表现），但影像结论称『未见异常/正常』，二者矛盾",
+                i_txt[:30], (-1, -1)))
+        return out
+
+    # R12 同一句话逻辑错误（句级自相矛盾）
+    def _r12_sentence(self, text, ents) -> List[Finding]:
+        out = []
+        secs = self._split_for_r5(text)
+        f_txt = secs["findings"]
+        if not f_txt:
+            return out
+        for sent in _split_sentences(f_txt):
+            # 1) 同一句内男女专属器官混用（如『子宫…前列腺…』）
+            s_genders = {g for organ, g in GENDER_ORGANS.items() if organ in sent}
+            if len(s_genders) > 1:
+                out.append(Finding("R12-SENTENCE", "同一句话逻辑错误", "high",
+                    f"同一句话内同时出现男女专属器官（自相矛盾）：『{sent[:30]}…』",
+                    sent[:30], (-1, -1)))
+                continue
+            # 2) 同一句内既称未见异常又描述阳性征
+            if _claims_normal(sent) and _has_positive(sent):
+                out.append(Finding("R12-SENTENCE", "同一句话逻辑错误", "high",
+                    f"同一句话内既称『未见异常』又描述阳性征（自相矛盾）：『{sent[:30]}…』",
+                    sent[:30], (-1, -1)))
         return out
 
 
