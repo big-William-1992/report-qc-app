@@ -1,0 +1,7 @@
+# 星衍放射质控 REST 服务依赖（与桌面端 requirements.txt 相互独立）
+# 仅 /qc/* 与 /samples/* 需要以下基础依赖；/ocr 还需在运行节点安装 OCR 依赖：
+#   pip install rapidocr-onnxruntime Pillow opencv-python-headless numpy
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+pydantic>=2.0
