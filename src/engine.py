@@ -17,6 +17,9 @@ import shutil
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 
+# 解剖部位知识图谱（RadLex 器官族 + PadChest 104 部位→UMLS）：驱动左右侧比对表
+from anatomy_lexicon import SIDE_CHECK_ORGANS, R2_COVERED, EN_SIDE_ORGANS
+
 
 # ----------------------------- 数据模型 -----------------------------
 @dataclass
@@ -122,14 +125,12 @@ LESION_WORDS = ["结节", "占位", "肿块", "病灶", "囊肿", "结石", "骨
 
 # 需做左右侧一致性比对的成对解剖结构
 # —— 跨段比对(R14)用此表：文本级兜底，覆盖 R2（NER 带 L-/R- 前缀规范节点）未能可靠覆盖的器官。
-#    注意：R2 的 fam_of 仅认 L-/R- 带杠前缀（如 L-kidney / L-femoral-head），而「肺」的规范节点是
-#    LUL/RUL/LUUL/RUUL（无连字符），导致 R2 对肺失效；故「肺」改由 R14 文本级覆盖跨段左右矛盾，
-#    不再依赖 R2。肾/股骨头 仍由 R2 覆盖（其规范节点带杠），R14 此处排除避免重复告警。
-ORGAN_SIDE_LIST = ["肝", "肾上腺", "卵巢", "睾丸", "附件", "股骨", "肱骨",
-                  "甲状腺", "乳腺", "腮腺", "膝关节", "髋关节", "肩关节", "肺"]
+#    来源：src/anatomy_lexicon.py（RadLex 器官族 + 侧别建模）动态派生；保留原有的 R2 跨段覆盖分离，
+#    排除 R2 已覆盖的「肾/股骨头」避免重复告警。新增 输卵管/精囊/锁骨/肋骨 等成对器官扩大覆盖。
+ORGAN_SIDE_LIST = [o for o in SIDE_CHECK_ORGANS if o not in R2_COVERED]
 # —— 段内跨句比对(R15)用此表：在 ORGAN_SIDE_LIST 基础上补 R2 已覆盖的「肾/股骨头」
 #    （R15 仅查描述段内部，不与 R2 跨段检查重叠，故可并存）
-ORGAN_SIDE_LIST_INTERNAL = ORGAN_SIDE_LIST + ["肾", "股骨头"]
+ORGAN_SIDE_LIST_INTERNAL = ORGAN_SIDE_LIST + list(R2_COVERED)
 
 _CN_NUM = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
            "七": 7, "八": 8, "九": 9, "十": 10, "双": 2, "单": 1}
@@ -153,7 +154,7 @@ def _norm_laterality(s):
 
 
 def _detect_side_in_text(text: str) -> set:
-    """扫描文本中提及的方位集合（left/right/bilateral）。"""
+    """扫描文本中提及的方位集合（left/right/bilateral）。兼容中英文报告。"""
     if not text:
         return set()
     sides = set()
@@ -163,6 +164,32 @@ def _detect_side_in_text(text: str) -> set:
         sides.add("right")
     if re.search(r"双侧|两侧|左右|两边", text):
         sides.add("bilateral")
+    # 英文报告（MIMIC-CXR / IU-Xray 风格）：left/right/bilateral 关键词
+    low = text.lower()
+    if re.search(r"\bleft\b", low):
+        sides.add("left")
+    if re.search(r"\bright\b", low):
+        sides.add("right")
+    if re.search(r"\bbilateral\b", low):
+        sides.add("bilateral")
+    return sides
+
+
+def _organ_sides_en(text: str, aliases) -> set:
+    """英文器官左右检测：返回文本中某器官的方位集合（left/right）。
+    语序兼容 'left lung' 与 'lung left'，并允许侧别词与器官间有少量修饰词
+    （如 'right lower lobe'）。仅在含英文的报告中使用，不影响中文。"""
+    if not text:
+        return set()
+    sides = set()
+    low = text.lower()
+    for a in aliases:
+        if (re.search(r"\bleft\b.{0,30}?\b" + re.escape(a), low)
+                or re.search(r"\b" + re.escape(a) + r"\b.{0,30}?\bleft\b", low)):
+            sides.add("left")
+        if (re.search(r"\bright\b.{0,30}?\b" + re.escape(a), low)
+                or re.search(r"\b" + re.escape(a) + r"\b.{0,30}?\bright\b", low)):
+            sides.add("right")
     return sides
 
 
@@ -339,8 +366,8 @@ def save_rules_config(cfg: dict, path: str = RULES_CONFIG_PATH) -> None:
 # ----------------------------- NER -----------------------------
 class ChineseRadiologyNER:
     SECTION_MAP = [
-        (re.compile(r"检查所见|影像描述|表现"), "findings"),
-        (re.compile(r"诊断印象|印象|诊断意见|结论"), "impression"),
+        (re.compile(r"检查所见|影像描述|表现|imaging findings|findings|radiographic findings", re.I), "findings"),
+        (re.compile(r"诊断印象|印象|诊断意见|结论|impression", re.I), "impression"),
         (re.compile(r"患者信息|患者|性别|年龄|检查部位|申请"), "meta"),
     ]
 
@@ -560,8 +587,8 @@ class RuleEngine:
     def _split_for_r5(text: str) -> dict:
         """按段落标题切分描述/印象原文（与 NER 段落划分一致）。"""
         spans = []
-        for pat, sec in [("检查所见|影像描述|表现", "findings"),
-                         ("诊断印象|印象|诊断意见|结论", "impression")]:
+        for pat, sec in [("(?i)检查所见|影像描述|表现|imaging findings|findings", "findings"),
+                         ("(?i)诊断印象|印象|诊断意见|结论|impression", "impression")]:
             for m in re.finditer(pat, text):
                 spans.append((m.start(), sec))
         spans.sort()
@@ -773,6 +800,16 @@ class RuleEngine:
                     f"影像结论为『{'左' if 'left' in isd else '右'}』侧，方位前后矛盾",
                     "", (-1, -1)))
                 break
+        # R14-4b 英文报告（MIMIC-CXR / IU-Xray 风格）左右跨段矛盾
+        if not any(f.rule_id == "R14-SIDE" for f in out) and re.search(r"[A-Za-z]", f_txt + i_txt):
+            for key, aliases in EN_SIDE_ORGANS.items():
+                fs = _organ_sides_en(f_txt, aliases)
+                isd = _organ_sides_en(i_txt, aliases)
+                if len(fs) == 1 and len(isd) == 1 and fs != isd:
+                    out.append(Finding("R14-SIDE", "前后文逻辑错误-左右矛盾", "high",
+                        f"同一器官『{key}』在影像描述为『left』、影像结论为『right』，方位前后矛盾（英文报告）",
+                        "", (-1, -1)))
+                    break
         return out
 
     # R15 上下文逻辑错误（同一描述段内跨句一致性）
