@@ -68,18 +68,25 @@ THEME = {
     "header_bg": "#0B8A9E",   # 顶栏
     "header_fg": "#FFFFFF",
     "ok":        "#0D8A5E",   # 正常/通过（旧 #1E8E5A，更深）
-    "sev_high":  "#C0392B",
-    "sev_med":   "#B8780E",
-    "sev_low":   "#2471A3",
-    "hl_high":   "#FAD4D4",
-    "hl_med":    "#FBE6BF",
-    "hl_low":    "#CFE2F5",
+    # 严重度配色：红=严重(high) / 橙=警告(medium) / 蓝=提示(low)
+    "sev_high":  "#D32F2F",   # 严重错误——红
+    "sev_med":   "#E08A00",   # 警告——橙
+    "sev_low":   "#1976D2",   # 提示——蓝
+    "sev_high_bg": "#FBE3E3", # 严重行/块背景（清晰红染）
+    "sev_med_bg":  "#FCEFD6", # 警告行/块背景（清晰橙染）
+    "sev_low_bg":  "#E4F1FB", # 提示行/块背景（清晰蓝染）
+    "hl_high":   "#F8C9C9",   # 内文高亮背景——红
+    "hl_med":    "#FBE0A8",   # 内文高亮背景——橙
+    "hl_low":    "#CFE6FB",   # 内文高亮背景——蓝
     # 图表调色（协调、低饱和医疗感）
     "chart": ["#0B8A9E", "#12A0B8", "#1E8E5A", "#C8780E", "#C0392B", "#7A5CC9", "#3C8DBC"],
 }
 
 SEV_COLOR = {"high": THEME["sev_high"], "medium": THEME["sev_med"], "low": THEME["sev_low"]}
+SEV_BG = {"high": THEME["sev_high_bg"], "medium": THEME["sev_med_bg"], "low": THEME["sev_low_bg"]}
+SEV_CN = {"high": "严重", "medium": "警告", "low": "提示"}
 SEV_TAG = {"high": "hl_high", "medium": "hl_med", "low": "hl_low"}
+SEV_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 
 def F(family, size, weight="normal"):
@@ -1077,9 +1084,9 @@ class ReportQcApp(tk.Tk):
                                                         highlightbackground=s["border"])
         self.impression_txt.pack(fill="both", expand=True, padx=4, pady=4)
         for w in (self.findings_txt, self.impression_txt):
-            w.tag_configure("hl_high", background=s["hl_high"], foreground="#7A1F1F")
-            w.tag_configure("hl_med", background=s["hl_med"], foreground="#6E4A06")
-            w.tag_configure("hl_low", background=s["hl_low"], foreground="#143C61")
+            w.tag_configure("hl_high", background=s["hl_high"], foreground="#B71C1C")
+            w.tag_configure("hl_med", background=s["hl_med"], foreground="#8A5A00")
+            w.tag_configure("hl_low", background=s["hl_low"], foreground="#0B5394")
         # 粘贴整份报告到描述框时，按标题自动拆分到两框并回填元信息
         self.findings_txt.bind("<<Paste>>", lambda e: self.after(60, self._on_paste_report))
 
@@ -1848,7 +1855,6 @@ class ReportQcApp(tk.Tk):
             win.configure(bg="#FAFAFA")
             self._alert_win = win
         # 高/中/低分级统计
-        sev_txt = {"high": "高", "medium": "中", "low": "低"}
         n = len(findings)
         n_high = sum(1 for fd in findings if getattr(fd, "severity", "") == "high")
         head_txt = f"⚠ 本次复制的报告发现 {n} 处问题"
@@ -1861,31 +1867,38 @@ class ReportQcApp(tk.Tk):
         tk.Label(header_frame, text=head_txt, font=F(FAMILY, 13, "bold"),
                  fg="#C0392B", bg="#FAFAFA", wraplength=440, justify="left").pack(side="left", fill="x", expand=True)
 
-        # Findings list with severity badges + 忽略按钮
+        # 严重度图例
+        legend = tk.Frame(win, bg="#FAFAFA")
+        legend.pack(fill="x", padx=16, pady=(0, 4))
+        tk.Label(legend, text="● 红=严重   ● 橙=警告   ● 蓝=提示",
+                 font=F(FAMILY, 9), fg=THEME["text_dim"], bg="#FAFAFA").pack(side="left")
+        # Findings list：每条按严重度着色（红=严重 / 橙=警告 / 蓝=提示）+ 左侧色条 + 忽略按钮
         list_frame = tk.Frame(win, bg="#FAFAFA")
         list_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
-        sev_colors = {"high": "#C0392B", "medium": "#B8780E", "low": "#2471A3"}
-        sev_bg = {"high": "#FAD4D4", "medium": "#FBE6BF", "low": "#CFE2F5"}
         for i, fd in enumerate(findings, 1):
-            sev = sev_txt.get(getattr(fd, "severity", ""), "?")
+            sev = getattr(fd, "severity", "")
+            sev_label = SEV_CN.get(sev, "?")
             rid = getattr(fd, "rule_id", "")
             msg = getattr(fd, "message", "")
             snip = (getattr(fd, "snippet", "") or "").strip()
-            row = tk.Frame(list_frame, bg=sev_bg.get(getattr(fd, "severity", ""), "#EEEEEE"),
+            row = tk.Frame(list_frame, bg=SEV_BG.get(sev, "#EEEEEE"),
                            relief="solid", borderwidth=1)
             row.pack(fill="x", pady=3)
-            badge = tk.Label(row, text=f"  {sev}  ", font=F(FAMILY, 9, "bold"),
-                            fg=sev_colors.get(getattr(fd, "severity", ""), "#333333"),
-                            bg=sev_bg.get(getattr(fd, "severity", ""), "#EEEEEE"))
+            # 左侧严重度色条（红/橙/蓝），一眼区分错误程度
+            bar = tk.Frame(row, bg=SEV_COLOR.get(sev, "#999999"), width=6)
+            bar.pack(side="left", fill="y")
+            badge = tk.Label(row, text=f"  {sev_label}  ", font=F(FAMILY, 9, "bold"),
+                             fg=SEV_COLOR.get(sev, "#333333"),
+                             bg=SEV_BG.get(sev, "#EEEEEE"))
             badge.pack(side="left", padx=(6, 0), pady=4)
-            content = tk.Frame(row, bg=sev_bg.get(getattr(fd, "severity", ""), "#EEEEEE"))
+            content = tk.Frame(row, bg=SEV_BG.get(sev, "#EEEEEE"))
             content.pack(side="left", fill="both", expand=True, padx=(6, 6), pady=4)
             tk.Label(content, text=f"[{rid}]  {msg}", font=F(FAMILY, 10),
-                    fg="#333333", bg=sev_bg.get(getattr(fd, "severity", ""), "#EEEEEE"),
+                    fg="#333333", bg=SEV_BG.get(sev, "#EEEEEE"),
                     wraplength=360, justify="left", anchor="w").pack(fill="x")
             if snip:
                 tk.Label(content, text=f"原文：…{snip[:50]}…", font=F(FAMILY, 9),
-                        fg="#666666", bg=sev_bg.get(getattr(fd, "severity", ""), "#EEEEEE"),
+                        fg="#666666", bg=SEV_BG.get(sev, "#EEEEEE"),
                         wraplength=360, justify="left", anchor="w").pack(fill="x")
             tk.Button(row, text="忽略", command=lambda k=self._ig_key(fd): self._ignore_one(k)
                       ).pack(side="right", padx=4, pady=4)
@@ -2007,6 +2020,8 @@ class ReportQcApp(tk.Tk):
         # 误报反馈闭环：过滤掉已在忽略名单中的条目（会话级 + 持久化）
         findings = [f for f in findings if self._ig_key(f) not in self.ignored]
         self.current_findings = findings
+        # 按严重度排序：严重(high) → 警告(medium) → 提示(low)，让高风险错误排在最前
+        findings.sort(key=lambda f: SEV_ORDER.get(getattr(f, "severity", "low"), 2))
         self.current_scores = score(findings)
 
         self._out_ranges = {}
@@ -2015,32 +2030,37 @@ class ReportQcApp(tk.Tk):
             for tag in ("hl_high", "hl_med", "hl_low", "mk_click", "flash_find"):
                 w.tag_remove(tag, "1.0", "end")
             w.tag_bind("mk_click", "<Button-1>", self._on_txt_click)
-        # 报告分段偏移：将每条 finding 的全局偏移映射到描述框/结论框内局部偏移
-        f_start = self._section_start(report, "检查所见：\n")
-        i_start = self._section_start(report, "诊断印象：\n")
+        # 内文高亮：优先用 finding 自带 span；span 缺失（如 R2 左右侧混淆）时用 snippet 在文本框中定位，
+        # 确保每条错误都能按严重度着色，不再因 span=(-1,-1) 漏高亮。
         for i, fd in enumerate(findings, 1):
-            st, en = fd.span
-            box, lo, hi = self._map_span(st, en, f_start, i_start)
-            if box is None:
+            loc = self._locate_finding(fd)
+            if not loc:
                 continue
+            box, lo, hi = loc
             w = self.impression_txt if box == "impression" else self.findings_txt
             w.tag_add(SEV_TAG.get(fd.severity, "hl_med"), f"1.0+{lo}c", f"1.0+{hi}c")
             w.tag_add("mk_click", f"1.0+{lo}c", f"1.0+{hi}c")
             self._txt_marks[i] = (box, lo, hi)
 
         self.out.delete("1.0", "end")
+        # 严重度图例：红=严重 / 橙=警告 / 蓝=提示
+        self.out.insert("end",
+            "图例：  ■ 红=严重(高)   ■ 橙=警告(中)   ■ 蓝=提示(低)\n\n", "sev_legend")
+        self.out.tag_configure("sev_legend", foreground=THEME["text_dim"], font=F(MONO, 9))
         if not findings:
             self.out.insert("end", "✅ 未检出确定性错误。\n", "ok")
         else:
             for i, fd in enumerate(findings, 1):
                 start = self.out.index("end-1c")
                 self.out.insert("end",
-                    f"[{i}] {fd.rule_id} | {fd.error_type} | 严重度={fd.severity}\n"
+                    f"[{i}] {fd.rule_id} | {fd.error_type} | 严重度={SEV_CN.get(fd.severity, fd.severity)}({fd.severity})\n"
                     f"    {fd.message}\n")
                 end = self.out.index("end-1c")
                 self._out_ranges[i] = (start, end)
                 self.out.tag_add(f"res{i}", start, end)
-                self.out.tag_configure(f"res{i}", foreground=THEME["primary"], underline=True)
+                # 整条结果按严重度着色：严重=红 / 警告=橙 / 提示=蓝
+                self.out.tag_configure(f"res{i}",
+                    foreground=SEV_COLOR.get(fd.severity, THEME["primary"]), underline=True)
                 self.out.tag_bind(f"res{i}", "<Button-1>", lambda e, i=i: self._goto_finding(i))
         # 评分依据透明化：列出各维度扣分明细，让临床看到扣分逻辑
         self.out.insert("end", "\n----- 评分依据 -----\n")

@@ -143,3 +143,36 @@ def test_clean_report_no_typo_false_positive():
             "影像结论：前列腺增生，建议随访。")
     f = _run(text, {"gender": "男"})
     assert not _has(f, "R8-TYPO")
+
+
+# ----------------------------- 严重度分级（红/橙/蓝 高亮依据） -----------------------------
+def test_severity_assignment_by_rule():
+    # 严重(high)：左右侧混淆 / 信息框-正文左右矛盾
+    f_lat = _run("影像描述：左肾见结石。\n影像结论：右肾结石。")
+    assert _has(f_lat, "R2-LATERALITY")
+    assert any(x.severity == "high" for x in f_lat if x.rule_id == "R2-LATERALITY")
+    # 注意：R2 span 为 (-1,-1)，依赖 snippet 兜底才能高亮——此处确认对象存在且严重度为 high
+    assert any(x.span == (-1, -1) for x in f_lat if x.rule_id == "R2-LATERALITY")
+
+    f_side = _run("影像描述：左肺结节。\n影像结论：右侧胸腔积液。", {"laterality": "左"})
+    assert _has(f_side, "R11-SIDE")
+    assert any(x.severity == "high" for x in f_side if x.rule_id == "R11-SIDE")
+
+    # 提示(low)：模板缺失-随访建议（R10-TEMPLATE 默认 low）
+    f_tpl = _run("影像描述：右肺上叶见结节。\n影像结论：右肺上叶结节。")
+    assert _has(f_tpl, "R10-TEMPLATE")
+    assert any(x.severity == "low" for x in f_tpl if x.rule_id == "R10-TEMPLATE")
+
+    # 警告(medium)：同音错别字
+    assert _has(_run("影像描述：前裂腺增大。\n影像结论：前裂腺增生。"), "R8-TYPO")
+
+
+def test_severity_weight_drives_score_degree():
+    # 同数量错误下，严重度越高扣分越多——这是「按程度高亮」的评分基础
+    high = RuleEngine().run("影像描述：左肾结石。\n影像结论：右肾结石，建议复查。", {})  # R2 high
+    low = RuleEngine().run("影像描述：右肺上叶见结节。\n影像结论：右肺上叶结节。", {})  # R10 low
+    from engine import score, SEVERITY_WEIGHT
+    sh = score(high)
+    sl = score(low)
+    assert SEVERITY_WEIGHT["high"] > SEVERITY_WEIGHT["low"]
+    assert sh["准确性"]["score"] < sl["准确性"]["score"], "严重错误应比提示错误扣更多分"
