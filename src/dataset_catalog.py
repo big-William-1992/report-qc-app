@@ -196,6 +196,88 @@ ONTOLOGIES: Dict[str, Dict] = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# 知识图谱 / 实体关系 / 报告规范（B 类：增强 anatomy_lexicon、NER、模板校验 R10）
+# ---------------------------------------------------------------------------
+# 字段说明
+#   name        资源名称
+#   owner       维护机构
+#   type        资源类型：knowledge_graph / nomenclature / common_data_element /
+#               template_library / ontology / reporting_lexicon
+#   scope       覆盖范围 / 规模
+#   license     许可（公开可查，具体以官方为准）
+#   access      获取地址
+#   use_in_app  在质控软件中的应用落点
+#   related     关联的数据集/本体 key（用于溯源，不强制存在）
+#
+# 说明：此类资源不是「报告语料」，而是术语/图谱/模板规范，用于把质控从
+# 「器官族」升级到「实体 + 关系」「结构化字段」「标准模板」三个层次。
+# RadLex 主体本体已在 ONTOLOGIES 登记；此处 RadLex Playbook 为其检查命名延伸。
+KNOWLEDGE_RESOURCES: Dict[str, Dict] = {
+    "radgraph": {
+        "name": "RadGraph",
+        "owner": "Stanford University (MMRL)",
+        "type": "knowledge_graph",
+        "scope": "报告实体-关系抽取图谱，建在 MIMIC-CXR/CheXpert 报告上并映射到 RadLex；"
+                 "500 开发报告(14,579 实体/10,889 关系)+100 测试+220,763 份 MIMIC 报告推理输出",
+        "license": "PhysioNet（免费，需认证）",
+        "access": "https://physionet.org/content/radgraph/1.0.0/",
+        "use_in_app": "将 anatomy_lexicon 从器官族升级到实体+关系（如 'opacity' 位于 "
+                      "'right lower lobe'），增强左右/部位逻辑质控（R14-SIDE / R6-SITE）",
+        "related": ["mimic_cxr", "chexpert", "radlex"],
+    },
+    "radlex_playbook": {
+        "name": "RadLex Playbook",
+        "owner": "RSNA / LOINC",
+        "type": "nomenclature",
+        "scope": "放射学检查项目命名本体（约 1,000 检查条目 RPID），已并入 LOINC",
+        "license": "免费（RSNA + Regenstrief LOINC）",
+        "access": "https://www.radlex.org/playbook/",
+        "use_in_app": "检查名称规范化质控（R6 部位/检查名称一致性对照字段源）",
+        "related": ["radlex", "loinc"],
+    },
+    "radelement": {
+        "name": "RadElement",
+        "owner": "RSNA / ACR",
+        "type": "common_data_element",
+        "scope": "标准报告通用数据元（CDE），含 RadLex 绑定，统一报告字段命名",
+        "license": "免费（ACR + RSNA）",
+        "access": "https://www.acr.org/Clinical-Research/RadElement",
+        "use_in_app": "报告字段结构化对照，支撑 R10 模板字段校验的数据元来源",
+        "related": ["radlex", "radreport"],
+    },
+    "radreport": {
+        "name": "RadReport",
+        "owner": "RSNA / ACR",
+        "type": "template_library",
+        "scope": "200+ 标准放射报告模板（RSNA/ACR），覆盖各系统",
+        "license": "免费（ACR + RSNA）",
+        "access": "https://www.rsna.org/quality-safety/RadReport",
+        "use_in_app": "直接作为 R10 模板校验的标准模板库来源（对照『应有段落/字段』）",
+        "related": ["radelement"],
+    },
+    "loinc": {
+        "name": "LOINC",
+        "owner": "Regenstrief Institute",
+        "type": "ontology",
+        "scope": "实验室与观测/影像结果编码本体，与 RadLex Playbook 融合补全检查+结果编码",
+        "license": "LOINC License（免费，需注册）",
+        "access": "https://loinc.org",
+        "use_in_app": "检查结果/观察项编码映射，补全检查+结果编码对照",
+        "related": ["radlex_playbook"],
+    },
+    "acr_reporting_lexicons": {
+        "name": "ACR LI-RADS / TI-RADS / BI-RADS",
+        "owner": "American College of Radiology (ACR)",
+        "type": "reporting_lexicon",
+        "scope": "各系统报告分级词典（肝 LI-RADS、甲状腺 TI-RADS、乳腺 BI-RADS 等）",
+        "license": "免费（ACR 公开）",
+        "access": "https://www.acr.org/Clinical-Research/Data-Science-Institute",
+        "use_in_app": "分级术语规范化质控（如报告写 BI-RADS 类别须与征象描述一致）",
+        "related": [],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # 查询辅助函数
@@ -221,6 +303,21 @@ def datasets_by_access(access_hint: str) -> List[str]:
     return [k for k, v in DATASETS.items() if hint in v.get("access", "").lower()]
 
 
+def get_knowledge_resource(key: str) -> Optional[Dict]:
+    """按 key 取单个知识资源（B 类）元数据；不存在返回 None。"""
+    return KNOWLEDGE_RESOURCES.get(key)
+
+
+def list_knowledge_resources() -> List[str]:
+    """返回全部知识资源（B 类）key 列表。"""
+    return list(KNOWLEDGE_RESOURCES.keys())
+
+
+def knowledge_resources_by_type(rtype: str) -> List[str]:
+    """按资源类型（knowledge_graph / nomenclature / template_library ...）取 key 列表。"""
+    return [k for k, v in KNOWLEDGE_RESOURCES.items() if v.get("type") == rtype]
+
+
 def catalog_markdown() -> str:
     """生成 Markdown 表格，便于直接贴入 README / docs。"""
     lines = [
@@ -240,6 +337,15 @@ def catalog_markdown() -> str:
     lines.append("|------|------|------|----------------|")
     for v in ONTOLOGIES.values():
         lines.append(f"| {v['name']} | {v['owner']} | {v['license']} | {v['use_in_app']} |")
+    # B 类：知识图谱 / 实体关系 / 报告规范
+    lines += ["", "### 知识图谱 / 实体关系 / 报告规范（B 类）", ""]
+    lines.append("| 资源 | 机构 | 类型 | 许可 | 在软件中的应用 |")
+    lines.append("|------|------|------|------|----------------|")
+    for v in KNOWLEDGE_RESOURCES.values():
+        lines.append(
+            f"| {v['name']} | {v['owner']} | {v['type']} | {v['license']} | "
+            f"{v['use_in_app']} |"
+        )
     return "\n".join(lines)
 
 
