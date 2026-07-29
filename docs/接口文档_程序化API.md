@@ -1,6 +1,6 @@
 # 星衍放射质控软件 — 核心模块程序化接口文档
 
-> 适用版本：`v2.5.0`（源码开发版 `COMMIT="dev"`）
+> 适用版本：`v3.0`（源码开发版 `COMMIT="dev"`)
 > 适用对象：星衍系列其他系统（放射质控 / 病历 / 影像云）的开发者，通过 `import` 直接调用本引擎。
 > 本文档描述的是**进程内 Python API**，不依赖网络；如需远程调用，见同目录《接口文档_HTTP_REST.md》。
 
@@ -298,5 +298,5 @@ print(f"样本 {sid} 已存，发现 {len(findings)} 处问题；准确性 {summ
 
 1. **线程安全**：`engine` 无全局可变状态，可多线程并发；`accounts`/`samplelib` 基于 SQLite 连接，建议每线程独立调用（SQLite 连接非跨线程共享）。
 2. **路径**：打包态（`sys.frozen`）下数据库/规则配置自动重定向到用户可写目录（`%APPDATA%/MedicalReportQC`），开发态在 `assets/`。
-3. **版本**：接口随版本演进，调用方应锁定 `APP_VERSION`（`import version; version.APP_VERSION`）。本文档对应 `2.5.0`。
+3. **版本**：接口随版本演进，调用方应锁定 `APP_VERSION`（`import version; version.APP_VERSION`）。本文档对应 `3.0`。
 4. **合规性**：引擎与样本库均本地存储、不联网；对外提供网络服务时，由调用方在 HTTP 层落实鉴权与审计（见 REST 文档）。

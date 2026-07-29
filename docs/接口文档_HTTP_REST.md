@@ -1,6 +1,6 @@
 # 星衍放射质控软件 — HTTP/REST 接口规范
 
-> 适用版本：`v2.5.0`
+> 适用版本：`v3.0`
 > 目的：将《接口文档_程序化API.md》中的本地引擎封装为**远程可调用的 REST 服务**，供星衍其他系统（放射质控 Web 端 / 病历系统 / 影像云）或第三方科室系统调用。
 > 性质：**本文为接口规范草案，不含实现**。文末附 FastAPI 参考骨架，可直接落地。
 
@@ -207,7 +207,7 @@ from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
-app = FastAPI(title="星衍放射质控 API", version="2.5.0")
+app = FastAPI(title="星衍放射质控 API", version="3.0")
 
 class CheckReq(BaseModel):
     report: str
@@ -256,6 +256,6 @@ if __name__ == "__main__":
 
 ## 6. 版本与兼容
 
-- 本文档接口绑定 `engine` v2.5.0 的程序化签名（`RuleEngine.run` / `auto_fix` / `score` / `extract_meta` / `accounts.*` / `samplelib.*`）。
+- 本文档接口绑定 `engine` v3.0 的程序化签名（`RuleEngine.run` / `auto_fix` / `score` / `extract_meta` / `accounts.*` / `samplelib.*`）。
 - 新增规则（R14/R15 等）会自动体现在 `findings[].rule_id`，**不改变接口形状**，调用方无需改代码即可获得更强校验。
 - 破坏性变更（如 `meta` 字段增删、`score` 结构变化）将随 `APP_VERSION` 主/次版本号提升，并在《程序化API文档》同步标注。

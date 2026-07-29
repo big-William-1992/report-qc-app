@@ -1,6 +1,6 @@
 """
 report_qc_app/server/main.py
-星衍放射质控软件 — HTTP/REST 服务（对应《接口文档_HTTP_REST.md》规范，v2.5.0）
+星衍放射质控软件 — HTTP/REST 服务（对应《接口文档_HTTP_REST.md》规范，v3.0）
 
 设计要点（与桌面端一致）：
 - 完全离线优先：/qc/* 与 /samples/* 仅依赖标准库引擎（engine/accounts/samplelib）；
@@ -86,7 +86,7 @@ def require_emp(authorization: Optional[str] = Header(None),
 
 
 # ----------------------------- 应用 -----------------------------
-app = FastAPI(title="星衍放射质控 API", version="2.5.0")
+app = FastAPI(title="星衍放射质控 API", version="3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -357,7 +357,7 @@ def stats_trend():
 
 @app.get("/api/v1/health")
 def health():
-    return _envelope(True, "OK", {"status": "up", "version": "2.5.0"})
+    return _envelope(True, "OK", {"status": "up", "version": "3.0"})
 
 
 if __name__ == "__main__":
