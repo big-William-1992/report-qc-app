@@ -37,6 +37,7 @@ import accounts
 import update_check
 import auto_updater
 import ocr_provider
+import uia_provider
 
 # 反馈通道：GitHub Issues（公开仓库任何人可提），可按需改为飞书/腾讯问卷链接
 FEEDBACK_URL = "https://github.com/big-William-1992/report-qc-app/issues"
@@ -335,6 +336,8 @@ class ReportQcApp(tk.Tk):
         self.ocr_regions_status = tk.StringVar(value="")
         self._ocr_status("off", "● 待触发（按快捷键或点『识别并质控』）")
         self._update_region_status()
+        # Windows UI Automation 采集提供器（读前景 PACS 窗口控件文本，无滚动漂移）
+        self.uia = uia_provider.UIAProvider()
 
         # 「识别并质控」快捷键（任意组合，持久化在 ocr_config.json）
         self.qc_hotkey = self.ocr_cfg.get("hotkey") or None   # {"mods":[...], "key":"F9"}
@@ -1147,6 +1150,11 @@ class ReportQcApp(tk.Tk):
                    command=self._capture_and_qc).pack(side="left", padx=2)
         ttk.Button(ocr_bar2, text="⌨ 设置快捷键", width=12,
                    command=self._set_qc_hotkey).pack(side="left", padx=2)
+        ttk.Separator(ocr_bar2, orient="vertical").pack(side="left", padx=4, fill="y")
+        ttk.Button(ocr_bar2, text="🪟 从PACS读取(UIA)", width=16, style="Primary.TButton",
+                   command=self._capture_via_uia).pack(side="left", padx=2)
+        ttk.Button(ocr_bar2, text="🔎 UIA检测", width=10,
+                   command=self._uia_diagnose).pack(side="left", padx=2)
         ttk.Label(ocr_bar2, textvariable=self.qc_hotkey_status,
                   foreground=s["text_dim"]).pack(side="left", padx=(2, 0))
         ttk.Label(ocr_bar2, textvariable=self.ocr_regions_status,
@@ -1466,6 +1474,74 @@ class ReportQcApp(tk.Tk):
             self._ocr_status("error", f"● 识别并质控失败：{e}")
             messagebox.showerror("识别并质控失败", str(e))
 
+    # -------------------- Windows UIA 采集（无滚动漂移） --------------------
+    def _dispatch_qc(self):
+        """「识别并质控」统一入口：UIA 可用时优先 UIA，否则退回 OCR 三区。"""
+        if getattr(self, "uia", None) and self.uia.is_available():
+            self._capture_via_uia()
+        else:
+            self._capture_and_qc()
+
+    def _capture_via_uia(self):
+        """从前景 PACS 窗口（UIA 读控件文本）读取完整报告并质控。
+
+        根治 OCR「屏幕滚动后识别区域偏差」：UIA 读的是控件内存里的完整文本，
+        与滚动/分辨率/字号无关，一次读出整份报告（含屏幕外部分）。
+        """
+        if not getattr(self, "uia", None):
+            messagebox.showinfo("UIA 不可用", "UIA 提供器未初始化。")
+            return
+        if not self.uia.is_available():
+            messagebox.showinfo("UIA 不可用", self.uia.unavailable_reason()
+                + "\n\nUIA 仅适用于 Windows 原生 PACS 客户端（联影/东软/飞利浦/GE 等）。\n"
+                  "当前环境不可用，请改用『🔍 识别并质控(OCR)』或剪贴板。")
+            return
+        try:
+            text = self.uia.capture_text()
+        except Exception as e:
+            messagebox.showerror("UIA 读取失败", str(e))
+            return
+        if not text or not text.strip():
+            messagebox.showwarning("未读到报告",
+                "UIA 未在前景 PACS 窗口找到可读取的报告文本控件。\n\n"
+                "可能原因：\n"
+                "  ① PACS 报告区是自绘 canvas/OpenGL（UIA 读不到文本）；\n"
+                "  ② 当前焦点不在 PACS 报告窗口（请先点一下报告窗口使其激活）。\n\n"
+                "可点『🔎 UIA检测』确认窗口文本控件情况，或改用 OCR / 剪贴板。")
+            return
+        # 1) 整段文本结构化解析 + 回填元信息（与 OCR 路径共用 engine.extract_meta）
+        meta = engine.extract_meta(text)
+        exam_no = (meta.get("exam_no") or "").strip()
+        name = (meta.get("patient") or "").strip()
+        if exam_no and self.vars["exam_no"].get().strip() != exam_no:
+            self.vars["exam_no"].set(exam_no)
+        if name and self.vars["name"].get().strip() != name:
+            self.vars["name"].set(name)
+        for k in ("gender", "age", "modality", "applied_site", "laterality"):
+            v = (meta.get(k) or "").strip()
+            if v and self.vars[k].get().strip() != v:
+                self.vars[k].set(v)
+        self.ocr_meta = meta
+        # 2) 按标题切分 检查所见/诊断印象（复用引擎分段，等价于手工输入流）
+        secs = RuleEngine._split_for_r5(text)
+        findings = (secs.get("findings") or text).strip()
+        impression = (secs.get("impression") or "").strip()
+        self.findings_txt.delete("1.0", "end")
+        self.findings_txt.insert("1.0", findings)
+        self.impression_txt.delete("1.0", "end")
+        self.impression_txt.insert("1.0", impression)
+        # 3) 运行质控（R1–R15 全量生效）
+        self._run()
+        self._ocr_status("ok", "● 已从 PACS 窗口读取并质控（UIA，无滚动漂移）")
+
+    def _uia_diagnose(self):
+        """弹窗展示前景窗口的文本控件，帮助用户确认 PACS 是否支持 UIA。"""
+        if not getattr(self, "uia", None):
+            messagebox.showinfo("UIA 不可用", "UIA 提供器未初始化。")
+            return
+        msg = self.uia.diagnose_foreground()
+        messagebox.showinfo("UIA 检测", msg)
+
     # -------------------- 「识别并质控」快捷键 --------------------
     def _set_qc_hotkey(self):
         """弹窗捕获任意快捷键组合：按下即设定；Esc 取消；Backspace/Delete 清除。"""
@@ -1720,7 +1796,7 @@ class ReportQcApp(tk.Tk):
             return
         self._hotkey_busy = True
         try:
-            self._capture_and_qc()
+            self._dispatch_qc()
         finally:
             self._hotkey_busy = False
 

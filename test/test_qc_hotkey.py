@@ -27,6 +27,16 @@ class _Status:
         return self._v
 
 
+class _UiaStub:
+    """模拟 UIAProvider 的可用性开关。"""
+    def __init__(self, available):
+        self._available = available
+    def is_available(self):
+        return self._available
+    def unavailable_reason(self):
+        return "" if self._available else "测试桩：UIA 不可用"
+
+
 class FakeApp:
     """最小替身：提供快捷键方法所需属性；bind_all/unbind_all/after 记录调用。"""
     def __init__(self, hotkey=None):
@@ -41,6 +51,8 @@ class FakeApp:
         self.saved_cfg = None
         self.bound = {}
         self.qc_calls = 0
+        self.uia_calls = 0
+        self.uia = _UiaStub(False)      # 默认：UIA 不可用 → 退回 OCR
 
     def _save_ocr_config(self):
         self.saved_cfg = {"hotkey": self.qc_hotkey}
@@ -57,6 +69,16 @@ class FakeApp:
 
     def _capture_and_qc(self):
         self.qc_calls += 1
+
+    def _capture_via_uia(self):
+        self.uia_calls += 1
+
+    def _dispatch_qc(self):
+        """复刻真实 app 的派发逻辑：UIA 可用优先 UIA，否则退回 OCR。"""
+        if getattr(self, "uia", None) and self.uia.is_available():
+            self._capture_via_uia()
+        else:
+            self._capture_and_qc()
 
     def _start_pynput_listener(self, label):
         # 测试替身：不真正启动 OS 级全局监听（需辅助功能权限/会起后台线程），
@@ -167,6 +189,20 @@ class TestHotkeyTrigger(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             app._on_qc_hotkey()
         self.assertFalse(app._hotkey_busy)                        # 异常也复位
+
+    def test_dispatch_prefers_uia_when_available(self):
+        app = bind(FakeApp())
+        app.uia = _UiaStub(True)                                  # UIA 可用
+        app._on_qc_hotkey()
+        self.assertEqual(app.uia_calls, 1)                        # 走了 UIA 路径
+        self.assertEqual(app.qc_calls, 0)                         # 未走 OCR 路径
+
+    def test_dispatch_falls_back_to_ocr_when_uia_unavailable(self):
+        app = bind(FakeApp())
+        app.uia = _UiaStub(False)                                 # UIA 不可用
+        app._on_qc_hotkey()
+        self.assertEqual(app.qc_calls, 1)                         # 退回 OCR 路径
+        self.assertEqual(app.uia_calls, 0)
 
 
 if __name__ == "__main__":
