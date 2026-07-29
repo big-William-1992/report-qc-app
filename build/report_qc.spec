@@ -59,7 +59,9 @@ a = Analysis(
                    "onnxruntime", "numpy", "PIL", "PIL.ImageGrab", "PIL.Image"],
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    # pynput 仅在 macOS 后台全局快捷键监听时按需 pip install 使用（非打包依赖），
+    # 且在 Windows 打包机上若被误收集会拉入 pyobjc/pywin32 导致构建失败，故显式排除。
+    excludes=["pynput"],
     cipher=block_cipher,
 )
 

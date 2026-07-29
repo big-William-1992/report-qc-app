@@ -35,6 +35,9 @@ class FakeApp:
         self._hotkey_thread_id = None
         self._hotkey_tk_seq = None
         self._hotkey_busy = False
+        self._pynput_listener = None
+        self._last_hotkey_ts = 0.0
+        self._pynput_started = None
         self.saved_cfg = None
         self.bound = {}
         self.qc_calls = 0
@@ -54,6 +57,12 @@ class FakeApp:
 
     def _capture_and_qc(self):
         self.qc_calls += 1
+
+    def _start_pynput_listener(self, label):
+        # 测试替身：不真正启动 OS 级全局监听（需辅助功能权限/会起后台线程），
+        # 仅记录被调用并刷新状态，使快捷键注册/清除的绑定与持久化断言可独立验证。
+        self._pynput_started = label
+        self.qc_hotkey_status.set(label + "（后台全局监听已启用）")
 
 
 def bind(fake):

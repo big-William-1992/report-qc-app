@@ -110,6 +110,17 @@ def test_r14_cross_side_conflict():
     assert _has(f, "R14-SIDE")
 
 
+def test_r14_cross_side_conflict_lung():
+    # 肺的左右跨段矛盾：历史上 R2 因规范节点无连字符(LUL/RUL/LUUL/RUUL)而失效、
+    # R14 又曾把「肺」排除在 ORGAN_SIDE_LIST 外，导致「谁都不抓」的漏报。
+    # 现已将「肺」纳入 ORGAN_SIDE_LIST，由 R14 文本级覆盖跨段左右矛盾（见 engine.py 注释）。
+    f = _run("影像描述：左肺上叶见磨玻璃结节。\n影像结论：右肺上叶占位，考虑恶性。")
+    assert _has(f, "R14-SIDE"), [x.message for x in f if x.rule_id == "R14-SIDE"]
+    # 反向：描述右肺、结论左肺，同样应命中
+    f2 = _run("影像描述：右肺下叶见斑片影。\n影像结论：左肺下叶感染性病变。")
+    assert _has(f2, "R14-SIDE"), [x.message for x in f2 if x.rule_id == "R14-SIDE"]
+
+
 def test_r11_gender_meta_vs_text():
     # 信息框性别(男) vs 正文性别(女) 矛盾
     f = _run("女性，45岁。\n影像描述：子宫形态正常。\n影像结论：未见异常。",

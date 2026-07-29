@@ -334,7 +334,9 @@ class ReportQcApp(tk.Tk):
         self.qc_hotkey_status = tk.StringVar(value=f"快捷键：{hotkey_display(self.qc_hotkey)}")
         self._hotkey_thread_id = None      # Windows 全局热键消息循环线程 id
         self._hotkey_tk_seq = None         # 应用内 Tk 绑定序列（兜底）
+        self._pynput_listener = None       # 非 Windows 全局键盘监听（后台快捷键）
         self._hotkey_busy = False          # 防抖：质控执行中忽略重复触发
+        self._last_hotkey_ts = 0.0         # 防抖时间戳：忽略 0.5s 内的重复触发（含 Tk 与全局监听同时触发）
         if self.qc_hotkey:
             self.after(400, self._register_qc_hotkey)   # 主循环起来后再注册
 
@@ -1546,8 +1548,14 @@ class ReportQcApp(tk.Tk):
             self.qc_hotkey_status.set("快捷键：未设置")
 
     def _register_qc_hotkey(self):
-        """注册快捷键。Windows 走 RegisterHotKey 全局热键（PACS 聚焦时也能触发），
-        并同时做应用内 Tk 绑定兜底；非 Windows 仅应用内绑定。"""
+        """注册快捷键。三种机制按平台叠加，确保「聚焦时」与「后台（焦点在 PACS 等其它窗口）」都能触发：
+
+        - 所有平台：Tk bind_all（应用窗口聚焦时可用，作为兜底）
+        - Windows：RegisterHotKey 系统级全局热键（PACS 聚焦时也能触发，且不与非全局按键冲突）
+        - 非 Windows（macOS/Linux）：pynput 全局键盘监听（后台也能触发，需安装 pynput
+          并（macOS）授予辅助功能权限）。pynput 为被动监听，与 Tk bind_all 同时触发时
+          由 _on_qc_hotkey 的时间戳防抖去重，不会重复质控。
+        """
         hk = self.qc_hotkey
         if not hk:
             return
@@ -1590,11 +1598,83 @@ class ReportQcApp(tk.Tk):
                 u32.UnregisterHotKey(None, HOTKEY_ID)
 
             threading.Thread(target=loop, daemon=True).start()
+        # 3) 非 Windows：pynput 全局键盘监听（后台也能触发）
         else:
-            self.qc_hotkey_status.set(label + "（本软件窗口内有效）")
+            self._start_pynput_listener(label)
+
+    def _start_pynput_listener(self, label):
+        """非 Windows：启动 pynput 全局键盘监听，使快捷键在应用处于后台（焦点在其它窗口）时也能触发。
+
+        把已配置的快捷键组合（mods + key）映射到 pynput 的键表示；按键时若修饰键集合与
+        配置完全一致且主键匹配，则经主线程（after(0)）触发一键质控。macOS 需授予本程序
+        「辅助功能」权限，否则监听收不到事件。
+        """
+        try:
+            from pynput import keyboard
+        except Exception:
+            self.after(0, lambda: self.qc_hotkey_status.set(
+                label + "（窗口内有效；后台监听需 pip install pynput）"))
+            return
+        hk = self.qc_hotkey
+        target_mods = set(hk.get("mods") or [])
+        target_key = (hk.get("key") or "").lower()
+        if not target_key:
+            return
+
+        def _mod_of(k):
+            if k in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+                return "ctrl"
+            if k in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r):
+                return "alt"
+            if k in (keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r):
+                return "shift"
+            # Command（macOS）/ Win 键：按平台归一到配置里的 "win"
+            if k in (keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r,
+                     keyboard.Key.win, keyboard.Key.win_l, keyboard.Key.win_r):
+                return "win" if sys.platform.startswith("win") else "alt"
+            return None
+
+        def _key_of(k):
+            if isinstance(k, keyboard.Key):
+                n = k.name
+                if n and n.startswith("f") and n[1:].isdigit():
+                    return n          # F9 等
+                return n
+            if isinstance(k, keyboard.KeyCode):
+                if k.char:
+                    return k.char.lower()
+                return None
+            return None
+
+        pressed = set()
+
+        def on_press(k):
+            m = _mod_of(k)
+            if m:
+                pressed.add(m)
+                return
+            kn = _key_of(k)
+            if kn == target_key and pressed == target_mods:
+                self.after(0, self._on_qc_hotkey)
+
+        def on_release(k):
+            m = _mod_of(k)
+            if m:
+                pressed.discard(m)
+
+        try:
+            listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+            listener.daemon = True
+            listener.start()
+            self._pynput_listener = listener
+            self.after(0, lambda: self.qc_hotkey_status.set(
+                label + "（后台全局监听已启用）"))
+        except Exception:
+            self.after(0, lambda: self.qc_hotkey_status.set(
+                label + "（后台监听启动失败；窗口内仍可用）"))
 
     def _unregister_qc_hotkey(self):
-        """注销现有快捷键（Tk 解绑 + 结束 Windows 热键消息循环线程）。"""
+        """注销现有快捷键（Tk 解绑 + 结束 Windows 热键消息循环线程 + 停止 pynput 监听）。"""
         if self._hotkey_tk_seq:
             try:
                 self.unbind_all(self._hotkey_tk_seq)
@@ -1610,9 +1690,25 @@ class ReportQcApp(tk.Tk):
             except Exception:
                 pass
             self._hotkey_thread_id = None
+        if self._pynput_listener is not None:
+            try:
+                self._pynput_listener.stop()
+            except Exception:
+                pass
+            self._pynput_listener = None
 
     def _on_qc_hotkey(self):
-        """快捷键触发入口：防抖后执行「识别并质控」。"""
+        """快捷键触发入口：时间戳防抖后执行「识别并质控」。
+
+        防抖双保险：
+        - 0.5s 时间戳去重：避免应用聚焦时 Tk bind_all 与 pynput 全局监听同时触发、
+          或系统按键重复（key repeat）导致的重复质控；
+        - 执行中 _hotkey_busy 标记：单次质控未结束时忽略并发触发。
+        """
+        now = time.time()
+        if now - self._last_hotkey_ts < 0.5:
+            return
+        self._last_hotkey_ts = now
         if self._hotkey_busy:
             return
         self._hotkey_busy = True
