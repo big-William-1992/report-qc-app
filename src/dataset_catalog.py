@@ -5,6 +5,9 @@
 - 用户调研汇总（2026-07-29 起）：NIH Chest X-Ray / CheXpert / MIMIC-CXR /
   CheXnet / OpenI / ROCOv2 / PadChest / IU-Xray / TCIA，以及术语本体
   RadLex / UMLS / SNOMED CT。
+- 中文专项资源（2026-07-31 增补）：CBLUE / CCKS / CMedKG / CHIP 系列 /
+  中文放射征象同义词表（规划中），用于补足 catalog 全英文术语空白，
+  详见 KNOWLEDGE_RESOURCES 中文专项小节。
 - 数据集元数据（机构、样本量、标注类别、获取方式）以用户提供的清单为准，
   字段含义见各条目注释。
 
@@ -274,6 +277,70 @@ KNOWLEDGE_RESOURCES: Dict[str, Dict] = {
         "license": "免费（ACR 公开）",
         "access": "https://www.acr.org/Clinical-Research/Data-Science-Institute",
         "use_in_app": "分级术语规范化质控（如报告写 BI-RADS 类别须与征象描述一致）",
+        "related": [],
+    },
+    # —— 中文专项资源（放射科中文 NLP / 知识图谱），2026-07-31 增补 ——
+    # 背景：上述 B 类资源几乎全为英文；本产品面向中国放射科，中文术语归一与
+    # 中文临床 NER 是最大知识库空白。下列资源用于中文实体识别、术语归一，
+    # 对标英文 RadGraph 升级 anatomy_lexicon 到『实体+关系』层。均为研究/教学
+    # 用途，具体许可与获取以各官方发布页为准；本 catalog 仅登记元数据。
+    "cblue": {
+        "name": "CBLUE (中文医疗语言理解基准)",
+        "owner": "中国中文信息学会(CIPS)医疗健康信息处理专委会 + 腾讯天衍等 8 家单位",
+        "type": "nlp_benchmark",
+        "scope": "8 个中文医疗 NLP 任务：CMeEE 实体抽取、CMeIE 关系抽取、CMedQA "
+                 "医疗问答、CHIP-CDN 疾病归一、CCL 临床术语链接等，覆盖疾病/症状/"
+                 "部位/检查/药物等实体",
+        "license": "研究用途，需签署数据使用协议（非商业）",
+        "access": "https://github.com/CBLUEbenchmark/CBLUE",
+        "use_in_app": "中文临床 NER / 归一基准语料，支撑放射报告中文实体（疾病/部位/"
+                      "征象/程度）识别与术语归一，补足 catalog 全英文术语空白",
+        "related": [],
+    },
+    "ccks": {
+        "name": "CCKS (中国健康信息处理会议) 系列语料",
+        "owner": "中国计算机学会(CCF) / 中国中文信息学会 医疗健康信息处理专委会",
+        "type": "nlp_benchmark",
+        "scope": "历年医疗语料：yidu-s4k（医疗实体识别）、cMedQA（医疗问答）、"
+                 "CCKS 药品说明 / 诊断识别等，含实体、关系、归一任务",
+        "license": "会议评测语料，研究用途，需申请",
+        "access": "https://www.biendata.xyz（搜索 CCKS）/ http://www.cips-cl.org",
+        "use_in_app": "中文医疗实体识别与问答语料参考，辅助构建中文放射征象同义词归一表",
+        "related": [],
+    },
+    "cmedkg": {
+        "name": "CMedKG (中文医疗知识图谱)",
+        "owner": "复旦大学等高校自然语言处理实验室",
+        "type": "knowledge_graph",
+        "scope": "中文医疗知识图谱，含疾病/症状/药物/检查及相互关系，面向中文临床语义理解",
+        "license": "研究 / 教学用途（具体以发布页为准）",
+        "access": "https://github.com/king-yy/CMedKG",
+        "use_in_app": "中文临床实体关系图谱来源，支撑中文报告『所见-印象』实体+关系级"
+                      "质控（对标英文 RadGraph）",
+        "related": [],
+    },
+    "chip": {
+        "name": "CHIP 系列 (CHIP-CTC / CHIP-CDN)",
+        "owner": "CCF 医疗健康信息处理专委会 / 同济、复旦等",
+        "type": "nlp_benchmark",
+        "scope": "CHIP-CTC 临床文本分类（疾病推断）、CHIP-CDN 临床疾病归一"
+                 "（诊断名→标准码），均为高质量中文标注",
+        "license": "会议评测语料，研究用途，需申请",
+        "access": "https://www.biendata.xyz（搜索 CHIP）",
+        "use_in_app": "中文诊断名归一（印象诊断→标准术语）与分类，支撑 R 系列"
+                      "『印象诊断术语归一』质控",
+        "related": [],
+    },
+    "zh_radiology_synonyms": {
+        "name": "中文放射征象同义词表（项目自建，规划中）",
+        "owner": "本项目自建（放射科医师维护）",
+        "type": "nomenclature",
+        "scope": "规划中：将『增殖灶/纤维灶/斑片影/索条影/磨玻璃密度影』等中文征象词"
+                 "归一，补 RadLex 少量 zh 别名之不足；由放射科医师亲自维护",
+        "license": "项目内部（待实现）",
+        "access": "规划中：src/zh_radiology_synonyms.py（待实现）",
+        "use_in_app": "中文征象同义词归一，直接提升 R14 侧别 / R6 部位等规则的中文"
+                      "子串匹配准确率，是填补中英文术语鸿沟的关键内部资源",
         "related": [],
     },
 }

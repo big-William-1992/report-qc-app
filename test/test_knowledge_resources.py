@@ -3,7 +3,9 @@
 说明
 ----
 本文件验证 src/dataset_catalog.py 中 KNOWLEDGE_RESOURCES（B 类）的登记质量：
-- 6 个资源（RadGraph / RadLex Playbook / RadElement / RadReport / LOINC / ACR 分级词典）均在册；
+- 11 个资源（6 个英文：RadGraph / RadLex Playbook / RadElement / RadReport / LOINC /
+  ACR 分级词典；5 个中文专项：CBLUE / CCKS / CMedKG / CHIP / 中文放射同义词表规划）
+  均在册；
 - 字段完整、type 分类正确、related 关联可达；
 - catalog_markdown() 渲染包含这些资源；
 - 辅助函数按类型检索正确。
@@ -20,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import dataset_catalog as dc
 
 
-# 6 个 B 类资源 key → 期望 type
+# 11 个 B 类资源 key → 期望 type（6 英文 + 5 中文专项，2026-07-31 增补）
 _EXPECTED = {
     "radgraph": "knowledge_graph",
     "radlex_playbook": "nomenclature",
@@ -28,6 +30,12 @@ _EXPECTED = {
     "radreport": "template_library",
     "loinc": "ontology",
     "acr_reporting_lexicons": "reporting_lexicon",
+    # —— 中文专项 ——
+    "cblue": "nlp_benchmark",
+    "ccks": "nlp_benchmark",
+    "cmedkg": "knowledge_graph",
+    "chip": "nlp_benchmark",
+    "zh_radiology_synonyms": "nomenclature",
 }
 
 _REQUIRED_FIELDS = {"name", "owner", "type", "scope", "license", "use_in_app", "access"}
@@ -46,6 +54,7 @@ def test_knowledge_resource_fields_complete():
     valid_types = {
         "knowledge_graph", "nomenclature", "common_data_element",
         "template_library", "ontology", "reporting_lexicon",
+        "nlp_benchmark",
     }
     for key, meta in dc.KNOWLEDGE_RESOURCES.items():
         missing = _REQUIRED_FIELDS - set(meta.keys())
@@ -84,11 +93,50 @@ def test_get_knowledge_resource_ok():
 
 
 def test_catalog_markdown_includes_b_class():
-    # markdown 渲染含 B 类小节与关键资源名
+    # markdown 渲染含 B 类小节与关键资源名（英文 + 中文）
     md = dc.catalog_markdown()
     assert "B 类" in md
-    for name in ("RadGraph", "RadReport", "LOINC", "RadLex Playbook"):
+    for name in ("RadGraph", "RadReport", "LOINC", "RadLex Playbook",
+                 "CBLUE", "CMedKG"):
         assert name in md, f"catalog_markdown 未含 {name}"
+
+
+# —— 中文专项资源（2026-07-31 增补）专项校验 ——
+_ZH_EXPECTED = {
+    "cblue": "nlp_benchmark",
+    "ccks": "nlp_benchmark",
+    "cmedkg": "knowledge_graph",
+    "chip": "nlp_benchmark",
+    "zh_radiology_synonyms": "nomenclature",
+}
+
+
+def test_chinese_resources_present():
+    # 5 个中文专项资源全部登记
+    for key in _ZH_EXPECTED:
+        assert key in dc.KNOWLEDGE_RESOURCES, f"目录缺少中文资源 {key}"
+    # 全局计数随中文条目增长（6 → 11）
+    assert len(dc.list_knowledge_resources()) == 11
+
+
+def test_chinese_resources_typed():
+    # 中文资源 type 取值合法且与登记一致
+    all_types = {
+        "knowledge_graph", "nomenclature", "common_data_element",
+        "template_library", "ontology", "reporting_lexicon", "nlp_benchmark",
+    }
+    for key, rtype in _ZH_EXPECTED.items():
+        meta = dc.KNOWLEDGE_RESOURCES[key]
+        assert meta["type"] == rtype, f"{key} type 应为 {rtype}"
+        assert meta["type"] in all_types, f"{key} type 非法: {meta['type']}"
+
+
+def test_chinese_resources_chinese_content():
+    # 中文资源名称/范围确实含中文，避免误登记的英文条目混入中文专项
+    for key in _ZH_EXPECTED:
+        meta = dc.KNOWLEDGE_RESOURCES[key]
+        assert any(ord(c) > 0x4E00 for c in meta["name"]), f"{key}.name 不含中文"
+        assert any(ord(c) > 0x4E00 for c in meta["scope"]), f"{key}.scope 不含中文"
 
 
 def test_no_dataset_field_leak_in_knowledge():
