@@ -1044,14 +1044,16 @@ class ReportQcApp(tk.Tk):
     # -------------------- 报告质控页 --------------------
     def _build_qc_tab(self):
         s = THEME
-        sf = ScrollableFrame(self.tab_qc)
-        sf.pack(fill="both", expand=True)
-        f = sf.inner
-        f.configure(padding=12)
+        # 主工作区：直接挂在 tab 上，用 grid 随窗口伸缩（移出可滚动容器，
+        # 解决「窗口拉大输入区仍挤在顶部靠滚动」的大小问题）
+        root = self.tab_qc
+        root.configure(padding=12)
+        root.grid_rowconfigure(1, weight=1)        # 中央双栏行：占满剩余高度
+        root.grid_columnconfigure(0, weight=1)
 
-        # 元信息卡片
-        meta = ttk.LabelFrame(f, text="📋  报告元信息")
-        meta.pack(fill="x", padx=2, pady=(0, 10))
+        # 元信息卡片（响应式 grid：标签列固定、输入框列随窗口铺开）
+        meta = ttk.LabelFrame(root, text="📋  报告元信息")
+        meta.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         self.vars = {k: tk.StringVar() for k in
                      ["exam_no", "name", "gender", "age",
                       "applied_site", "modality", "laterality"]}
@@ -1064,32 +1066,42 @@ class ReportQcApp(tk.Tk):
             r, c = i // 3, (i % 3) * 2
             ttk.Label(meta, text=lab, foreground=s["text_dim"]).grid(
                 row=r, column=c, sticky="e", padx=10, pady=7)
-            ttk.Entry(meta, textvariable=self.vars[key], width=18).grid(
-                row=r, column=c + 1, sticky="w", padx=6, pady=7)
+            ttk.Entry(meta, textvariable=self.vars[key]).grid(
+                row=r, column=c + 1, sticky="ew", padx=6, pady=7)
+            meta.columnconfigure(c + 1, weight=1)
 
-        # 报告文本 + 结果 双栏
-        body = ttk.Frame(f)
-        body.pack(fill="both", expand=True, pady=(0, 10))
+        # 报告文本 + 结果 双栏（grid 随窗口伸缩：左输入区 weight=2 / 右结果区 weight=1）
+        body = ttk.Frame(root)
+        body.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
+        body.grid_rowconfigure(0, weight=1)
+        body.grid_columnconfigure(0, weight=2)   # 左：输入区
+        body.grid_columnconfigure(1, weight=1)   # 右：结果区
         left = ttk.Frame(body)
-        left.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.grid_rowconfigure(0, weight=1)
+        left.grid_rowconfigure(1, weight=1)
 
         # 影像描述框 / 影像结论框（独立控件：分别编辑、OCR 回填、跨框质控）
         fb = ttk.LabelFrame(left, text="🩻  影像描述（检查所见）")
-        fb.pack(fill="both", expand=True, pady=(0, 6))
+        fb.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
+        fb.grid_rowconfigure(0, weight=1)
+        fb.grid_columnconfigure(0, weight=1)
         self.findings_txt = scrolledtext.ScrolledText(fb, wrap="word",
                                                        font=F(FAMILY, 11), bg=s["panel"], fg=s["text"],
                                                        insertbackground=s["primary"], relief="solid",
                                                        borderwidth=1, highlightthickness=1,
                                                        highlightbackground=s["border"])
-        self.findings_txt.pack(fill="both", expand=True, padx=4, pady=4)
+        self.findings_txt.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
         ib = ttk.LabelFrame(left, text="📑  影像结论（诊断印象）")
-        ib.pack(fill="both", expand=True, pady=(0, 6))
+        ib.grid(row=1, column=0, sticky="nsew", pady=(0, 6))
+        ib.grid_rowconfigure(0, weight=1)
+        ib.grid_columnconfigure(0, weight=1)
         self.impression_txt = scrolledtext.ScrolledText(ib, wrap="word",
                                                         font=F(FAMILY, 11), bg=s["panel"], fg=s["text"],
                                                         insertbackground=s["primary"], relief="solid",
                                                         borderwidth=1, highlightthickness=1,
                                                         highlightbackground=s["border"])
-        self.impression_txt.pack(fill="both", expand=True, padx=4, pady=4)
+        self.impression_txt.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
         for w in (self.findings_txt, self.impression_txt):
             w.tag_configure("hl_high", background=s["hl_high"], foreground="#B71C1C")
             w.tag_configure("hl_med", background=s["hl_med"], foreground="#8A5A00")
@@ -1097,26 +1109,85 @@ class ReportQcApp(tk.Tk):
         # 粘贴整份报告到描述框时，按标题自动拆分到两框并回填元信息
         self.findings_txt.bind("<<Paste>>", lambda e: self.after(60, self._on_paste_report))
 
-        # 按钮栏（主操作，单行）
-        bar = ttk.Frame(left)
-        bar.pack(fill="x", pady=(10, 0))
-        ttk.Button(bar, text="▶ 运行质控", style="Primary.TButton", command=self._run).pack(side="left", padx=3)
-        ttk.Button(bar, text="📂 导入文件", command=self._import).pack(side="left", padx=3)
-        ttk.Button(bar, text="🗑 清空", command=lambda: (self.findings_txt.delete("1.0", "end"),
+        # ===== 主操作条（核心三步流程，绿色高亮，置于中央双栏下方）=====
+        main_bar = ttk.Frame(root)
+        main_bar.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        ttk.Button(main_bar, text="▶ 运行质控", style="Primary.TButton",
+                   command=self._run).pack(side="left", padx=3)
+        ttk.Button(main_bar, text="🔍 识别并质控", style="Primary.TButton",
+                   command=self._capture_and_qc).pack(side="left", padx=3)
+        ttk.Button(main_bar, text="🪟 从PACS读取(UIA)", style="Primary.TButton",
+                   command=self._capture_via_uia).pack(side="left", padx=3)
+
+        # ===== 次级操作条 =====
+        sub_bar = ttk.Frame(root)
+        sub_bar.grid(row=3, column=0, sticky="ew", pady=(0, 4))
+        ttk.Button(sub_bar, text="📂 导入文件", command=self._import).pack(side="left", padx=3)
+        ttk.Button(sub_bar, text="🗑 清空", command=lambda: (self.findings_txt.delete("1.0", "end"),
                                                   self.impression_txt.delete("1.0", "end"))).pack(side="left", padx=3)
-        ttk.Button(bar, text="💾 存入样本库", command=self._save).pack(side="left", padx=3)
-        ttk.Button(bar, text="🔍 自动识别元信息", command=self._auto_meta_btn).pack(side="left", padx=3)
-        ttk.Button(bar, text="✏️ 自动修正并复制", style="Primary.TButton",
+        ttk.Button(sub_bar, text="💾 存入样本库", command=self._save).pack(side="left", padx=3)
+        ttk.Button(sub_bar, text="🔍 自动识别元信息", command=self._auto_meta_btn).pack(side="left", padx=3)
+        ttk.Button(sub_bar, text="✏️ 自动修正并复制", style="Primary.TButton",
                    command=self._auto_fix_copy).pack(side="left", padx=3)
 
-        # 剪贴板监听控制（独立一行，避免窄窗下被右侧边界裁切）
+        # ===== 设置 / 高级功能（默认折叠，点击展开；主界面不再被 10+ 按钮淹没）=====
+        self.settings_open = tk.BooleanVar(value=False)
+        set_frame = ttk.LabelFrame(root, text="⚙  设置 / 高级功能")
+        set_frame.grid(row=4, column=0, sticky="ew", pady=(4, 0))
+        ttk.Checkbutton(set_frame, text="展开高级功能 ▾",
+                        variable=self.settings_open,
+                        command=self._toggle_settings).pack(anchor="w", padx=6, pady=4)
+        self._settings_inner = ttk.Frame(set_frame)
+        self._build_settings_inner()
+        self._toggle_settings()  # 应用初始（折叠）状态
+
+        # 结果区（右栏，随窗口纵向伸缩；结果框占主空间，监听记录次之）
+        right = ttk.Frame(body)
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right.grid_rowconfigure(1, weight=4)   # 结果框主伸缩
+        right.grid_rowconfigure(4, weight=1)   # 监听记录次伸缩
+        right.grid_columnconfigure(0, weight=1)
+        ttk.Label(right, text="📊  质控结果", font=F(FAMILY, 12, "bold"),
+                  foreground=s["primary"]).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        self.out = scrolledtext.ScrolledText(right, wrap="word",
+                                              font=F(MONO, 10), bg=s["panel_alt"], fg=s["text"],
+                                              relief="solid", borderwidth=1,
+                                              highlightthickness=1, highlightbackground=s["border"])
+        self.out.grid(row=1, column=0, sticky="nsew", pady=(0, 6))
+        ttk.Label(right, text="📈  多维评分", font=F(FAMILY, 12, "bold"),
+                  foreground=s["primary"]).grid(row=2, column=0, sticky="w", pady=(8, 4))
+        self.score_var = tk.StringVar(value="准确性 - | 完整性 - | 规范性 - | 及时性 -")
+        score_lbl = ttk.Label(right, textvariable=self.score_var, foreground=s["primary_d"],
+                              font=F(MONO, 10), wraplength=360)
+        score_lbl.grid(row=3, column=0, sticky="w", pady=(0, 4))
+
+        # 监听捕获记录（审计）：每次复制触发质控时追加一行
+        hist = ttk.LabelFrame(right, text="📋  监听捕获记录（审计）")
+        hist.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
+        hist.grid_rowconfigure(0, weight=1)
+        hist.grid_columnconfigure(0, weight=1)
+        self.history_box = scrolledtext.ScrolledText(hist, wrap="word",
+                                                     font=F(MONO, 9), bg=s["panel"], fg=s["text"],
+                                                     relief="solid", borderwidth=1,
+                                                     highlightthickness=1,
+                                                     highlightbackground=s["border"], state="disabled")
+        self.history_box.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+
+    # -------------------- 设置 / 高级功能（可折叠） --------------------
+    def _build_settings_inner(self):
+        """构建设置折叠区内部控件：剪贴板监听 / 屏幕区域 OCR / 分区 OCR + UIA / 快捷键采集方式。
+        控件引用均挂到 self，保持与原有功能函数（_toggle_clip/_select_ocr_region/_capture_via_uia 等）一致。
+        """
+        s = THEME
+        p = self._settings_inner
+
+        # 剪贴板监听控制
         self.clip_watch = False
         self._alerted_sig = None  # 同一份复制内容只弹窗提醒一次，避免监听死循环
         self._alert_cooldown = 0.0  # 弹窗最小冷却时间戳（秒），防止抖动/旧exe导致狂弹
         self.clip_var = tk.BooleanVar(value=False)
-        clip_bar = ttk.Frame(left)
-        clip_bar.pack(fill="x", pady=(6, 0))
-        # ponytail: v2 — separator before clip controls
+        clip_bar = ttk.Frame(p)
+        clip_bar.pack(fill="x", pady=(2, 0))
         ttk.Separator(clip_bar, orient="horizontal").pack(fill="x", pady=(0, 6))
         self.clip_chk = ttk.Checkbutton(clip_bar, text="📋  监听剪贴板（复制即质控）",
                                         variable=self.clip_var, command=self._toggle_clip)
@@ -1129,34 +1200,29 @@ class ReportQcApp(tk.Tk):
         ttk.Checkbutton(clip_bar, text="🔔 发现问题即弹窗提醒", variable=self.clip_alert).pack(side="left", padx=2)
 
         # 屏幕区域 OCR（识别患者信息 + 与剪贴板交叉核对身份；仅快捷键/按钮触发）
-        ocr_bar = ttk.Frame(left)
+        ocr_bar = ttk.Frame(p)
         ocr_bar.pack(fill="x", pady=(6, 0))
         ttk.Separator(ocr_bar, orient="horizontal").pack(fill="x", pady=(0, 6))
         ttk.Button(ocr_bar, text="🎯 框选基础信息区", width=14,
                    command=lambda: self._select_ocr_region("basic")).pack(side="left", padx=2)
-        # OCR 状态灯（颜色含义见 _ocr_status：灰=待触发
-        # 绿=识别正常 黄=区域无患者信息 红=异常/身份不符）
+        # OCR 状态灯（颜色含义见 _ocr_status：灰=待触发 绿=识别正常 黄=区域无患者信息 红=异常/身份不符）
         self.ocr_dot = tk.Canvas(ocr_bar, width=12, height=12, bd=0,
                                   highlightthickness=0, bg=THEME["bg"])
         self.ocr_dot.pack(side="left", padx=(2, 4))
         self._ocr_dot_id = self.ocr_dot.create_oval(1, 1, 11, 11, fill="#9AA0A6", outline="")
         ttk.Label(ocr_bar, textvariable=self.ocr_status, foreground=s["text_dim"]).pack(side="left", padx=6)
 
-        # 分区 OCR：描述区 / 结论区 框选 + 一键「识别并质控」
-        ocr_bar2 = ttk.Frame(left)
+        # 分区 OCR：描述区 / 结论区 框选 + 快捷键 / UIA 检测
+        ocr_bar2 = ttk.Frame(p)
         ocr_bar2.pack(fill="x", pady=(6, 0))
         ttk.Separator(ocr_bar2, orient="horizontal").pack(fill="x", pady=(0, 6))
         ttk.Button(ocr_bar2, text="🎯 框选描述区", width=12,
                    command=lambda: self._select_ocr_region("findings")).pack(side="left", padx=2)
         ttk.Button(ocr_bar2, text="🎯 框选结论区", width=12,
                    command=lambda: self._select_ocr_region("impression")).pack(side="left", padx=2)
-        ttk.Button(ocr_bar2, text="🔍 识别并质控", width=14, style="Primary.TButton",
-                   command=self._capture_and_qc).pack(side="left", padx=2)
         ttk.Button(ocr_bar2, text="⌨ 设置快捷键", width=12,
                    command=self._set_qc_hotkey).pack(side="left", padx=2)
         ttk.Separator(ocr_bar2, orient="vertical").pack(side="left", padx=4, fill="y")
-        ttk.Button(ocr_bar2, text="🪟 从PACS读取(UIA)", width=16, style="Primary.TButton",
-                   command=self._capture_via_uia).pack(side="left", padx=2)
         ttk.Button(ocr_bar2, text="🔎 UIA检测", width=10,
                    command=self._uia_diagnose).pack(side="left", padx=2)
         ttk.Label(ocr_bar2, textvariable=self.qc_hotkey_status,
@@ -1165,7 +1231,7 @@ class ReportQcApp(tk.Tk):
                   foreground=s["text_dim"]).pack(side="left", padx=6)
 
         # 快捷键「识别并质控」采集方式选择（按钮直连不受影响，仅快捷键分派受此控）
-        cap_bar = ttk.Frame(left)
+        cap_bar = ttk.Frame(p)
         cap_bar.pack(fill="x", pady=(6, 0))
         ttk.Separator(cap_bar, orient="horizontal").pack(fill="x", pady=(0, 6))
         ttk.Label(cap_bar, text="⌨ 快捷键采集：").pack(side="left", padx=2)
@@ -1176,33 +1242,12 @@ class ReportQcApp(tk.Tk):
                             value=_val,
                             command=self._on_capture_mode_change).pack(side="left", padx=4)
 
-        # 结果区
-        right = ttk.Frame(body, width=400)
-        right.pack(side="right", fill="y", padx=(8, 0))
-        right.pack_propagate(False)
-        ttk.Label(right, text="📊  质控结果", font=F(FAMILY, 12, "bold"),
-                  foreground=s["primary"]).pack(anchor="w", pady=(0, 6))
-        self.out = scrolledtext.ScrolledText(right, wrap="word", height=12,
-                                              font=F(MONO, 10), bg=s["panel_alt"], fg=s["text"],
-                                              relief="solid", borderwidth=1,
-                                              highlightthickness=1, highlightbackground=s["border"])
-        self.out.pack(fill="both", pady=(0, 6))
-        ttk.Label(right, text="📈  多维评分", font=F(FAMILY, 12, "bold"),
-                  foreground=s["primary"]).pack(anchor="w", pady=(10, 4))
-        self.score_var = tk.StringVar(value="准确性 - | 完整性 - | 规范性 - | 及时性 -")
-        score_lbl = ttk.Label(right, textvariable=self.score_var, foreground=s["primary_d"],
-                              font=F(MONO, 10), wraplength=380)
-        score_lbl.pack(anchor="w")
-
-        # 监听捕获记录（审计）：每次复制触发质控时追加一行
-        hist = ttk.LabelFrame(right, text="📋  监听捕获记录（审计）")
-        hist.pack(fill="both", expand=True, pady=(8, 0))
-        self.history_box = scrolledtext.ScrolledText(hist, wrap="word", height=6,
-                                                     font=F(MONO, 9), bg=s["panel"], fg=s["text"],
-                                                     relief="solid", borderwidth=1,
-                                                     highlightthickness=1,
-                                                     highlightbackground=s["border"], state="disabled")
-        self.history_box.pack(fill="both", expand=True, padx=4, pady=4)
+    def _toggle_settings(self):
+        """展开 / 收起『设置 / 高级功能』折叠区（默认收起）。"""
+        if self.settings_open.get():
+            self._settings_inner.pack(fill="x", padx=6, pady=(0, 6))
+        else:
+            self._settings_inner.forget()
 
     # -------------------- 剪贴板监听 --------------------
     @staticmethod
