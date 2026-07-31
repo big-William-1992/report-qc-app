@@ -339,6 +339,10 @@ class ReportQcApp(tk.Tk):
         # Windows UI Automation 采集提供器（读前景 PACS 窗口控件文本，无滚动漂移）
         self.uia = uia_provider.UIAProvider()
 
+        # 「识别并质控」采集方式（快捷键触发时按此分派；显式按钮直连各自方法不受影响）
+        # auto=UIA 优先否则 OCR；uia=仅 UIA；ocr=仅 OCR 三区；ask=每次弹菜单选择
+        self.capture_mode = self._norm_capture_mode(self.ocr_cfg.get("capture_mode"))
+
         # 「识别并质控」快捷键（任意组合，持久化在 ocr_config.json）
         self.qc_hotkey = self.ocr_cfg.get("hotkey") or None   # {"mods":[...], "key":"F9"}
         self.qc_hotkey_status = tk.StringVar(value=f"快捷键：{hotkey_display(self.qc_hotkey)}")
@@ -1160,6 +1164,18 @@ class ReportQcApp(tk.Tk):
         ttk.Label(ocr_bar2, textvariable=self.ocr_regions_status,
                   foreground=s["text_dim"]).pack(side="left", padx=6)
 
+        # 快捷键「识别并质控」采集方式选择（按钮直连不受影响，仅快捷键分派受此控）
+        cap_bar = ttk.Frame(left)
+        cap_bar.pack(fill="x", pady=(6, 0))
+        ttk.Separator(cap_bar, orient="horizontal").pack(fill="x", pady=(0, 6))
+        ttk.Label(cap_bar, text="⌨ 快捷键采集：").pack(side="left", padx=2)
+        self.capture_mode_var = tk.StringVar(value=self.capture_mode)
+        for _val, _lab in (("auto", "自动"), ("uia", "仅UIA"),
+                           ("ocr", "仅OCR"), ("ask", "每次询问")):
+            ttk.Radiobutton(cap_bar, text=_lab, variable=self.capture_mode_var,
+                            value=_val,
+                            command=self._on_capture_mode_change).pack(side="left", padx=4)
+
         # 结果区
         right = ttk.Frame(body, width=400)
         right.pack(side="right", fill="y", padx=(8, 0))
@@ -1293,7 +1309,8 @@ class ReportQcApp(tk.Tk):
     def _save_ocr_config(self):
         try:
             cfg = {"regions": {k: list(v) for k, v in self.ocr_regions.items()},
-                   "hotkey": getattr(self, "qc_hotkey", None)}
+                   "hotkey": getattr(self, "qc_hotkey", None),
+                   "capture_mode": getattr(self, "capture_mode", "auto")}
             with open(self._ocr_config_path(), "w", encoding="utf-8") as fh:
                 json.dump(cfg, fh, ensure_ascii=False, indent=2)
         except Exception:
@@ -1476,11 +1493,44 @@ class ReportQcApp(tk.Tk):
 
     # -------------------- Windows UIA 采集（无滚动漂移） --------------------
     def _dispatch_qc(self):
-        """「识别并质控」统一入口：UIA 可用时优先 UIA，否则退回 OCR 三区。"""
-        if getattr(self, "uia", None) and self.uia.is_available():
+        """「识别并质控」统一入口（快捷键触发）：按 self.capture_mode 分派采集方式。
+
+        - auto：UIA 可用则 UIA，否则 OCR 三区（保持原默认行为）
+        - uia ：强制 UIA（UIA 不可用时提示）
+        - ocr ：强制 OCR 三区（未框选则提示）
+        - ask ：弹菜单让用户每次选择 UIA / OCR
+        注：显式按钮（🪟 从PACS读取(UIA) / 🔍 识别并质控(OCR)）直连各自方法，不受此影响。
+        """
+        mode = self.capture_mode
+        if mode == "uia":
             self._capture_via_uia()
-        else:
+        elif mode == "ocr":
+            if not self.ocr_regions:
+                messagebox.showinfo("请先框选区域",
+                    "当前采集方式设为『OCR』，但尚未框选屏幕区域。\n"
+                    "请先用『🎯 框选…』按钮设定三区，或把采集方式切回『自动/UIA/每次询问』。")
+                return
+            ok, reason = ocr_provider.availability()
+            if not ok:
+                messagebox.showwarning("OCR 不可用", reason)
+                return
             self._capture_and_qc()
+        elif mode == "ask":
+            self._ask_capture_mode()
+        else:  # auto
+            if getattr(self, "uia", None) and self.uia.is_available():
+                self._capture_via_uia()
+            else:
+                if not self.ocr_regions:
+                    messagebox.showinfo("请先框选区域或切换采集方式",
+                        "自动模式下 UIA 不可用（需 Windows 原生 PACS 客户端），"
+                        "且尚未框选 OCR 三区。\n请先框选区域，或把采集方式切到『UIA/每次询问』。")
+                    return
+                ok, reason = ocr_provider.availability()
+                if not ok:
+                    messagebox.showwarning("OCR 不可用", reason)
+                    return
+                self._capture_and_qc()
 
     def _capture_via_uia(self):
         """从前景 PACS 窗口（UIA 读控件文本）读取完整报告并质控。
@@ -1541,6 +1591,58 @@ class ReportQcApp(tk.Tk):
             return
         msg = self.uia.diagnose_foreground()
         messagebox.showinfo("UIA 检测", msg)
+
+    @staticmethod
+    def _norm_capture_mode(v):
+        """采集方式取值规范化：仅 auto/uia/ocr/ask 合法，其余一律回退 auto。"""
+        return v if v in ("auto", "uia", "ocr", "ask") else "auto"
+
+    def _ask_capture_mode(self):
+        """弹菜单让用户选择本次采集方式（UIA / OCR），快捷键 ask 模式使用。Esc 关闭不触发。"""
+        dlg = tk.Toplevel(self)
+        dlg.title("选择采集方式")
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        frm = ttk.Frame(dlg, padding=14)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="本次「识别并质控」用哪种方式？",
+                  font=("TkDefaultFont", 11, "bold")).pack(pady=(0, 10))
+
+        def choose(m):
+            dlg.destroy()
+            if m == "uia":
+                self._capture_via_uia()
+            else:
+                if not self.ocr_regions:
+                    messagebox.showinfo("请先框选区域",
+                        "尚未框选 OCR 三区，无法用 OCR 识别。\n"
+                        "请先用『🎯 框选…』按钮设定区域，或改用 UIA。")
+                    return
+                ok, reason = ocr_provider.availability()
+                if not ok:
+                    messagebox.showwarning("OCR 不可用", reason)
+                    return
+                self._capture_and_qc()
+
+        ttk.Button(frm, text="🪟 UIA（读 PACS 控件文本，无滚动漂移）",
+                   style="Primary.TButton", width=36,
+                   command=lambda: choose("uia")).pack(pady=4, fill="x")
+        ttk.Button(frm, text="🔍 OCR（屏幕三区截图识别）",
+                   width=36, command=lambda: choose("ocr")).pack(pady=4, fill="x")
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        dlg.grab_set()
+        dlg.update_idletasks()
+        dlg.wait_visibility()
+        w, h = dlg.winfo_width(), dlg.winfo_height()
+        x = max(0, (dlg.winfo_screenwidth() - w) // 2)
+        y = max(0, (dlg.winfo_screenheight() - h) // 2)
+        dlg.geometry(f"+{x}+{y}")
+        dlg.focus_set()
+
+    def _on_capture_mode_change(self):
+        """采集方式单选变更：持久化到 ocr_config.json（下次启动与快捷键均生效）。"""
+        self.capture_mode = self.capture_mode_var.get()
+        self._save_ocr_config()
 
     # -------------------- 「识别并质控」快捷键 --------------------
     def _set_qc_hotkey(self):

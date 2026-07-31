@@ -46,6 +46,9 @@ keys/
 # 开发者命令行发卡脚本（用私钥签名生成激活码）：不含私钥本身，但为减少仓库暴露，
 # 仅本地保管，不入库；GUI 版（gen_activation_gui.py）与 Web 原型（web_issuer/）同理忽略。
 gen_activation_code.py
+# GUI 发卡工具 / Web 发卡原型（同属发卡工具，仅本地保管，不入库）
+gen_activation_gui.py
+web_issuer/
 # 构建信息（供软件内检查更新比对），仅 CI 打包时写入，本地不入库避免陈旧值
 assets/build_info.json
 # 自动更新运行时缓存（下载的 tarball/zip、独立安装器、解包临时目录）
