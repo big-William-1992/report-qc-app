@@ -25,10 +25,19 @@ _TARBALL_URL = f"https://api.github.com/repos/{_REPO}/tarball/latest"
 
 
 def _parse_iso(s):
-    try:
-        return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ")
-    except Exception:
+    if not s:
         return None
+    s = s.strip().replace("Z", "")
+    # 去掉可能存在的毫秒/微秒片段（GitHub published_at 常带 .123456）
+    import re as _re
+    s = _re.sub(r"\.\d+", "", s)
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.datetime.strptime(s, fmt)
+        except Exception:
+            continue
+    return None
 
 
 def _fetch_latest(timeout=8):

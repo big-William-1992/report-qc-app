@@ -13,6 +13,7 @@ import platform
 import tkinter as tk
 from tkinter import ttk, messagebox
 import sys
+import subprocess
 
 # 许可证数据文件（支持 PyInstaller 打包后的路径）
 if getattr(sys, 'frozen', False):
@@ -178,10 +179,6 @@ _PUBLIC_KEY_PEM = b"""-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEACsb0q9A7E3oRfw/DNkMf1UKoxKWzeK6xP2ZaNLbpnto=
 -----END PUBLIC KEY-----
 """
-from cryptography.hazmat.primitives import serialization
-PUBLIC_KEY = serialization.load_pem_public_key(_PUBLIC_KEY_PEM)
-
-
 def _stable_hw_id():
     """稳定的硬件标识（激活码绑定对象）。重装系统/换网卡尽量不变。
 
@@ -219,6 +216,11 @@ def validate_activation_code(code):
     """用内置公钥验证激活码（须为『本机硬件标识』的有效 Ed25519 签名）。"""
     if not code:
         return False
+    try:
+        from cryptography.hazmat.primitives import serialization
+        public_key = serialization.load_pem_public_key(_PUBLIC_KEY_PEM)
+    except Exception:
+        return False
     raw = code.strip().upper().replace("-", "").replace(" ", "")
     if len(raw) % 8 != 0:
         raw += "=" * (8 - len(raw) % 8)
@@ -227,7 +229,7 @@ def validate_activation_code(code):
     except Exception:
         return False
     try:
-        PUBLIC_KEY.verify(sig, _stable_hw_id().encode("utf-8"))
+        public_key.verify(sig, _stable_hw_id().encode("utf-8"))
         return True
     except Exception:
         return False

@@ -13,6 +13,9 @@ Shapely>=2.0                  # rapidocr 文本检测依赖
 PyYAML>=6.0                   # rapidocr 配置加载
 six>=1.16                     # rapidocr 兼容层
 
+# UIA（Windows UI Automation）报告采集功能所需（仅 Windows 生效，跨平台安装无害）：
+comtypes>=1.4.0               # Python 调用 Windows UIA/COM 的桥；Mac/Linux 不需要使用但可安全安装
+
 # 安装后运行：
 #   pip install -r requirements.txt
 #   python src/app.py

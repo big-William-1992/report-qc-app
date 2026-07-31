@@ -17,8 +17,13 @@ report_qc_app/src/ocr_provider.py
 import os
 import sys
 
-import cv2
-import numpy as np
+try:
+    import cv2
+    import numpy as np
+except Exception:
+    # 缺 OpenCV/numpy 时不崩溃：仅 OCR 功能不可用，GUI 其余功能（剪贴板/UIA 质控）照常。
+    cv2 = None
+    np = None
 
 _PIP_HINT = "请先安装 OCR 依赖：pip install rapidocr-onnxruntime Pillow"
 
@@ -62,6 +67,8 @@ _engine_err = None      # 初始化失败原因（缓存，避免重复尝试）
 
 def availability() -> (bool, str):
     """返回 (是否可用, 说明)。可用时说明为空串。"""
+    if cv2 is None or np is None:
+        return False, "缺少 OpenCV/numpy，请先安装：pip install opencv-python-headless numpy"
     try:
         eng = _get_engine()
     except Exception as e:  # 不应发生，_get_engine 内部已吞异常

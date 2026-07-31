@@ -136,7 +136,12 @@ def stats_by_error_type(path: str = None) -> dict:
     with sqlite3.connect(path or db_path()) as conn:
         rows = conn.execute("SELECT findings_json FROM samples").fetchall()
     for (fj,) in rows:
-        for f in json.loads(fj):
+        fj = fj or "[]"
+        try:
+            items = json.loads(fj)
+        except Exception:
+            continue
+        for f in items:
             et = f.get("error_type", "其他")
             counts[et] = counts.get(et, 0) + 1
     return counts
@@ -150,7 +155,11 @@ def stats_by_date(path: str = None) -> dict:
         rows = conn.execute("SELECT ts, scores_json FROM samples").fetchall()
     for ts, sj in rows:
         day = ts[:10]
-        sc = json.loads(sj)
+        sj = sj or "[]"
+        try:
+            sc = json.loads(sj)
+        except Exception:
+            continue
         acc = sc.get("准确性", 100)
         if isinstance(acc, dict):   # 兼容新版 score() 返回的明细结构
             acc = acc.get("score", 100)

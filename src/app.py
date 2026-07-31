@@ -1530,7 +1530,7 @@ class ReportQcApp(tk.Tk):
         self.findings_txt.insert("1.0", findings)
         self.impression_txt.delete("1.0", "end")
         self.impression_txt.insert("1.0", impression)
-        # 3) 运行质控（R1–R15 全量生效）
+        # 3) 运行质控（R1–R12、R14、R15 全量生效；R13 预留未启用）
         self._run()
         self._ocr_status("ok", "● 已从 PACS 窗口读取并质控（UIA，无滚动漂移）")
 
@@ -2660,7 +2660,8 @@ class ReportQcApp(tk.Tk):
         self.ris_status.set(("✅ " if ok else "⚠ ") + msg)
 
     def _ris_collect(self) -> dict:
-        cfg = {k: v.get().strip() for k, v in self.ris_vars.items()}
+        cfg = {k: (v.get() if k == "password" else v.get().strip())
+               for k, v in self.ris_vars.items()}
         cfg["query"] = self.ris_query.get("1.0", "end").strip()
         return cfg
 

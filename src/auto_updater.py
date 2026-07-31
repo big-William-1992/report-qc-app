@@ -101,6 +101,10 @@ if os.path.isfile(lic):
 logs_src = os.path.join(APP_DIR, "logs")
 if os.path.isdir(logs_src):
     shutil.copytree(logs_src, os.path.join(BAK, "logs"))
+# 备份用户自定义规则配置（避免更新被 tarball 覆盖丢失）
+rc_src = os.path.join(APP_DIR, "assets", "rules_config.json")
+if os.path.isfile(rc_src):
+    shutil.copy(rc_src, os.path.join(BAK, "rules_config.json"))
 
 # 删除旧文件（保留 .git/.workbuddy/keys/update）
 EXCLUDE = {".git", ".workbuddy", "keys", "update"}
@@ -138,6 +142,11 @@ if os.path.isdir(logs_bak):
     dest = os.path.join(APP_DIR, "logs")
     shutil.rmtree(dest, ignore_errors=True)
     shutil.copytree(logs_bak, dest)
+# 恢复用户自定义规则配置（用户版本优先，避免更新被 tarball 覆盖丢失）
+rc_bak = os.path.join(BAK, "rules_config.json")
+if os.path.isfile(rc_bak):
+    os.makedirs(os.path.join(APP_DIR, "assets"), exist_ok=True)
+    shutil.copy(rc_bak, os.path.join(APP_DIR, "assets", "rules_config.json"))
 
 # 清除隔离属性（对源码无副作用，能让无签名分发正常启动）
 try:

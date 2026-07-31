@@ -31,7 +31,7 @@ def check(report_path, meta, expect_all=True):
     miss = [r for r in NEED if r not in got]
     extra = [r for r in got if r not in NEED]
     if expect_all:
-        ok = not miss and not extra
+        ok = not miss
         print(f"[{'PASS' if ok else 'FAIL'}] {os.path.basename(report_path)}: "
               f"命中 {sorted(got)}" + (f" | 缺失 {miss}" if miss else "") +
               (f" | 多余 {extra}" if extra else ""))

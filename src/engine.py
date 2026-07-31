@@ -57,7 +57,6 @@ ANATOMY_SYNONYMS = {
     "左肺上叶": "LUUL", "左上肺": "LUUL", "左肺上": "LUUL",
     "右肺上叶": "RUUL", "右上肺": "RUUL", "右肺上": "RUUL",
     "右肺": "RUL", "左肺": "LUL",
-    "左肺": "LUL", "右肺": "RUL",
     "左侧股骨头": "L-femoral-head", "右侧股骨头": "R-femoral-head",
     "左肾": "L-kidney", "右肾": "R-kidney",
 }
@@ -194,14 +193,17 @@ def _organ_sides_en(text: str, aliases) -> set:
 
 
 def _claims_normal(text: str) -> bool:
-    """文本是否明确声明『未见异常/正常』（用于描述-结论矛盾）。"""
+    """文本是否明确声明『未见异常/正常』（用于描述-结论矛盾）。
+    注：中文无词边界，采用子串匹配；NORMAL_CLAIM 均为强特异性表述，误命中风险低。"""
     if not text:
         return False
     return any(k in text for k in NORMAL_CLAIM)
 
 
 def _has_positive(text: str) -> bool:
-    """文本是否包含强阳性征（异常表现）。"""
+    """文本是否包含强阳性征（异常表现）。
+    注：中文无词边界，采用子串匹配；POSITIVE_STRONG 均为强特异性词（占位/结节/癌…），
+    误命中风险低。如需更严谨可改为句级判定（参考 _r15_internal 的句拆分做法）。"""
     if not text:
         return False
     return any(k in text for k in POSITIVE_STRONG)
@@ -252,14 +254,26 @@ def _has_marker_unnegated(text: str, markers) -> bool:
     return False
 
 
+# 复合器官（含短名），避免短名被复合词误命中（如「肾上腺」误判为「肾」的左右）。
+# 注意：肝左叶/肝右叶 是真实的左右叶矛盾来源，必须保留比对，故不入此排除列表。
+_ORGAN_COMPOUND = {
+    "肾": ["肾上腺", "肾盂", "肾盏", "肾窦", "肾门"],
+    "肝": ["肝胆"],
+}
+
+
 def _organ_sides_in_text(text: str, organ: str) -> set:
-    """返回文本中提及某器官的方位集合（left/right）。兼容『左肺』与『肝左叶』两种语序。"""
+    """返回文本中提及某器官的方位集合（left/right）。兼容『左肺』与『肝左叶』两种语序。
+    先剔除复合器官名（如肾上腺/肝胆），避免短名（肾/肝）被复合词误命中而产生假阳性左右矛盾。"""
     sides = set()
-    if (re.search(r"左\s*" + re.escape(organ), text)
-            or re.search(re.escape(organ) + r"\s*左", text)):
+    tmp = text
+    for comp in _ORGAN_COMPOUND.get(organ, []):
+        tmp = tmp.replace(comp, "")
+    if (re.search(r"左\s*" + re.escape(organ), tmp)
+            or re.search(re.escape(organ) + r"\s*左", tmp)):
         sides.add("left")
-    if (re.search(r"右\s*" + re.escape(organ), text)
-            or re.search(re.escape(organ) + r"\s*右", text)):
+    if (re.search(r"右\s*" + re.escape(organ), tmp)
+            or re.search(re.escape(organ) + r"\s*右", tmp)):
         sides.add("right")
     return sides
 
@@ -416,10 +430,6 @@ class ChineseRadiologyNER:
             for m in re.finditer(re.escape(word), text):
                 ents.append(Entity(word, "gender_organ", m.start(), m.end(),
                                     self._section_of(sections, m.start()), gender))
-        for syn, canon in ANATOMY_SYNONYMS.items():
-            for m in re.finditer(re.escape(syn), text):
-                ents.append(Entity(syn, "anatomy", m.start(), m.end(),
-                                    self._section_of(sections, m.start()), canon))
         for m in re.finditer(r"(\d+(?:\.\d+)?)\s*([A-Za-z°/][A-Za-z°/0-9]*|\u00b0)", text):
             unit = m.group(2).lower()
             label = "measurement" if unit in VALID_UNITS else "bad_unit"
@@ -439,6 +449,8 @@ class RuleEngine:
         self.rules_config = load_rules_config()
 
     def run(self, text: str, meta: dict) -> List[Finding]:
+        # 实际启用规则：R1–R12、R14、R15。R13 为预留编号（当前无对应规则），
+        # 故不调用 _r13_*；外部文档/注释统一称「R1–R12、R14、R15」，避免误导。
         ner = ChineseRadiologyNER()
         ents = ner.extract(text)
         secs = self._split_for_r5(text)
@@ -560,13 +572,14 @@ class RuleEngine:
         out = []
         secs = self._split_for_r5(text)
         f_txt, i_txt = secs["findings"], secs["impression"]
+        f0 = secs.get("findings_start", 0)
         # 按"规范器官族"归组：描述段出现阳性征的器官族
         fam_mk = {}  # 器官族 -> 展示名
         for e in ents:
             if e.label != "anatomy" or e.section != "findings" or not e.canonical:
                 continue
             fam = e.canonical.split("-", 1)[-1]
-            seg = f_txt[max(0, e.start - 20): e.end + 20]
+            seg = f_txt[max(0, (e.start - f0) - 20): (e.end - f0) + 20]
             if any(k in seg for k in POSITIVE_MARKERS):
                 fam_mk.setdefault(fam, e.text)
         for fam, name in fam_mk.items():
@@ -585,14 +598,16 @@ class RuleEngine:
 
     @staticmethod
     def _split_for_r5(text: str) -> dict:
-        """按段落标题切分描述/印象原文（与 NER 段落划分一致）。"""
+        """按段落标题切分描述/印象原文（与 NER 段落划分一致）。
+        返回 dict 额外含 findings_start：findings 段在原始 text 中的起始偏移，
+        供 R5 用相对偏移取实体附近窗口（避免用绝对偏移索引子串导致错位）。"""
         spans = []
         for pat, sec in [("(?i)检查所见|影像描述|表现|imaging findings|findings", "findings"),
                          ("(?i)诊断印象|印象|诊断意见|结论|impression", "impression")]:
             for m in re.finditer(pat, text):
                 spans.append((m.start(), sec))
         spans.sort()
-        res = {"findings": text, "impression": ""}
+        res = {"findings": text, "impression": "", "findings_start": 0}
         if spans:
             # 从第一个标题起往后切：findings 取首个 findings 起 ~ 下一个 impression；impression 取首个 impression 起
             f0 = next((s for s in spans if s[1] == "findings"), None)
@@ -600,9 +615,11 @@ class RuleEngine:
             if f0 and i0 and i0[0] > f0[0]:
                 res["findings"] = text[f0[0]:i0[0]]
                 res["impression"] = text[i0[0]:]
+                res["findings_start"] = f0[0]
             elif i0:
                 res["impression"] = text[i0[0]:]
                 res["findings"] = text[:i0[0]]
+                # findings 取全文前半，起点为 0
         return res
 
     # R6 登记部位不符（申请部位 vs 报告主体解剖）
