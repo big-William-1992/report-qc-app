@@ -52,3 +52,5 @@ assets/build_info.json
 update/
 # UIA 真机自检证据（tools/uia_selfcheck.py 生成，可能含报告文本片段，涉及患者隐私，不入库）
 uia_evidence/
+# 星衍影像云（独立产品）的 PyInstaller 打包配置：属另一项目，不纳入质控软件仓库
+星衍影像云.spec
