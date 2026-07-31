@@ -1074,8 +1074,8 @@ class ReportQcApp(tk.Tk):
         body = ttk.Frame(root)
         body.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
         body.grid_rowconfigure(0, weight=1)
-        body.grid_columnconfigure(0, weight=2)   # 左：输入区
-        body.grid_columnconfigure(1, weight=1)   # 右：结果区
+        body.grid_columnconfigure(0, weight=3)   # 左：输入区（60%）
+        body.grid_columnconfigure(1, weight=2)   # 右：结果区（40%，加宽便于即时反馈）
         left = ttk.Frame(body)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.grid_rowconfigure(0, weight=1)
