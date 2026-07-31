@@ -20,6 +20,21 @@ from typing import List, Optional, Dict
 # 解剖部位知识图谱（RadLex 器官族 + PadChest 104 部位→UMLS）：驱动左右侧比对表
 from anatomy_lexicon import SIDE_CHECK_ORGANS, R2_COVERED, EN_SIDE_ORGANS
 
+# 中文放射同义词归一 + 中文临床 NER（项目自建，离线可用；详见 dataset_catalog ZH 资源）
+# 以 try/except 降级：极端打包缺失时不影响既有规则。
+try:
+    from zh_radiology_synonyms import (
+        normalize_text as _zh_norm_text,
+        extract_followup as _zh_extract_followup,
+    )
+    from zh_ner import extract_entities as _zh_ner_entities
+    _ZH_NLP_OK = True
+except Exception:  # pragma: no cover - 仅防御性降级
+    _ZH_NLP_OK = False
+
+# zh_ner 中文标签 → 引擎内部英文标签（与 anatomy / laterality 等保持一致）
+_ZH_ENT_LABEL_MAP = {"征象": "sign", "随访": "followup", "程度": "degree"}
+
 
 # ----------------------------- 数据模型 -----------------------------
 @dataclass
@@ -435,6 +450,20 @@ class ChineseRadiologyNER:
             label = "measurement" if unit in VALID_UNITS else "bad_unit"
             ents.append(Entity(m.group(0), label, m.start(), m.end(),
                                 self._section_of(sections, m.start()), unit))
+        # —— 中文征象 / 随访 / 程度 实体（项目自建 zh_ner，离线词典式）——
+        # 仅补充引擎既有 NER 未覆盖的 sign/followup/degree 三类；anatomy/laterality
+        # 仍由上方 ANATOMY_SYNONYMS / LATERALITY 负责，避免重复抽取。
+        if _ZH_NLP_OK:
+            for ze in _zh_ner_entities(text):
+                eng_label = _ZH_ENT_LABEL_MAP.get(ze.label)
+                if eng_label is None:
+                    continue
+                if any((ms <= ze.start < me) or (ms < ze.end <= me)
+                       or (ze.start < ms and ze.end > me) for ms, me in matched):
+                    continue
+                sec = self._section_of(sections, ze.start)
+                ents.append(Entity(ze.text, eng_label, ze.start, ze.end, sec, ze.canonical))
+                matched.append((ze.start, ze.end))
         return ents
 
 
@@ -449,8 +478,9 @@ class RuleEngine:
         self.rules_config = load_rules_config()
 
     def run(self, text: str, meta: dict) -> List[Finding]:
-        # 实际启用规则：R1–R12、R14、R15。R13 为预留编号（当前无对应规则），
-        # 故不调用 _r13_*；外部文档/注释统一称「R1–R12、R14、R15」，避免误导。
+        # 实际启用规则：R1–R12、R14、R15；R16（随访时限缺失）为可选规则，
+        # 由 rules_config.enable_r16 控制（默认关闭，避免对常规『定期复查』过度告警）。
+        # R13 为预留编号（当前无对应规则），故不调用 _r13_*。
         ner = ChineseRadiologyNER()
         ents = ner.extract(text)
         secs = self._split_for_r5(text)
@@ -467,7 +497,9 @@ class RuleEngine:
                 + self._r11_context(text, meta, secs)
                 + self._r12_sentence(text, ents)
                 + self._r14_cross(text, secs)
-                + self._r15_internal(text))
+                + self._r15_internal(text)
+                + (self._r16_followup_timeframe(text)
+                   if self.rules_config.get("enable_r16") else []))
 
     def auto_fix(self, text: str, findings: List[Finding]):
         """自动修正：仅确定性错别字(R8)可安全替换；矛盾/规范/缺失类错误无法判定正确值，不改文本。
@@ -875,6 +907,20 @@ class RuleEngine:
                     f"影像描述段内对同一「{lw}」先描述存在、后又称未见/消失，前后矛盾",
                     "", (-1, -1)))
                 break
+        return out
+
+    # R16 随访时限缺失（中文 NER 驱动；默认关闭，由 rules_config.enable_r16 开启）
+    # 许多中文报告写『建议复查』却不给具体间隔，属模板合规瑕疵。医疗上默认关闭，
+    # 避免对常规『定期复查』过度告警；需在真实样本上验证后再开启。
+    def _r16_followup_timeframe(self, text) -> List[Finding]:
+        out = []
+        if not _ZH_NLP_OK:
+            return out
+        r = _zh_extract_followup(text)
+        if r["has_followup"] and r["timeframe_months"] is None:
+            out.append(Finding("R16-FOLLOWUP", "随访时限缺失", "low",
+                "报告给出随访/复查建议但未明确时限（如『3个月后』），建议补充具体随访间隔",
+                "", (-1, -1)))
         return out
 
 
