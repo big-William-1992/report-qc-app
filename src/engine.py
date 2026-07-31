@@ -991,21 +991,22 @@ def _parse_gender_from_text(text: str) -> Optional[str]:
     """从报告正文推断性别。策略：
       1) 优先匹配显式字段：性别：男 / 性别 女 / 男性 / 女性
       2) 其次匹配常见病史写法：男，45岁 / 女 32Y / M,45 / F 32
-    仅在证据明确时返回，避免误判。
+    仅在证据明确时返回，避免误判。OCR 形近字（另≈男、文/久≈女）一并归一。
     """
     if not text:
         return None
-    # 显式字段
-    m = re.search(r"(?:性\s*别|患\s*者|受\s*检\s*者)[:：\s]*([男女])", text)
-    if m:
-        return "male" if m.group(1) == "男" else "female"
-    m = re.search(r"([男女])性", text)
-    if m:
-        return "male" if m.group(1) == "男" else "female"
-    # 病史写法：性别 + 紧邻年龄（岁/Y/y/岁数或逗号后数字）
-    m = re.search(r"[，,、\s：:]([男女])\s*[，,、]?\s*\d{1,3}\s*[岁YyＹ歲]", text)
-    if m:
-        return "male" if m.group(1) == "male" or m.group(1) == "男" else "female"
+    _gn = {"男": "male", "另": "male", "女": "female", "文": "female", "久": "female"}
+    # 显式字段（容忍全角空格）
+    m = re.search(r"(?:性\s*别|患\s*者|受\s*检\s*者)[:：\s\u3000]*([男女另文久])", text)
+    if m and m.group(1) in _gn:
+        return _gn[m.group(1)]
+    m = re.search(r"([男女另文久])性", text)
+    if m and m.group(1) in _gn:
+        return _gn[m.group(1)]
+    # 病史写法：性别 + 紧邻年龄（岁/Y/y/歲或逗号后数字），兼容『男性，45岁』
+    m = re.search(r"[，,、\s：:\u3000]([男女另文久])\s*性?\s*[，,、]?\s*\d{1,3}\s*[岁YyＹ歲]", text)
+    if m and m.group(1) in _gn:
+        return _gn[m.group(1)]
     m = re.search(r"\b([MFmf])\s*[,，]?\s*\d{1,3}\b", text)
     if m:
         return "male" if m.group(1).lower() == "m" else "female"
@@ -1027,7 +1028,7 @@ def _extract_age(text: str) -> str:
     if m:
         return m.group(1)
     # 病史写法：男，45岁 / 女 32Y
-    m = re.search(r"[，,、\s：:]([男女])\s*[，,、]?\s*(\d{1,3})\s*(?:岁|Y|y|歲)", text)
+    m = re.search(r"[，,、\s：:\u3000]([男女另文久])\s*性?\s*[，,、]?\s*(\d{1,3})\s*(?:岁|Y|y|歲)", text)
     if m:
         return m.group(2)
     # 英文病史写法：M,45 / F 32
@@ -1131,12 +1132,13 @@ def _extract_laterality(text: str) -> str:
 
 
 def _lab_re(lab: str) -> str:
-    """标签 → 容忍 OCR 噪声的正则：允许标签字符间混入空格/制表符。
+    """标签 → 容忍 OCR 噪声的正则：允许标签字符间混入半角/全角空格、制表符。
 
-    真实 PACS 截图 OCR 常把『姓名』识别成『姓 名』（字距大被拆行/拆词），
-    直接 re.escape 精确匹配会漏抽——这是「基础信息识别不精确」的常见根因之一。
+    真实 PACS 截图 OCR 常把『姓名』识别成『姓 名』或『姓　名』（字距大被拆行/拆词，
+    全角空格 U+3000 在中文 OCR 里极常见），直接 re.escape 精确匹配会漏抽——
+    这是「基础信息识别不精确」的常见根因之一。
     """
-    return r"[ \t]*".join(re.escape(ch) for ch in lab)
+    return r"[ \t\u3000]*".join(re.escape(ch) for ch in lab)
 
 
 def _extract_patient(text: str) -> str:
@@ -1152,18 +1154,32 @@ def _extract_patient(text: str) -> str:
     _strong = ("患者姓名", "病人姓名", "受检者姓名",
                "就诊人姓名", "病员姓名", "姓名")
     for lab in _strong:
-        m = re.search(_lab_re(lab) + r"[:：\s]*([\u4e00-\u9fa5]{1,4})", text)
+        m = re.search(_lab_re(lab) + r"[:：\s\u3000]*([\u4e00-\u9fa5·]{1,6})", text)
         if m:
             return m.group(1)
     _weak = ("患者", "病人", "受检者", "就诊人", "病员")
     _verb = ("诉", "因", "于", "为", "示", "查", "主", "既", "现",
              "无", "有", "自", "近", "术", "见", "拟")
     for lab in _weak:
-        m = re.search(re.escape(lab) + r"[:：\s]+([\u4e00-\u9fa5]{1,4})", text)
+        m = re.search(re.escape(lab) + r"[:：\s\u3000]+([\u4e00-\u9fa5·]{1,6})", text)
         if m and m.group(1) not in ("男", "女", "不详", "未知") \
                 and m.group(1)[0] not in _verb:
             return m.group(1)
     return ""
+
+
+# OCR 数字/字母常见混淆归一（仅在「以数字为主」的编号段启用）。
+# O/o→0、I/i/l→1：这些字母几乎不会作为影像号中的有效区分字符，且极易与数字混淆 → 无条件归一。
+# B/Z/S/G(b/z/s/g)：仅在被数字夹住时（如 "A1B23"）才视为误识别数字，
+#   避免误伤 PACS / CT / MR 等含真实字母的编号（如 "PACS0001" 的 S 必须保留）。
+_DIGIT_CONFUSION = {"B": "8", "Z": "2", "S": "5", "G": "6",
+                    "b": "8", "z": "2", "s": "5", "g": "6"}
+_DIGIT_CONFUSION_RE = re.compile(r"(?<=\d)([BbZzSsGg])(?=\d)")
+
+
+def _ocr_fix_num(no: str) -> str:
+    no = no.translate(str.maketrans("OoIl", "0011"))
+    return _DIGIT_CONFUSION_RE.sub(lambda m: _DIGIT_CONFUSION[m.group(1)], no)
 
 
 def _extract_exam_no(text: str) -> str:
@@ -1171,22 +1187,23 @@ def _extract_exam_no(text: str) -> str:
 
     强标签：影像号 / 影像编号 / 检查号 / 检查编号 / 图像号 / 放射号 /
     RIS号 / PACS号 / 门诊号 / 住院号；弱标签：编号（信息栏语境下通常即影像号）。
-    OCR 数字混淆归一：编号以数字为主时把 O/o→0、I/l→1（常见识别混淆）。
-    无法识别返回空串。
+    OCR 数字混淆归一：编号以数字为主时，O/o→0、I/i/l→1 无条件归一；
+    B/Z/S/G 仅当被数字夹住时（如 "A1B23"）才归一，避免误伤 PACS/CT/MR 等真实字母编号。
+    长度上限放宽到 40 以容纳长影像号。无法识别返回空串。
     """
     if not text:
         return ""
     _labels = ("影像编号", "影像号", "检查编号", "检查号", "图像号",
                "放射号", "RIS号", "PACS号", "门诊号", "住院号", "编号")
     for lab in _labels:
-        m = re.search(_lab_re(lab) + r"[:：\s]*([A-Za-z0-9\-]{3,20})", text)
+        m = re.search(_lab_re(lab) + r"[:：\s\u3000]*([A-Za-z0-9\-]{3,40})", text)
         if not m:
             continue
         no = m.group(1)
         digits = sum(ch.isdigit() for ch in no)
         if digits >= max(1, len(no) // 2):
             # 以数字为主 → 修正 OCR 常见字符混淆
-            no = no.translate(str.maketrans("OoIl", "0011"))
+            no = _ocr_fix_num(no)
         return no
     return ""
 
@@ -1206,6 +1223,24 @@ def extract_meta(text: str) -> dict:
         "applied_site": _extract_site(text),
         "laterality": _extract_laterality(text),
     }
+
+
+def extract_meta_full(basic: str, findings: str = "", impression: str = "") -> dict:
+    """同 :func:`extract_meta`，但部位 / 侧别 / 检查类型除『患者信息栏』(basic) 外，
+    若为空还会从『影像所见 / 结论』(findings + impression) 补抽。
+
+    多数 PACS 的**患者信息栏不含部位与侧别**（写在正文里），若只用 basic 区，
+    ``applied_site`` / ``laterality`` 会长期为空，表现为「基础信息识别不全」。
+    本函数把所见 / 结论文本一并送抽取，显著提升这两项回填率；basic 已有值时不覆盖。
+    """
+    meta = extract_meta(basic)
+    fi = (findings or "") + "\n" + (impression or "")
+    if fi.strip():
+        fi_meta = extract_meta(fi)
+        for k in ("applied_site", "laterality", "modality"):
+            if not (meta.get(k) or "").strip() and (fi_meta.get(k) or "").strip():
+                meta[k] = fi_meta[k]
+    return meta
 
 
 def format_patient_ident(exam_no: str, name: str) -> str:

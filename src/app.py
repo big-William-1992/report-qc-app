@@ -1450,10 +1450,15 @@ class ReportQcApp(tk.Tk):
             messagebox.showwarning("OCR 不可用", reason)
             return
         try:
-            # 1) 基础信息区：结构化解析 + 回填元信息（影像号 / 姓名 分别填入）
+            # 1) 三区截图识别（先全部取文本，便于元信息跨区补抽部位/侧别）
             img_b = ocr_provider.capture_region(self.ocr_regions["basic"])
             text_b = ocr_provider.ocr_image(img_b) or ""
-            meta = engine.extract_meta(text_b)
+            img_f = ocr_provider.capture_region(self.ocr_regions["findings"])
+            text_f = ocr_provider.ocr_image(img_f) or ""
+            img_i = ocr_provider.capture_region(self.ocr_regions["impression"])
+            text_i = ocr_provider.ocr_image(img_i) or ""
+            # 2) 基础信息区结构化解析 + 跨区补抽部位/侧别（多数 PACS 患者栏不含）
+            meta = engine.extract_meta_full(text_b, text_f, text_i)
             exam_no = (meta.get("exam_no") or "").strip()
             name = (meta.get("patient") or "").strip()  # 引擎以 'patient' 承载姓名
             if exam_no and self.vars["exam_no"].get().strip() != exam_no:
@@ -1467,18 +1472,13 @@ class ReportQcApp(tk.Tk):
             # 记录屏幕侧元信息 + 与剪贴板（报告）交叉核对身份（防张冠李戴）
             self.ocr_meta = meta
             self._compare_ocr_clipboard(meta)
-            # 2) 影像描述区 / 3) 影像结论区：自由文本回填到对应框
-            img_f = ocr_provider.capture_region(self.ocr_regions["findings"])
-            text_f = ocr_provider.ocr_image(img_f) or ""
-            img_i = ocr_provider.capture_region(self.ocr_regions["impression"])
-            text_i = ocr_provider.ocr_image(img_i) or ""
-            # 4) 写入两框 + 运行质控
+            # 3) 影像描述区 / 影像结论区：自由文本回填到对应框
             self.findings_txt.delete("1.0", "end")
             self.findings_txt.insert("1.0", (text_f or "").strip())
             self.impression_txt.delete("1.0", "end")
             self.impression_txt.insert("1.0", (text_i or "").strip())
             self._run()
-            # 5) 分区域状态 + 分区专属核查
+            # 4) 分区域状态 + 分区专属核查
             self._append_region_qc(meta, text_f, text_i)
             if any((meta.get(k) or "").strip() for k in
                    ("exam_no", "name", "gender", "age",
