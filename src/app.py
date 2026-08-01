@@ -1126,6 +1126,8 @@ class ReportQcApp(tk.Tk):
         ttk.Button(sub_bar, text="🗑 清空", command=lambda: (self.findings_txt.delete("1.0", "end"),
                                                   self.impression_txt.delete("1.0", "end"))).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="💾 存入样本库", command=self._save).pack(side="left", padx=3)
+        ttk.Button(sub_bar, text="⬇ 导出样本库", command=self._export_samples).pack(side="left", padx=3)
+        ttk.Button(sub_bar, text="⬆ 导入样本库", command=self._import_samples).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="🔍 自动识别元信息", command=self._auto_meta_btn).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="✏️ 自动修正并复制", style="Primary.TButton",
                    command=self._auto_fix_copy).pack(side="left", padx=3)
@@ -2228,6 +2230,32 @@ class ReportQcApp(tk.Tk):
                     self._set_report_text(fh.read())
             except Exception as e:
                 show_error(f"读取失败：{e}")
+
+    def _export_samples(self):
+        p = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV（Excel 友好）", "*.csv"), ("JSON", "*.json")],
+            title="导出样本库")
+        if not p:
+            return
+        try:
+            out = samplelib.export_samples(out_path=p)
+            messagebox.showinfo("导出成功", f"已导出样本库到：\n{out}")
+        except Exception as e:
+            show_error(f"导出失败：{e}")
+
+    def _import_samples(self):
+        p = filedialog.askopenfilename(
+            filetypes=[("CSV/JSON", "*.csv *.json"), ("全部", "*.*")],
+            title="导入样本库（CSV/JSON）")
+        if not p:
+            return
+        try:
+            ins, skip = samplelib.import_samples(p)
+            messagebox.showinfo("导入完成",
+                                f"样本库导入完成：\n新增 {ins} 条，跳过重复 {skip} 条")
+        except Exception as e:
+            show_error(f"导入失败：{e}")
 
     def _ig_key(self, fd) -> str:
         """为一条 finding 生成稳定的忽略标识键（用于误报白名单）。"""

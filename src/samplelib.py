@@ -7,6 +7,7 @@ import os
 import sys
 import sqlite3
 import json
+import csv
 import datetime
 import shutil
 
@@ -167,3 +168,94 @@ def stats_by_date(path: str = None) -> dict:
         d["n"] += 1
         d["acc_sum"] += acc
     return {d: {"n": v["n"], "avg_acc": round(v["acc_sum"] / v["n"], 1)} for d, v in by_date.items()}
+
+
+# ---------------------------------------------------------------------------
+# 导出 / 导入 / 多机合并（支撑单机汇总与多机器数据聚合，零服务器成本）
+# ---------------------------------------------------------------------------
+FIELDS = ["id", "ts", "patient", "gender", "age", "modality",
+          "applied_site", "laterality", "user_id",
+          "report_text", "findings_json", "scores_json"]
+
+
+def export_samples(path: str = None, out_path: str = None, fmt: str = "csv") -> str:
+    """导出样本库为 CSV（Excel 友好，utf-8-sig 带 BOM）或 JSON。
+
+    path     : 源库路径，默认 db_path()
+    out_path : 输出文件，默认在源库同目录生成 samples_export_<时间戳>.<ext>
+    fmt      : 'csv' | 'json'
+    返回输出文件路径。
+    """
+    rows = list_samples_full(path)
+    if out_path is None:
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join(os.path.dirname(path or db_path()),
+                                f"samples_export_{stamp}.{fmt}")
+    if fmt == "json":
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(rows, fh, ensure_ascii=False, indent=2)
+    else:
+        with open(out_path, "w", encoding="utf-8-sig", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=FIELDS)
+            w.writeheader()
+            for r in rows:
+                w.writerow({k: ("" if r.get(k) is None else r.get(k)) for k in FIELDS})
+    return out_path
+
+
+def _import_rows(rows: list, target: str = None):
+    """核心：把 dict 列表去重插入 target 库。去重键 (ts, report_text)。返回 (inserted, skipped)。"""
+    target = target or db_path()
+    init_db(target)
+    inserted = skipped = 0
+    with sqlite3.connect(target) as conn:
+        conn.row_factory = sqlite3.Row
+        seen = {(r["ts"], r["report_text"])
+                for r in conn.execute("SELECT ts, report_text FROM samples")}
+        for r in rows:
+            key = (r.get("ts", "") or "", r.get("report_text", "") or "")
+            if key in seen:
+                skipped += 1
+                continue
+            conn.execute(
+                """INSERT INTO samples
+                   (ts, patient, gender, age, modality, applied_site, laterality,
+                    user_id, report_text, findings_json, scores_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    key[0], r.get("patient", "") or "",
+                    r.get("gender", "") or "", str(r.get("age", "") or ""),
+                    r.get("modality", "") or "", r.get("applied_site", "") or "",
+                    r.get("laterality", "") or "", (r.get("user_id") or "").strip(),
+                    key[1], r.get("findings_json", "") or "[]",
+                    r.get("scores_json", "") or "[]",
+                ),
+            )
+            seen.add(key)
+            inserted += 1
+        conn.commit()
+    return inserted, skipped
+
+
+def import_samples(src_path: str, target: str = None):
+    """从 CSV/JSON 文件导入样本到 target 库（默认当前库）。返回 (inserted, skipped)。"""
+    if src_path.lower().endswith(".json"):
+        with open(src_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    else:
+        with open(src_path, encoding="utf-8-sig") as fh:
+            data = [dict(r) for r in csv.DictReader(fh)]
+    if not data:
+        return 0, 0
+    return _import_rows(data, target)
+
+
+def merge_from_db(src_db: str, target: str = None):
+    """把另一个 samples.db 的全部样本合并进 target（按 (ts,report_text) 去重）。返回 (inserted, skipped)。"""
+    init_db(src_db)
+    with sqlite3.connect(src_db) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = [dict(r) for r in conn.execute("SELECT * FROM samples")]
+    if not rows:
+        return 0, 0
+    return _import_rows(rows, target)
