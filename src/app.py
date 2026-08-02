@@ -54,33 +54,43 @@ else:
 
 
 THEME = {
-    # ponytail: v2 palette — deeper background for contrast, richer teal for medical feel.
-    # All colors are WCAG AA compliant against their intended backgrounds.
-    "bg":        "#E8EDF2",   # 应用背景（暖灰蓝，比旧版稍深降低眼疲劳）
-    "panel":     "#FFFFFF",   # 卡片 / 面板
-    "panel_alt": "#F0F4F8",   # 次级面板
-    "primary":   "#0B8A9E",   # 主色 医疗深青（旧 #0E7C9B，饱和度更高）
-    "primary_d": "#076B7C",   # 主色深（hover / 按下）
-    "primary_l": "#E5F4F7",   # 主色浅（选中行、淡背景）
-    "accent":    "#12A0B8",   # 强调亮青
-    "text":      "#1A2332",   # 主文本（旧 #24323C，更深提高对比度）
-    "text_dim":  "#5A6B7A",   # 次要文本（旧 #6B7A86，更深可读）
-    "border":    "#C8D4DF",   # 边框（旧 #D6DEE6，更深明确边界）
-    "header_bg": "#0B8A9E",   # 顶栏
-    "header_fg": "#FFFFFF",
-    "ok":        "#0D8A5E",   # 正常/通过（旧 #1E8E5A，更深）
+    # Be.Healthy 风格：暗色侧边栏 + 浅色内容区 + 白色卡片 + 蓝/绿/橙/红色板
+    "bg":         "#F4F6FB",   # 内容区背景（浅蓝灰）
+    "panel":      "#FFFFFF",   # 卡片 / 面板（白）
+    "panel_alt":  "#EEF1F7",   # 次级面板 / 输入框底
+    "border":     "#E3E8F0",   # 边框（浅）
+
+    # 侧边栏（暗色）
+    "sidebar_bg":     "#171A2B",   # 侧边栏底
+    "sidebar_fg":     "#C7CCDB",   # 侧边栏文字
+    "sidebar_active": "#3B82F6",   # 选中项（蓝）
+    "sidebar_hover":  "#222740",   # 悬停
+
+    # 主色 / 强调（蓝）
+    "primary":   "#3B82F6",
+    "primary_d": "#2563EB",
+    "primary_l": "#E8F0FE",
+    "accent":    "#3B82F6",
+
+    "text":      "#1F2533",
+    "text_dim":  "#6B7280",
+    "header_bg": "#FFFFFF",   # 内容区顶部细标题栏（白）
+    "header_fg": "#1F2533",
+
+    "ok":        "#16A34A",   # 正常/通过（绿）
+
     # 严重度配色：红=严重(high) / 橙=警告(medium) / 蓝=提示(low)
-    "sev_high":  "#D32F2F",   # 严重错误——红
-    "sev_med":   "#E08A00",   # 警告——橙
-    "sev_low":   "#1976D2",   # 提示——蓝
-    "sev_high_bg": "#FBE3E3", # 严重行/块背景（清晰红染）
-    "sev_med_bg":  "#FCEFD6", # 警告行/块背景（清晰橙染）
-    "sev_low_bg":  "#E4F1FB", # 提示行/块背景（清晰蓝染）
-    "hl_high":   "#F8C9C9",   # 内文高亮背景——红
-    "hl_med":    "#FBE0A8",   # 内文高亮背景——橙
-    "hl_low":    "#CFE6FB",   # 内文高亮背景——蓝
+    "sev_high":  "#DC2626",   # 严重错误——红
+    "sev_med":   "#F59E0B",   # 警告——橙
+    "sev_low":   "#2563EB",   # 提示——蓝
+    "sev_high_bg": "#FDE8E8", # 严重行/块背景（清晰红染）
+    "sev_med_bg":  "#FEF3DD", # 警告行/块背景（清晰橙染）
+    "sev_low_bg":  "#E6EEFD", # 提示行/块背景（清晰蓝染）
+    "hl_high":   "#FBD5D5",   # 内文高亮背景——红
+    "hl_med":    "#FCE8BE",   # 内文高亮背景——橙
+    "hl_low":    "#CFE0FB",   # 内文高亮背景——蓝
     # 图表调色（协调、低饱和医疗感）
-    "chart": ["#0B8A9E", "#12A0B8", "#1E8E5A", "#C8780E", "#C0392B", "#7A5CC9", "#3C8DBC"],
+    "chart": ["#3B82F6", "#16A34A", "#F59E0B", "#DC2626", "#8B5CF6", "#06B6D4", "#EC4899"],
 }
 
 SEV_COLOR = {"high": THEME["sev_high"], "medium": THEME["sev_med"], "low": THEME["sev_low"]}
@@ -106,13 +116,12 @@ def apply_theme(root):
     # ponytail: v2 styling — more padding, bolder fonts, cleaner separators.
     style.configure("TFrame", background=s["bg"])
     style.configure("TLabel", background=s["bg"], foreground=s["text"], font=F(FAMILY, 10))
+    # 隐藏原生标签页：改用左侧暗色侧边栏导航（NoTabs 布局只保留 client 区）
+    style.layout("NoTabs.TNotebook", [("Notebook.client", {"sticky": "nswe"})])
+    style.configure("NoTabs.TNotebook", background=s["bg"], borderwidth=0)
+    style.configure("NoTabs.TNotebook.Tab",
+                    background=s["bg"], foreground=s["bg"], padding=[0, 0, 0, 0])
     style.configure("TNotebook", background=s["bg"], borderwidth=0)
-    style.configure("TNotebook.Tab",
-                    background=s["panel_alt"], foreground=s["text_dim"],
-                    padding=[20, 10], font=F(FAMILY, 10, "bold"), borderwidth=0)
-    style.map("TNotebook.Tab",
-              background=[("selected", s["primary"]), ("!selected", s["panel_alt"])],
-              foreground=[("selected", "#FFFFFF"), ("!selected", s["text_dim"])])
 
     style.configure("TLabelFrame", background=s["panel"], foreground=s["primary"],
                     borderwidth=0, relief="flat", padding=14)
@@ -147,11 +156,11 @@ def apply_theme(root):
     style.map("Primary.TButton",
               background=[("active", s["primary_d"]), ("pressed", s["primary_d"])])
 
-    # 顶栏「帮助」按钮：与 TButton 同几何（同 padding → 同高度），仅改配色以突出"新增"
-    style.configure("Help.TButton", background="#EF9F27", foreground="#1A2332",
+    # 顶栏「帮助」按钮：浅底蓝字，与白底标题栏协调
+    style.configure("Help.TButton", background="#EEF1F7", foreground="#3B82F6",
                     borderwidth=0, padding=[16, 8], font=F(FAMILY, 10, "bold"))
     style.map("Help.TButton",
-              background=[("active", "#BA7517"), ("pressed", "#BA7517")])
+              background=[("active", "#E2E8F2"), ("pressed", "#E2E8F2")])
 
     style.configure("TCheckbutton", background=s["panel"], foreground=s["text"],
                     font=F(FAMILY, 10))
@@ -362,10 +371,18 @@ class ReportQcApp(tk.Tk):
         # ponytail: v2 — configure root background + header font
         self.configure(bg=THEME["bg"])
 
-        self._build_header()
+        # ===== 布局：左暗色侧边栏 + 右内容区 + 底部状态条 =====
+        self._build_sidebar()                       # 左侧导航（暗色）
 
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.content = tk.Frame(self, bg=THEME["bg"])
+        self.content.pack(side="right", fill="both", expand=True)
+
+        self._build_header()                        # 内容区顶部细标题栏
+
+        # 主内容：隐藏原生标签页，改用侧边栏导航切换
+        self.notebook = ttk.Notebook(self.content, style="NoTabs.TNotebook")
+        self.notebook.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # 常驻状态条：监听指示灯 + 本次会话统计（全局可见，独立于页签）
         self.session_hits = 0
@@ -393,40 +410,97 @@ class ReportQcApp(tk.Tk):
         self.tab_qc = ttk.Frame(self.notebook)
         self.tab_dash = ttk.Frame(self.notebook)
         self.tab_ris = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_qc, text="📋  报告质控")
-        self.notebook.add(self.tab_dash, text="📊  质控驾驶舱")
-        self.notebook.add(self.tab_ris, text="🔗  RIS 直连")
+        self.notebook.add(self.tab_qc, text="报告质控")
+        self.notebook.add(self.tab_dash, text="质控驾驶舱")
+        self.notebook.add(self.tab_ris, text="RIS 直连")
 
         self._build_qc_tab()
         self._build_dash_tab()
         self._build_ris_tab()
         self._refresh_samples()
 
+        # 初始化导航高亮
+        self._on_tab_changed()
+
     # -------------------- 顶栏 --------------------
+    # -------------------- 内容区顶部细标题栏 --------------------
     def _build_header(self):
         s = THEME
-        # ponytail: v2 — subtle shadow effect with a bottom border line
-        bar = tk.Frame(self, bg=s["header_bg"], height=56)
+        bar = tk.Frame(self.content, bg=s["header_bg"], height=54)
         bar.pack(fill="x")
         bar.pack_propagate(False)
-        # Shadow line at bottom
-        shadow = tk.Frame(self, bg=s["primary_d"], height=2)
+        shadow = tk.Frame(self.content, bg=s["border"], height=1)
         shadow.pack(fill="x")
 
-        tk.Label(bar, text="星衍放射质控软件", bg=s["header_bg"], fg=s["header_fg"],
-                 font=F(FAMILY, 17, "bold"), padx=16).pack(side="left", anchor="center")
-        tk.Label(bar, text="第一代 · NER + 知识图谱 + 规则引擎（R1–R10）",
-                 bg=s["header_bg"], fg="#B8E4EE", font=F(FAMILY, 10)).pack(side="left", padx=10, anchor="center")
-        tk.Label(bar, text=f"v{version.APP_VERSION}", bg=s["header_bg"], fg="#B8E4EE",
-                 font=F(FAMILY, 10, "bold")).pack(side="right", padx=14, anchor="center")
+        self._page_title = tk.StringVar(value="报告质控")
+        tk.Label(bar, textvariable=self._page_title, bg=s["header_bg"], fg=s["header_fg"],
+                 font=F(FAMILY, 16, "bold"), padx=20).pack(side="left", anchor="center")
+        tk.Label(bar, text=f"v{version.APP_VERSION}", bg=s["header_bg"], fg=s["text_dim"],
+                 font=F(FAMILY, 10)).pack(side="right", padx=14, anchor="center")
         # 窗口内可见入口：帮助菜单（检查更新 / 问题反馈 / 导出诊断包 / 关于）。
-        # 解决 macOS 上 Tk 菜单栏显示在屏幕最顶部、用户不易发现的问题。
-        # 尺寸与「规则维护」按钮保持一致（同 width、同 TButton 几何）。
         self._help_btn = ttk.Button(bar, text="❓ 帮助", style="Help.TButton", width=10,
                                     command=self._post_header_help_menu)
         self._help_btn.pack(side="right", padx=4, anchor="center")
         ttk.Button(bar, text="⚙ 规则维护", width=10,
                    command=self._open_rules_editor).pack(side="right", padx=8, anchor="center")
+
+    # -------------------- 左侧暗色侧边栏导航 --------------------
+    def _build_sidebar(self):
+        s = THEME
+        bar = tk.Frame(self, bg=s["sidebar_bg"], width=224)
+        bar.pack(side="left", fill="y")
+        bar.pack_propagate(False)
+
+        # 品牌区
+        brand = tk.Frame(bar, bg=s["sidebar_bg"])
+        brand.pack(fill="x", pady=(20, 8))
+        tk.Label(brand, text="✚ 星衍", bg=s["sidebar_bg"], fg="#FFFFFF",
+                 font=F(FAMILY, 20, "bold"), padx=20).pack(anchor="w")
+        tk.Label(brand, text="放射质控系统", bg=s["sidebar_bg"], fg="#8E97B5",
+                 font=F(FAMILY, 11), padx=20).pack(anchor="w")
+
+        # 导航标题
+        tk.Label(bar, text="导航", bg=s["sidebar_bg"], fg="#5B6480",
+                 font=F(FAMILY, 10, "bold"), padx=22).pack(anchor="w", fill="x", pady=(16, 6))
+
+        self._nav_buttons = []
+        specs = [("📋  报告质控", 0), ("📊  质控驾驶舱", 1), ("🔗  RIS 直连", 2)]
+        for label, idx in specs:
+            btn = tk.Button(bar, text=label, bg=s["sidebar_bg"], fg=s["sidebar_fg"],
+                            font=F(FAMILY, 12), relief="flat", borderwidth=0,
+                            anchor="w", padx=22, pady=11,
+                            command=lambda i=idx: self._select_tab(i))
+            btn.pack(fill="x", padx=10, pady=2)
+            btn.bind("<Enter>", lambda e, b=btn, a=s["sidebar_active"]:
+                     b.configure(bg=s["sidebar_hover"]) if b.cget("bg") != a else None)
+            btn.bind("<Leave>", lambda e, b=btn, a=s["sidebar_active"]:
+                     b.configure(bg=s["sidebar_bg"]) if b.cget("bg") != a else None)
+            self._nav_buttons.append(btn)
+
+        # 底部版本信息
+        foot = tk.Label(bar, text=f"v{version.APP_VERSION}  ·  桌面客户端",
+                        bg=s["sidebar_bg"], fg="#5B6480", font=F(FAMILY, 10),
+                        padx=22, pady=16)
+        foot.pack(side="bottom", anchor="w", fill="x")
+
+    def _select_tab(self, idx):
+        tabs = [self.tab_qc, self.tab_dash, self.tab_ris]
+        self.notebook.select(tabs[idx])
+
+    def _on_tab_changed(self, event=None):
+        s = THEME
+        titles = {0: "报告质控", 1: "质控驾驶舱", 2: "RIS 直连"}
+        try:
+            cur = self.notebook.index("current")
+        except Exception:
+            cur = 0
+        if hasattr(self, "_page_title"):
+            self._page_title.set(titles.get(cur, "报告质控"))
+        for i, btn in enumerate(getattr(self, "_nav_buttons", [])):
+            if i == cur:
+                btn.configure(bg=s["sidebar_active"], fg="#FFFFFF")
+            else:
+                btn.configure(bg=s["sidebar_bg"], fg=s["sidebar_fg"])
 
     # -------------------- 顶栏帮助按钮（窗口内可见入口） --------------------
     def _post_header_help_menu(self):

@@ -1,0 +1,15 @@
+# 星衍放射质控软件 · Windows 专属依赖
+# 仅 Windows 需要：UIA（Windows UI Automation）屏幕采集功能所需的桥接库。
+# 这些库在 macOS / Linux 上无法编译安装，已与跨平台基础版分离，
+# 以免跨平台 `pip install -r requirements.txt` 报错。
+#
+# 安装方式（Windows）：
+#   pip install -r requirements.txt
+#   pip install -r requirements-windows.txt
+#   python src/app.py
+#
+# 说明：
+#   - comtypes：Python 调用 Windows UIA/COM 的桥，PyInstaller 打包时会被自动收集进 exe。
+#   - pywinauto：UIA 可用性探测的备用桥（comtypes 优先）；仅源码直跑时用于准确提示。
+comtypes>=1.4.0
+pywinauto>=0.6.8
