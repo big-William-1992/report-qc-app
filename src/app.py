@@ -21,6 +21,7 @@ import difflib
 import hashlib
 import time
 import threading
+import uuid
 import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -58,6 +59,7 @@ THEME = {
     "bg":         "#ECF0F6",   # 内容区背景（浅蓝灰，更深一档让白卡片浮起）
     "panel":      "#FFFFFF",   # 卡片 / 面板（白）
     "panel_alt":  "#EEF1F7",   # 次级面板 / 输入框底
+    "card_hover": "#EAF0FB",   # 发现卡悬停底色
     "border":     "#DCE3EE",   # 边框（浅，略增可见度）
 
     # 侧边栏（暗色）
@@ -109,6 +111,7 @@ THEME_DARK = {
     "bg":         "#0E1118",   # 内容区背景（中性近黑，与靛蓝侧边栏拉开色相差）
     "panel":      "#161B26",   # 卡片 / 面板
     "panel_alt":  "#1E2533",   # 次级面板 / 输入框底
+    "card_hover": "#1E2533",   # 发现卡悬停底色（暗模式略亮于 panel）
     "border":     "#2C3548",   # 边框
     "text":       "#E6EAF2",   # 主文本
     "text_dim":   "#9AA3B8",   # 次要文本
@@ -349,6 +352,8 @@ class ReportQcApp(tk.Tk):
         self.engine = RuleEngine()
         self.current_findings = []
         self.current_scores = {}
+        self.qc_queue = []          # 待质控队列（持久化，真实工作流数据）
+        self._active_queue_id = None
         self.anon_var = tk.BooleanVar(value=False)
         # 当前登录账号（工号）：质控责任到人，保存样本时写入 user_id
         self.current_user = ""
@@ -458,6 +463,10 @@ class ReportQcApp(tk.Tk):
         self._build_ris_tab()
         self._refresh_samples()
 
+        # 待质控队列：加载持久化数据并刷新左栏徽标（须在 _build_sidebar 之后）
+        self._load_queue()
+        self._refresh_queue_badge()
+
         # 初始化导航高亮
         self._on_tab_changed()
 
@@ -515,13 +524,12 @@ class ReportQcApp(tk.Tk):
         self._nav_group(bar, "工作")
         self._nav_item(bar, "📋  质控工作区", 0)
         self._nav_item(bar, "📊  质控驾驶舱", 1)
-        self._nav_item(bar, "📥  待质控队列  12", 0)
+        self._nav_item(bar, "📥  待质控队列", "queue")
         self._nav_group(bar, "数据")
         self._nav_item(bar, "🗄  样本库", "samples")
         self._nav_item(bar, "🔗  RIS 直连", 2)
         self._nav_group(bar, "管理")
         self._nav_item(bar, "⚙  规则管理", "rules")
-        self._nav_item(bar, "📈  统计分析", 1)
 
         # 底部版本信息
         foot = tk.Label(bar, text=f"v{version.APP_VERSION}  ·  桌面客户端",
@@ -541,6 +549,8 @@ class ReportQcApp(tk.Tk):
                         command=lambda t=target: self._nav_to(t))
         btn.pack(fill="x", padx=10, pady=2)
         btn._nav_target = target
+        if target == "queue":
+            self._queue_nav_btn = btn
         btn.bind("<Enter>", lambda e, b=btn, a=s["sidebar_active"]:
                  b.configure(bg=s["sidebar_hover"]) if b.cget("bg") != a else None)
         btn.bind("<Leave>", lambda e, b=btn, a=s["sidebar_active"]:
@@ -548,12 +558,15 @@ class ReportQcApp(tk.Tk):
         self._nav_buttons.append(btn)
 
     def _nav_to(self, target):
-        """导航分发：整数→切到对应页签；samples/rules→打开对应窗口。"""
+        """导航分发：整数→切到对应页签；samples/rules/queue→打开对应窗口。"""
         if target == "samples":
             self._open_sample_library()
             return
         if target == "rules":
             self._open_rules_editor()
+            return
+        if target == "queue":
+            self._open_queue()
             return
         tabs = [self.tab_qc, self.tab_dash, self.tab_ris]
         self.notebook.select(tabs[target])
@@ -1471,11 +1484,14 @@ class ReportQcApp(tk.Tk):
         r, cx, cy = 38, 46, 46
         c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=s["border"], width=9)
         v = max(0, min(100, value))
+        arc_col = s["text"]
         if v > 0:
-            col = s["ok"] if v >= 85 else (s["warn"] if v >= 70 else s["danger"])
+            arc_col = s["ok"] if v >= 85 else (s.get("warn", s["sev_med"]) if v >= 70
+                                               else s.get("danger", s["sev_high"]))
             c.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-359.99 * v / 100,
-                         outline=col, width=9, style="arc")
-        self._ring_val.configure(text=str(int(v)) if v > 0 else "--", bg=s["bg"], fg=s["text"])
+                         outline=arc_col, width=9, style="arc")
+        val_col = arc_col if v > 0 else s["text"]
+        self._ring_val.configure(text=str(int(v)) if v > 0 else "--", bg=s["bg"], fg=val_col)
 
     def _overall_score(self):
         sc = getattr(self, "current_scores", None)
@@ -1517,10 +1533,14 @@ class ReportQcApp(tk.Tk):
             return
         groups = [("high", "⛔ 严重", "d"), ("medium", "⚠ 警告", "w"), ("low", "ℹ 提示", "i")]
         counter = [0]
+        first = True
         for sev, title, cls in groups:
             items = [fd for fd in fds if getattr(fd, "severity", "") == sev]
             if not items:
                 continue
+            if not first:
+                tk.Frame(inner, bg=s["border"], height=1).pack(fill="x", padx=14, pady=(8, 2))
+            first = False
             tk.Label(inner, text=f"{title} · {len(items)}", bg=s["bg"], fg=s["text"],
                      font=F(FAMILY, 11, "bold")).pack(anchor="w", padx=14, pady=(10, 4))
             for fd in items:
@@ -1531,8 +1551,12 @@ class ReportQcApp(tk.Tk):
         s = THEME
         bar_col = {"d": s["sev_high"], "w": s["sev_med"], "i": s["sev_low"]}[cls]
         card = tk.Frame(self._cards_inner, bg=s["panel"], bd=0,
-                        highlightbackground=s["border"], highlightthickness=1)
+                        highlightbackground=s["border"], highlightthickness=1, cursor="hand2")
         card.pack(fill="x", padx=10, pady=4)
+        card.bind("<Enter>", lambda e: card.configure(highlightbackground=s["primary"],
+                                                       highlightthickness=1.5))
+        card.bind("<Leave>", lambda e: card.configure(highlightbackground=s["border"],
+                                                       highlightthickness=1))
         tk.Frame(card, bg=bar_col, width=4).pack(side="left", fill="y")
         body = tk.Frame(card, bg=s["panel"]); body.pack(side="left", fill="both", expand=True,
                                                        padx=10, pady=8)
@@ -1542,7 +1566,7 @@ class ReportQcApp(tk.Tk):
                  font=F(FAMILY, 11), wraplength=300, justify="left").pack(anchor="w", pady=(4, 6))
         acts = tk.Frame(body, bg=s["panel"]); acts.pack(anchor="w")
         ttk.Button(acts, text="采纳", width=7,
-                   command=lambda i=i: self._goto_finding(i)).pack(side="left", padx=(0, 6))
+                   command=lambda i=i: self._adopt_finding(i)).pack(side="left", padx=(0, 6))
         ttk.Button(acts, text="忽略", width=7,
                    command=lambda fd=fd: self._ignore_finding(fd)).pack(side="left")
 
@@ -1550,6 +1574,42 @@ class ReportQcApp(tk.Tk):
         """忽略一条发现：加入会话级忽略名单后重新运行（过滤该条）。"""
         self.ignored.add(self._ig_key(fd))
         self._run()
+
+    def _adopt_finding(self, i):
+        """采纳一条发现：错别字(typo)直接在对应文本框内联替换为建议值并刷新；
+        其余类型（矛盾/规范/缺失）无确定性修正值，改为定位选中 + 复制建议文案，便于人工修改。"""
+        fds = self.current_findings or []
+        if not (0 < i <= len(fds)):
+            return
+        fd = fds[i - 1]
+        sug = getattr(fd, "suggestion", "") or ""
+        loc = self._locate_finding(fd)
+        if sug and loc:
+            box, lo, hi = loc
+            w = self.impression_txt if box == "impression" else self.findings_txt
+            wrong = w.get(f"1.0+{lo}c", f"1.0+{hi}c")
+            w.replace(f"1.0+{lo}c", f"1.0+{hi}c", sug)
+            self._run()                       # 错别字修正后该条不再出现，卡片自动刷新
+            self._toast(f"已采纳并修正：『{wrong}』→『{sug}』", "ok")
+            return
+        # 非错别字类：定位并选中原文范围 + 复制建议文案到剪贴板
+        if loc:
+            box, lo, hi = loc
+            w = self.impression_txt if box == "impression" else self.findings_txt
+            w.focus_set()
+            w.see(f"1.0+{lo}c")
+            try:
+                w.tag_remove("sel", "1.0", "end")
+                w.tag_add("sel", f"1.0+{lo}c", f"1.0+{hi}c")
+            except Exception:
+                pass
+            self._flash_box(box, lo, hi)
+        msg = getattr(fd, "message", "") or "请按提示修改。"
+        try:
+            self.clipboard_clear(); self.clipboard_append(msg); self.update_idletasks()
+        except Exception:
+            pass
+        self._toast("已定位问题并复制建议到剪贴板，请人工修改", "warn")
 
     def _open_sample_library(self):
         """样本库窗口：展示样本数量并提供导入/导出入口（复用既有方法）。"""
@@ -1573,6 +1633,166 @@ class ReportQcApp(tk.Tk):
         ttk.Button(bf, text="⬆ 导入样本库", command=self._import_samples).pack(side="left", padx=8)
         tk.Label(win, text="（双击样本库中的报告可回看；样本均在本机存储，无上传）",
                  bg=s["bg"], fg=s["text_dim"], font=F(FAMILY, 10)).pack(pady=(10, 0))
+
+    # -------------------- 待质控队列（持久化真实工作流数据） --------------------
+    def _appdata_dir(self):
+        """跨平台数据目录：Windows 用 %APPDATA%，其余（macOS/Linux）用 ~/.medical_report_qc。"""
+        ap = os.path.expandvars("%APPDATA%")
+        if ap and os.path.isabs(ap):
+            base = os.path.join(ap, "MedicalReportQC")
+        else:
+            base = os.path.join(os.path.expanduser("~"), ".medical_report_qc")
+        os.makedirs(base, exist_ok=True)
+        return base
+
+    def _queue_path(self):
+        return os.path.join(self._appdata_dir(), "qc_queue.json")
+
+    def _load_queue(self):
+        try:
+            with open(self._queue_path(), encoding="utf-8") as f:
+                self.qc_queue = json.load(f) or []
+        except Exception:
+            self.qc_queue = []
+
+    def _save_queue(self):
+        try:
+            with open(self._queue_path(), "w", encoding="utf-8") as f:
+                json.dump(self.qc_queue, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _refresh_queue_badge(self):
+        """左栏『待质控队列』徽标显示真实数量。"""
+        btn = getattr(self, "_queue_nav_btn", None)
+        if btn is not None and btn.winfo_exists():
+            n = len(self.qc_queue)
+            btn.configure(text=f"📥  待质控队列  {n}" if n else "📥  待质控队列")
+
+    def _enqueue_current(self, source="手动"):
+        """把当前工作区报告加入待质控队列（按文本哈希去重）；RIS直连/采集入口调用。"""
+        report = self._build_report().strip()
+        if not report:
+            return
+        h = hashlib.md5(self._norm_clip(report).encode("utf-8", "ignore")).hexdigest()
+        for it in self.qc_queue:
+            if it.get("hash") == h:
+                self._active_queue_id = it["id"]
+                return
+        item = {
+            "id": uuid.uuid4().hex[:8],
+            "hash": h,
+            "patient": self.vars["name"].get().strip(),
+            "site": self.vars["applied_site"].get().strip(),
+            "text": report,
+            "source": source,
+            "ts": time.strftime("%Y-%m-%d %H:%M"),
+        }
+        self.qc_queue.append(item)
+        self._active_queue_id = item["id"]
+        self._save_queue()
+        self._refresh_queue_badge()
+
+    def _dequeue_active(self):
+        """当前报告入库（存样本库）后移出队列。"""
+        if self._active_queue_id:
+            self.qc_queue = [it for it in self.qc_queue if it["id"] != self._active_queue_id]
+            self._save_queue()
+            self._refresh_queue_badge()
+        self._active_queue_id = None
+
+    def _open_queue(self):
+        """待质控队列窗口：列出待处理报告，可加载到工作区或移除。"""
+        s = THEME
+        win = tk.Toplevel(self)
+        win.title("📥  待质控队列")
+        win.geometry("560x470")
+        win.configure(bg=s["bg"])
+        win.transient(self)
+        tk.Label(win, text="📥  待质控队列", bg=s["bg"], fg=s["text"],
+                 font=F(FAMILY, 16, "bold")).pack(pady=(14, 4))
+        tk.Label(win, text="RIS 直连 / 屏幕采集 拉入的报告在此排队，逐份质控并入库后自动出队。",
+                 bg=s["bg"], fg=s["text_dim"], font=F(FAMILY, 10)).pack(padx=14)
+
+        sf = ScrollableFrame(win)
+        sf.pack(fill="both", expand=True, padx=14, pady=8)
+        inner = sf.inner
+
+        def rebuild():
+            for w in inner.winfo_children():
+                w.destroy()
+            if not self.qc_queue:
+                tk.Label(inner, text="队列为空。通过『RIS 直连 → 发送质控』或『识别并质控』拉入报告。",
+                         bg=s["bg"], fg=s["text_dim"], font=F(FAMILY, 11),
+                         wraplength=480, justify="left").pack(padx=10, pady=30)
+                return
+            for it in self.qc_queue:
+                row = tk.Frame(inner, bg=s["panel"], bd=0,
+                               highlightbackground=s["border"], highlightthickness=1)
+                row.pack(fill="x", padx=6, pady=5)
+                info = tk.Frame(row, bg=s["panel"]); info.pack(side="left", fill="both",
+                                                              expand=True, padx=10, pady=8)
+                who = it.get("patient") or "未知患者"
+                site = it.get("site") or "—"
+                tk.Label(info, text=f"{who}  ·  {site}", bg=s["panel"], fg=s["text"],
+                         font=F(FAMILY, 12, "bold")).pack(anchor="w")
+                tk.Label(info, text=f"来源：{it.get('source','—')}  ·  {it.get('ts','')}",
+                         bg=s["panel"], fg=s["text_dim"], font=F(FAMILY, 10)).pack(anchor="w", pady=(3, 0))
+                acts = tk.Frame(row, bg=s["panel"]); acts.pack(side="right", padx=10)
+                ttk.Button(acts, text="加载", width=7,
+                           command=lambda it=it: self._queue_load(it, win)).pack(pady=3)
+                ttk.Button(acts, text="移除", width=7,
+                           command=lambda it=it: self._queue_remove(it, rebuild)).pack(pady=3)
+
+        rebuild()
+        bf = tk.Frame(win, bg=s["bg"]); bf.pack(fill="x", padx=14, pady=(0, 10))
+        ttk.Button(bf, text="清空队列", command=lambda: self._queue_clear(rebuild)).pack(side="right")
+
+    def _queue_load(self, it, win):
+        """把队列条目加载到质控工作区（标记 active 以便入库后出队）。"""
+        self._set_report_text(it["text"])
+        self.vars["name"].set(it.get("patient", ""))
+        self.vars["applied_site"].set(it.get("site", ""))
+        self._active_queue_id = it["id"]
+        self.notebook.select(self.tab_qc)
+        self._run()
+        win.destroy()
+        self._toast("已加载到质控工作区，处理并入库后自动出队", "ok")
+
+    def _queue_remove(self, it, rebuild):
+        self.qc_queue = [x for x in self.qc_queue if x["id"] != it["id"]]
+        if self._active_queue_id == it["id"]:
+            self._active_queue_id = None
+        self._save_queue()
+        self._refresh_queue_badge()
+        rebuild()
+
+    def _queue_clear(self, rebuild):
+        self.qc_queue = []
+        self._active_queue_id = None
+        self._save_queue()
+        self._refresh_queue_badge()
+        rebuild()
+
+    # -------------------- 轻量 Toast 提示 --------------------
+    def _toast(self, msg, kind="ok"):
+        s = THEME
+        tw = tk.Toplevel(self)
+        tw.withdraw()
+        tw.overrideredirect(True)
+        tw.configure(bg=s["panel"])
+        col = {"ok": s["ok"], "warn": s.get("warn", s["sev_med"]),
+               "danger": s.get("danger", s["sev_high"])}.get(kind, s["primary"])
+        tk.Frame(tw, bg=col, width=4).pack(side="left", fill="y")
+        tk.Label(tw, text=msg, bg=s["panel"], fg=s["text"], font=F(FAMILY, 11),
+                 padx=12, pady=9, wraplength=320, justify="left").pack(side="left")
+        tw.update_idletasks()
+        w, h = tw.winfo_width(), tw.winfo_height()
+        x = self.winfo_rootx() + max(0, self.winfo_width() - w - 28)
+        y = self.winfo_rooty() + max(0, self.winfo_height() - h - 64)
+        tw.geometry(f"+{x}+{y}")
+        tw.deiconify()
+        tw.after(1900, lambda: tw.destroy())
 
     # -------------------- 设置 / 高级功能（可折叠） --------------------
     def _build_settings_inner(self):
@@ -1924,6 +2144,7 @@ class ReportQcApp(tk.Tk):
             self.impression_txt.delete("1.0", "end")
             self.impression_txt.insert("1.0", (text_i or "").strip())
             self._run()
+            self._enqueue_current(source="OCR 采集")
             # 4) 分区域状态 + 分区专属核查
             self._append_region_qc(meta, text_f, text_i)
             if any((meta.get(k) or "").strip() for k in
@@ -2619,6 +2840,7 @@ class ReportQcApp(tk.Tk):
                                     anonymize=self.anon_var.get(),
                                     user_id=self.current_user)
         self._refresh_samples()
+        self._dequeue_active()
         self.clip_status.set(f"● 已捕获并入库 #{sid}（{len(self.current_findings)} 项）")
 
     def _import(self):
@@ -2825,6 +3047,7 @@ class ReportQcApp(tk.Tk):
                                     anonymize=self.anon_var.get(),
                                     user_id=self.current_user)
         self._refresh_samples()
+        self._dequeue_active()
         tag = "（已脱敏）" if self.anon_var.get() else ""
         messagebox.showinfo("已保存", f"样本已存入样本库（ID={sid}）{tag}")
 
@@ -3292,6 +3515,7 @@ class ReportQcApp(tk.Tk):
         self._set_report_text(it["report_text"])
         self.notebook.select(self.tab_qc)
         self._run()
+        self._enqueue_current(source="RIS 直连")
 
     def _ris_batch(self):
         if not self._ris_rows:
