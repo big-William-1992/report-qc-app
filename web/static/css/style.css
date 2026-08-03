@@ -8,30 +8,30 @@
   /* 色板 */
   --sidebar-bg: #1a1d2e;
   --sidebar-hover: #252a40;
-  --sidebar-active: #2d8cf0;
+  --sidebar-active: #2d6cdf;
   --sidebar-text: #a0aec0;
   --sidebar-text-active: #ffffff;
 
   --header-bg: #ffffff;
   --header-border: #eef0f4;
 
-  --body-bg: #f5f7fa;
+  --body-bg: #ecf0f6;
   --card-bg: #ffffff;
 
-  --primary: #2d8cf0;       /* 主色（蓝） */
-  --primary-light: #e8f4fd;
-  --success: #19be6b;       /* 通过/健康（绿） */
-  --success-light: #edfff3;
-  --warning: #ff9900;        /* 警告（橙） */
-  --warning-light: #fff8e6;
-  --danger: #ed4014;         /* 严重/错误（红） */
-  --danger-light: #fef0ef;
-  --info: #909399;           /* 信息（灰蓝） */
+  --primary: #2d6cdf;       /* 主色（医用蓝） */
+  --primary-light: #e7effd;
+  --success: #1fa971;       /* 通过/健康（医疗绿） */
+  --success-light: #eafaf2;
+  --warning: #e8941a;        /* 警告（橙） */
+  --warning-light: #fdf3e3;
+  --danger: #e5484d;         /* 严重/错误（红） */
+  --danger-light: #fbecec;
+  --info: #64748b;           /* 信息（中性石板灰，避免与主色蓝撞色） */
 
   --text-primary: #2d3436;
   --text-secondary: #636e72;
   --text-muted: #b2bec3;
-  --border-color: #ebedf0;
+  --border-color: #dce3ee;
 
   /* 圆角 / 阴影 */
   --radius-sm: 8px;
@@ -51,9 +51,9 @@
 
 /* ---------- 暗色主题（内容区；侧边栏恒为暗色，不随模式变化） ---------- */
 [data-theme="dark"] {
-  --body-bg: #0d1117;
-  --card-bg: #161b22;
-  --header-bg: #11161d;
+  --body-bg: #0e1118;
+  --card-bg: #161b26;
+  --header-bg: #12161f;
   --header-border: #21262d;
   --text-primary: #e6edf3;
   --text-secondary: #9aa6b2;
@@ -173,7 +173,7 @@ input, select, textarea {
 }
 
 .nav-item.active {
-  background: rgba(45, 140, 240, 0.15);
+  background: rgba(45, 108, 223, 0.15);
   color: var(--sidebar-active);
   font-weight: 600;
 }
@@ -459,7 +459,7 @@ input, select, textarea {
 .meta-field input:focus, .meta-field select:focus {
   border-color: var(--primary);
   background: #fff;
-  box-shadow: 0 0 0 3px rgba(45,140,240,0.1);
+  box-shadow: 0 0 0 3px rgba(45,108,223,0.12);
 }
 
 /* 文本框 */
@@ -481,7 +481,7 @@ textarea.qc-textarea {
 textarea.qc-textarea:focus {
   border-color: var(--primary);
   background: #fff;
-  box-shadow: 0 0 0 3px rgba(45,140,240,0.1);
+  box-shadow: 0 0 0 3px rgba(45,108,223,0.12);
 }
 .textarea-label {
   display: flex;
@@ -527,12 +527,12 @@ textarea.qc-textarea:focus {
   background: var(--primary);
   color: #fff;
 }
-.btn-primary:hover { background: #2595f0; box-shadow: 0 4px 12px rgba(45,140,240,0.3); }
+.btn-primary:hover { background: #1e54c7; box-shadow: 0 4px 12px rgba(45,108,223,0.3); }
 .btn-success {
   background: var(--success);
   color: #fff;
 }
-.btn-success:hover { background: #17ad60; box-shadow: 0 4px 12px rgba(25,190,107,0.3); }
+.btn-success:hover { background: #1a9565; box-shadow: 0 4px 12px rgba(31,169,113,0.3); }
 .btn-outline {
   background: transparent;
   color: var(--text-secondary);
@@ -681,7 +681,7 @@ textarea.qc-textarea:focus {
 .form-group textarea:focus {
   border-color: var(--primary);
   background: #fff;
-  box-shadow: 0 0 0 3px rgba(45,140,240,0.1);
+  box-shadow: 0 0 0 3px rgba(45,108,223,0.12);
 }
 .form-group.full-width { grid-column: 1 / -1; }
 

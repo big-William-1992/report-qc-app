@@ -55,42 +55,42 @@ else:
 
 THEME = {
     # Be.Healthy 风格：暗色侧边栏 + 浅色内容区 + 白色卡片 + 蓝/绿/橙/红色板
-    "bg":         "#F4F6FB",   # 内容区背景（浅蓝灰）
+    "bg":         "#ECF0F6",   # 内容区背景（浅蓝灰，更深一档让白卡片浮起）
     "panel":      "#FFFFFF",   # 卡片 / 面板（白）
     "panel_alt":  "#EEF1F7",   # 次级面板 / 输入框底
-    "border":     "#E3E8F0",   # 边框（浅）
+    "border":     "#DCE3EE",   # 边框（浅，略增可见度）
 
     # 侧边栏（暗色）
     "sidebar_bg":     "#171A2B",   # 侧边栏底
     "sidebar_fg":     "#C7CCDB",   # 侧边栏文字
-    "sidebar_active": "#3B82F6",   # 选中项（蓝）
+    "sidebar_active": "#2D6CDF",   # 选中项（医用蓝）
     "sidebar_hover":  "#222740",   # 悬停
 
     # 主色 / 强调（蓝）
-    "primary":   "#3B82F6",
-    "primary_d": "#2563EB",
-    "primary_l": "#E8F0FE",
-    "accent":    "#3B82F6",
+    "primary":   "#2D6CDF",
+    "primary_d": "#1E54C7",
+    "primary_l": "#E7EFFD",
+    "accent":    "#2D6CDF",
 
     "text":      "#1F2533",
     "text_dim":  "#6B7280",
     "header_bg": "#FFFFFF",   # 内容区顶部细标题栏（白）
     "header_fg": "#1F2533",
 
-    "ok":        "#16A34A",   # 正常/通过（绿）
+    "ok":        "#1FA971",   # 正常/通过（医疗绿）
 
     # 严重度配色：红=严重(high) / 橙=警告(medium) / 蓝=提示(low)
-    "sev_high":  "#DC2626",   # 严重错误——红
-    "sev_med":   "#F59E0B",   # 警告——橙
-    "sev_low":   "#2563EB",   # 提示——蓝
+    "sev_high":  "#E5484D",   # 严重错误——红
+    "sev_med":   "#E8941A",   # 警告——橙
+    "sev_low":   "#64748B",   # 提示——中性石板灰（避免与主色蓝撞色）
     "sev_high_bg": "#FDE8E8", # 严重行/块背景（清晰红染）
     "sev_med_bg":  "#FEF3DD", # 警告行/块背景（清晰橙染）
-    "sev_low_bg":  "#E6EEFD", # 提示行/块背景（清晰蓝染）
+    "sev_low_bg":  "#EDF1F6", # 提示行/块背景（中性浅染）
     "hl_high":   "#FBD5D5",   # 内文高亮背景——红
     "hl_med":    "#FCE8BE",   # 内文高亮背景——橙
-    "hl_low":    "#CFE0FB",   # 内文高亮背景——蓝
+    "hl_low":    "#DDE6F1",   # 内文高亮背景——中性
     # 图表调色（协调、低饱和医疗感）
-    "chart": ["#3B82F6", "#16A34A", "#F59E0B", "#DC2626", "#8B5CF6", "#06B6D4", "#EC4899"],
+    "chart": ["#2D6CDF", "#1FA971", "#E8941A", "#7C6CF0", "#0E9F8E", "#E5484D"],
 }
 
 SEV_COLOR = {"high": THEME["sev_high"], "medium": THEME["sev_med"], "low": THEME["sev_low"]}
@@ -106,20 +106,20 @@ SEV_ICON = {"high": "⛔", "medium": "⚠", "low": "ℹ"}
 THEME_LIGHT = dict(THEME)
 THEME_DARK = {
     **THEME_LIGHT,
-    "bg":         "#0F1320",   # 内容区背景（深蓝黑）
-    "panel":      "#1A2030",   # 卡片 / 面板
-    "panel_alt":  "#232B3D",   # 次级面板 / 输入框底
+    "bg":         "#0E1118",   # 内容区背景（中性近黑，与靛蓝侧边栏拉开色相差）
+    "panel":      "#161B26",   # 卡片 / 面板
+    "panel_alt":  "#1E2533",   # 次级面板 / 输入框底
     "border":     "#2C3548",   # 边框
     "text":       "#E6EAF2",   # 主文本
     "text_dim":   "#9AA3B8",   # 次要文本
-    "header_bg":  "#141A28",   # 内容区顶部细标题栏（深）
+    "header_bg":  "#12161F",   # 内容区顶部细标题栏（深）
     "header_fg":  "#E6EAF2",
     "sev_high_bg": "#3A1D1D",
     "sev_med_bg":  "#3A2E16",
-    "sev_low_bg":  "#1B2740",
+    "sev_low_bg":  "#212838",
     "hl_high":   "#4A2424",
     "hl_med":    "#46381C",
-    "hl_low":    "#25324F",
+    "hl_low":    "#2A3344",
 }
 
 
@@ -186,7 +186,7 @@ def apply_theme(root):
               background=[("active", s["primary_d"]), ("pressed", s["primary_d"])])
 
     # 顶栏「帮助」按钮：浅底蓝字，与白底标题栏协调
-    style.configure("Help.TButton", background="#EEF1F7", foreground="#3B82F6",
+    style.configure("Help.TButton", background="#F3F6FB", foreground="#2D6CDF",
                     borderwidth=0, padding=[16, 8], font=F(FAMILY, 10, "bold"))
     style.map("Help.TButton",
               background=[("active", "#E2E8F2"), ("pressed", "#E2E8F2")])

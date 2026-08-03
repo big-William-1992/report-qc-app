@@ -282,7 +282,7 @@ function renderModalityChart(byModality) {
 
   container.innerHTML = entries.map(([mod, count]) => {
     const h = Math.max(20, (count / maxVal) * 200);
-    const colors = { CT:'#2d8cf0', DR:'#19be6b', MR:'#ff9900', XA:'#ed4014', US:'#7c3aed' };
+    const colors = { CT:'#2d6cdf', DR:'#1fa971', MR:'#e8941a', XA:'#e5484d', US:'#7c6cf0' };
     return `
       <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;">
         <span style="font-size:13px;font-weight:700;color:var(--text-primary);">${count}</span>
