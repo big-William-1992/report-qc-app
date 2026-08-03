@@ -497,8 +497,6 @@ class ReportQcApp(tk.Tk):
         self._help_btn = ttk.Button(bar, text="❓ 帮助", style="Help.TButton", width=10,
                                     command=self._post_header_help_menu)
         self._help_btn.pack(side="right", padx=4, anchor="center")
-        ttk.Button(bar, text="⚙ 规则维护", width=10,
-                   command=self._open_rules_editor).pack(side="right", padx=8, anchor="center")
         # 明暗主题切换（内容区）：夜班/暗光读片环境更护眼
         self._theme_btn = ttk.Button(bar, text="🌙 暗色", width=9,
                                      command=self._toggle_theme)
