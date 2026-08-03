@@ -2,7 +2,7 @@
 
 > 适用场景：已把项目整体（含 `.git`、运行数据、队列、OCR 模型）放进 iCloud Drive，
 > 现在换到一台新 MacBook，需要把它跑起来。
-> 当前 iCloud 副本 `git HEAD = 8525f871c73f611f8df921bc1d8a0265f5fb7b30`。
+> 当前 iCloud 副本 `git HEAD = 57ed7f5e35c19da9cc02b1dba1e872f7028036d4`。
 
 ---
 
@@ -36,7 +36,7 @@ rm -f ".gitignore 2" "LICENSE 2" "README 2.md" \
 
 ## 步骤 4 · 确认 git 仓库完整并还原受控文件
 ```bash
-git rev-parse HEAD     # 应为 8525f871c73f611f8df921bc1d8a0265f5fb7b30
+git rev-parse HEAD     # 应为 57ed7f5e35c19da9cc02b1dba1e872f7028036d4
 git status             # 正常仅多 .external_data/（队列数据）与 assets 下运行数据
 git checkout -- .      # 用 git 把受控文件还原到干净提交状态
 ```
