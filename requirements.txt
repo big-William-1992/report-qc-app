@@ -11,6 +11,7 @@ pyclipper>=1.3                # rapidocr 文本检测依赖
 Shapely>=2.0                  # rapidocr 文本检测依赖
 PyYAML>=6.0                   # rapidocr 配置加载
 six>=1.16                     # rapidocr 兼容层
+cryptography>=41.0            # 离线激活码(Ed25519)校验必需：license_utils 在验证激活码时懒加载，运行期必须使用
 
 # Windows 专属依赖（UIA 屏幕采集功能）已拆分到 requirements-windows.txt，
 # 仅 Windows 需要安装：comtypes / pywinauto。本文件在 macOS / Linux 上可干净安装。
