@@ -12,6 +12,13 @@ const PAGE_TITLES = {
   rules:     { title: '规则维护',   sub: '查看和管理质控规则' },
 };
 
+// 严重度元数据：图标 + 文字（色盲可用）
+const SEV_META = {
+  high:   { icon: '⛔', label: '严重', cls: 'danger' },
+  medium: { icon: '⚠', label: '警告', cls: 'warning' },
+  low:    { icon: 'ℹ', label: '提示', cls: 'info' },
+};
+
 function switchPage(pageName, navEl) {
   // 切换导航高亮
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
@@ -123,15 +130,18 @@ function renderQCResult(data) {
   }
 
   countEl.textContent = findings.length + ' 条';
-  listEl.innerHTML = findings.map(f => `
+  listEl.innerHTML = findings.map(f => {
+    const m = SEV_META[f.severity] || SEV_META.low;
+    return `
     <li class="finding-item">
       <span class="severity-dot ${f.severity}"></span>
+      <span class="sev-badge ${m.cls}">${m.icon} ${m.label}</span>
       <div>
         <div class="finding-text">${escapeHtml(f.message)}</div>
         <div class="finding-meta">${f.rule_id} · ${f.category || ''}</div>
       </div>
-    </li>
-  `).join('');
+    </li>`;
+  }).join('');
 
   listEl.style.display = 'block';
 }
@@ -184,7 +194,34 @@ async function saveToLibrary() {
   const impression = document.getElementById('impressionText').value.trim();
   if (!findings && !impression) { toast('没有可入库的内容', 'error'); return; }
 
-  toast('入库功能需要先运行质控（开发中）', 'info');
+  // 未运行过质控则先跑一次，确保有评分与发现
+  if (!document.querySelector('#findingList li')) {
+    await runQC();
+  }
+
+  try {
+    const res = await fetch('/api/samples/save', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        findings, impression,
+        meta: {
+          patient:      document.getElementById('mPatient').value,
+          gender:       document.getElementById('mGender').value,
+          age:          document.getElementById('mAge').value,
+          modality:     document.getElementById('mModality').value,
+          applied_site: document.getElementById('mSite').value,
+          laterality:   document.getElementById('mLaterality').value,
+          user_id:      document.getElementById('mUser').value,
+        }
+      })
+    });
+    const data = await res.json();
+    if (data.success) toast('已存入样本库（ID=' + (data.data.id || '?') + '）', 'success');
+    else toast('入库失败: ' + (data.error || ''), 'error');
+  } catch (e) {
+    toast('入库请求失败: ' + e.message, 'error');
+  }
 }
 
 // ==================== 高级设置折叠 ====================
@@ -249,7 +286,7 @@ function renderModalityChart(byModality) {
     return `
       <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;">
         <span style="font-size:13px;font-weight:700;color:var(--text-primary);">${count}</span>
-        <div style="width:36px;height:${h}px;border-radius:8px;background:${colors[mod]||var(--primary)};transition:height 0.5s;"></div>
+        <div style="width:36px;height:${h}px;border-radius:8px;background:${colors[mod]||'var(--primary)'};transition:height 0.5s;"></div>
         <span style="font-size:11px;color:var(--text-muted);font-weight:600;">${mod}</span>
       </div>`;
   }).join('');
@@ -363,7 +400,14 @@ async function testRisConnection() {
   }
 }
 
+let risController = null;
 async function fetchRisReports() {
+  const prog = document.getElementById('risProgress');
+  const cancelBtn = document.getElementById('risCancelBtn');
+  if (risController) risController.abort();   // 取消上次未完成的请求
+  risController = new AbortController();
+  if (prog) prog.classList.add('show');
+  if (cancelBtn) cancelBtn.style.display = 'inline-flex';
   try {
     const res = await fetch('/api/ris/fetch-reports', {
       method: 'POST',
@@ -377,7 +421,8 @@ async function fetchRisReports() {
         password:  document.getElementById('risPassword').value,
         query_sql: document.getElementById('risSql').value,
         limit: 50,
-      })
+      }),
+      signal: risController.signal,
     });
     const data = await res.json();
     const items = (data.data||{}).items||[];
@@ -400,7 +445,18 @@ async function fetchRisReports() {
     `).join('');
 
     toast(`成功拉取 ${items.length} 条报告`, 'success');
-  } catch(e) { toast('拉取失败: '+e.message, 'error'); }
+  } catch(e) {
+    if (e.name === 'AbortError') toast('已取消拉取', 'info');
+    else toast('拉取失败: '+e.message, 'error');
+  } finally {
+    if (prog) prog.classList.remove('show');
+    if (cancelBtn) cancelBtn.style.display = 'none';
+    risController = null;
+  }
+}
+
+function cancelRis() {
+  if (risController) risController.abort();
 }
 
 function sendToQC() { toast('发送到质控（选中行→填入左侧输入框）', 'info'); }
@@ -436,6 +492,35 @@ function escapeHtml(str) {
   if (!str) return '';
   return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+// ==================== 明暗主题切换 ====================
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('xy-theme', next);
+  const t = document.getElementById('themeToggle');
+  if (t) t.textContent = next === 'dark' ? '☀️' : '🌙';
+}
+(function initTheme() {
+  const saved = localStorage.getItem('xy-theme');
+  if (saved) {
+    document.documentElement.setAttribute('data-theme', saved);
+    const t = document.getElementById('themeToggle');
+    if (t) t.textContent = saved === 'dark' ? '☀️' : '🌙';
+  }
+})();
+
+// ==================== 全局快捷键 ====================
+document.addEventListener('keydown', function(e) {
+  const meta = e.metaKey || e.ctrlKey;
+  if (meta && e.key === 'Enter')        { e.preventDefault(); runQC(); }
+  else if (meta && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveToLibrary(); }
+  else if (e.key === 'Escape') {
+    const qcActive = document.getElementById('page-qc').classList.contains('active');
+    if (qcActive) clearInput();
+  }
+});
 
 // ==================== 初始化 ====================
 console.log('星衍AI放射质控 · Web 版 v1.0 已加载');

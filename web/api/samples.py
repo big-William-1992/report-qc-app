@@ -111,6 +111,32 @@ def import_samples():
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
+@samples_bp.route("/save", methods=["POST"])
+def save_one():
+    """入库单份报告：运行引擎 + 评分 + 存入样本库（供 Web 端 ⌘S / 入库按钮使用）。"""
+    data = request.get_json(force=True)
+    findings = data.get("findings", "") or ""
+    impression = data.get("impression", "") or ""
+    meta = data.get("meta", {}) or {}
+
+    try:
+        import engine
+        eng = engine.RuleEngine()
+        report = (findings + "\n" + impression).strip()
+        if not report:
+            return jsonify({"success": False, "error": "报告内容为空"}), 400
+        fds = eng.run(report, meta)
+        sc = engine.score(fds)
+        sid = samplelib.save_sample(
+            report, meta, fds, sc,
+            anonymize=meta.get("anonymize", False),
+            user_id=meta.get("user_id", ""),
+        )
+        return jsonify({"success": True, "data": {"id": sid}})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
 @samples_bp.route("/stats/dashboard", methods=["GET"])
 def dashboard_stats():
     """返回看板页所需的聚合统计。"""

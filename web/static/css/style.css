@@ -45,6 +45,26 @@
   /* 尺寸 */
   --sidebar-width: 240px;
   --header-height: 60px;
+
+  --input-bg: var(--input-bg);        /* 输入框 / 文本域背景 */
+}
+
+/* ---------- 暗色主题（内容区；侧边栏恒为暗色，不随模式变化） ---------- */
+[data-theme="dark"] {
+  --body-bg: #0d1117;
+  --card-bg: #161b22;
+  --header-bg: #11161d;
+  --header-border: #21262d;
+  --text-primary: #e6edf3;
+  --text-secondary: #9aa6b2;
+  --text-muted: #6e7681;
+  --border-color: #2a313c;
+  --primary-light: #16263a;
+  --success-light: #11261c;
+  --warning-light: #2a2310;
+  --danger-light: #2a1714;
+  --info: #7d8590;
+  --input-bg: #0d1117;
 }
 
 /* ---------- Reset & Base ---------- */
@@ -433,7 +453,7 @@ input, select, textarea {
   border-radius: var(--radius-sm);
   font-size: 13.5px;
   color: var(--text-primary);
-  background: #fafbfc;
+  background: var(--input-bg);
   transition: border-color 0.2s;
 }
 .meta-field input:focus, .meta-field select:focus {
@@ -453,7 +473,7 @@ textarea.qc-textarea {
   font-size: 13.5px;
   line-height: 1.7;
   color: var(--text-primary);
-  background: #fafbfc;
+  background: var(--input-bg);
   resize: vertical;
   font-family: inherit;
   transition: border-color 0.2s;
@@ -609,7 +629,7 @@ textarea.qc-textarea:focus {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   border-bottom: 1px solid var(--border-color);
-  background: #fafbfc;
+  background: var(--input-bg);
 }
 .data-table td {
   padding: 11px 14px;
@@ -618,7 +638,7 @@ textarea.qc-textarea:focus {
   color: var(--text-primary);
 }
 .data-table tr:last-child td { border-bottom: none; }
-.data-table tr:hover td { background: #fafbfc; }
+.data-table tr:hover td { background: var(--input-bg); }
 
 .tag {
   display: inline-block;
@@ -653,7 +673,7 @@ textarea.qc-textarea:focus {
   border: 1.5px solid var(--border-color);
   border-radius: var(--radius-sm);
   font-size: 13px;
-  background: #fafbfc;
+  background: var(--input-bg);
   transition: border-color 0.2s;
 }
 .form-group input:focus,
@@ -734,6 +754,59 @@ textarea.qc-textarea:focus {
 @keyframes slideIn {
   from { transform: translateX(100%); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
+}
+
+/* 严重度徽章（图标+文字，色盲可用） */
+.sev-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.sev-badge.danger { background: var(--danger-light); color: var(--danger); }
+.sev-badge.warning { background: var(--warning-light); color: var(--warning); }
+.sev-badge.info { background: #f4f6f8; color: var(--text-secondary); }
+
+/* 合规标识（PHI 本地处理） */
+.phi-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 11px;
+  border-radius: 20px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: var(--success-light);
+  color: var(--success);
+  border: 1px solid var(--success);
+  white-space: nowrap;
+}
+
+/* RIS 拉取进度条（不确定态动画） */
+.ris-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border-color);
+  overflow: hidden;
+  margin: 14px 0 0;
+  display: none;
+}
+.ris-progress.show { display: block; }
+.ris-progress-fill {
+  height: 100%;
+  width: 35%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--primary), #7c3aed);
+  background-size: 200% 100%;
+  animation: indeterminate 1.1s linear infinite;
+}
+@keyframes indeterminate {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 
 /* 响应式 */

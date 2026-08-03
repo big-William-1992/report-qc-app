@@ -57,9 +57,11 @@
       <span class="status-badge success" id="globalStatus">
         ● 系统正常
       </span>
+      <span class="phi-badge" title="所有报告数据仅在本机处理，不会上传任何服务器">🔒 本机处理·无上传</span>
     </div>
     <div class="topbar-right">
       <button class="topbar-btn" title="通知">🔔<span class="dot"></span></button>
+      <button class="topbar-btn" id="themeToggle" title="切换明暗主题" onclick="toggleTheme()">🌙</button>
       <button class="topbar-btn" title="设置">⚙️</button>
       <div class="user-dropdown">
         <div class="user-avatar">谢</div>
@@ -118,7 +120,7 @@
           <!-- 操作按钮条 -->
           <div class="action-bar">
             <button class="btn btn-primary btn-lg" onclick="runQC()">
-              ▶ 运行质控
+              ▶ 运行质控 ⌘↵
             </button>
             <button class="btn btn-outline" onclick="clearInput()">🗑 清空</button>
             <button class="btn btn-outline" onclick="saveToLibrary()">💾 入库</button>
@@ -307,6 +309,7 @@
               <button class="btn btn-primary" onclick="testRisConnection()">🔌 测试连接</button>
               <button class="btn btn-success" onclick="fetchRisReports()">📥 拉取报告</button>
             </div>
+            <div class="ris-progress" id="risProgress"><div class="ris-progress-fill"></div></div>
           </div>
         </div>
 
@@ -325,6 +328,7 @@
             </table>
           </div>
           <div style="padding:14px 20px;border-top:1px solid var(--border-color);display:flex;justify-content:flex-end;gap:8px;">
+            <button class="btn btn-outline btn-sm" id="risCancelBtn" onclick="cancelRis()" style="display:none;">✕ 取消</button>
             <button class="btn btn-outline btn-sm" onclick="sendToQC()">▶ 发送到质控</button>
             <button class="btn btn-primary btn-sm" onclick="batchQC()">📦 批量质控入库</button>
           </div>

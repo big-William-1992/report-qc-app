@@ -98,6 +98,35 @@ SEV_BG = {"high": THEME["sev_high_bg"], "medium": THEME["sev_med_bg"], "low": TH
 SEV_CN = {"high": "严重", "medium": "警告", "low": "提示"}
 SEV_TAG = {"high": "hl_high", "medium": "hl_med", "low": "hl_low"}
 SEV_ORDER = {"high": 0, "medium": 1, "low": 2}
+# 严重度图标：颜色之外再加图标，色觉异常用户也能区分（⛔严重/⚠警告/ℹ提示）
+SEV_ICON = {"high": "⛔", "medium": "⚠", "low": "ℹ"}
+
+# 明 / 暗两套调色板（仅「内容区」切换；侧边栏恒为暗色，不随模式变化）。
+# THEME 为当前生效调色板（同一对象、原地替换），apply_theme 与各处引用都会随之更新。
+THEME_LIGHT = dict(THEME)
+THEME_DARK = {
+    **THEME_LIGHT,
+    "bg":         "#0F1320",   # 内容区背景（深蓝黑）
+    "panel":      "#1A2030",   # 卡片 / 面板
+    "panel_alt":  "#232B3D",   # 次级面板 / 输入框底
+    "border":     "#2C3548",   # 边框
+    "text":       "#E6EAF2",   # 主文本
+    "text_dim":   "#9AA3B8",   # 次要文本
+    "header_bg":  "#141A28",   # 内容区顶部细标题栏（深）
+    "header_fg":  "#E6EAF2",
+    "sev_high_bg": "#3A1D1D",
+    "sev_med_bg":  "#3A2E16",
+    "sev_low_bg":  "#1B2740",
+    "hl_high":   "#4A2424",
+    "hl_med":    "#46381C",
+    "hl_low":    "#25324F",
+}
+
+
+def set_theme_mode(mode: str):
+    """原地切换 THEME 为明/暗内容区配色（保持同一 dict 对象，便于全局引用生效）。"""
+    THEME.clear()
+    THEME.update(THEME_DARK if mode == "dark" else THEME_LIGHT)
 
 
 def F(family, size, weight="normal"):
@@ -401,6 +430,8 @@ class ReportQcApp(tk.Tk):
         # 当前登录账号（工号）状态：质控责任到人的落点
         self.user_var = tk.StringVar(value="👤 未登录")
         ttk.Label(sb, textvariable=self.user_var, foreground=THEME["text_dim"]).pack(side="left", padx=(12, 0))
+        # 合规标识：强调全部在本机处理、无数据上传（医疗软件的关键信任点）
+        ttk.Label(sb, text="🔒 本机处理·无上传", foreground=THEME["ok"]).pack(side="left", padx=(12, 0))
         # 授权入口：主动激活 / 重新激活（默认显示"激活"，激活成功后变"重新激活"）
         self._activate_btn = ttk.Button(sb, text="激活", width=9,
                                         command=self._open_activation)
@@ -421,6 +452,14 @@ class ReportQcApp(tk.Tk):
 
         # 初始化导航高亮
         self._on_tab_changed()
+
+        # 全局快捷键：核心三步流程键盘优先（放射科医生高速录入）
+        self._mode = "light"
+        self.bind_all("<Control-Return>", lambda e: (self._run(), "break")[1])
+        self.bind_all("<Command-Return>", lambda e: (self._run(), "break")[1])
+        self.bind_all("<Control-s>", self._on_ctrl_s)
+        self.bind_all("<Command-s>", self._on_ctrl_s)
+        self.bind_all("<Escape>", self._on_escape)
 
     # -------------------- 顶栏 --------------------
     # -------------------- 内容区顶部细标题栏 --------------------
@@ -443,6 +482,10 @@ class ReportQcApp(tk.Tk):
         self._help_btn.pack(side="right", padx=4, anchor="center")
         ttk.Button(bar, text="⚙ 规则维护", width=10,
                    command=self._open_rules_editor).pack(side="right", padx=8, anchor="center")
+        # 明暗主题切换（内容区）：夜班/暗光读片环境更护眼
+        self._theme_btn = ttk.Button(bar, text="🌙 暗色", width=9,
+                                     command=self._toggle_theme)
+        self._theme_btn.pack(side="right", padx=4, anchor="center")
 
     # -------------------- 左侧暗色侧边栏导航 --------------------
     def _build_sidebar(self):
@@ -501,6 +544,89 @@ class ReportQcApp(tk.Tk):
                 btn.configure(bg=s["sidebar_active"], fg="#FFFFFF")
             else:
                 btn.configure(bg=s["sidebar_bg"], fg=s["sidebar_fg"])
+
+    # -------------------- 全局快捷键 --------------------
+    def _has_dialog(self):
+        """是否存在可见的弹窗（登录/反馈/关于等），用于快捷键避让。"""
+        for w in self.winfo_children():
+            if isinstance(w, tk.Toplevel) and w.winfo_viewable():
+                return True
+        return False
+
+    def _on_ctrl_s(self, event=None):
+        """⌘/Ctrl+S：存入样本库（避开弹窗场景）。"""
+        if self._has_dialog():
+            return
+        self._save()
+        return "break"
+
+    def _on_escape(self, event=None):
+        """Esc：清空报告录入区（仅当在报告质控页且无弹窗时）。"""
+        if self._has_dialog():
+            return
+        if self.notebook.index("current") != 0:
+            return
+        self.findings_txt.delete("1.0", "end")
+        self.impression_txt.delete("1.0", "end")
+
+    # -------------------- 明暗主题切换 --------------------
+    def _toggle_theme(self):
+        self._apply_mode("dark" if self._mode == "light" else "light")
+
+    def _apply_mode(self, mode):
+        """切换内容区明/暗，并重新着色已构建的 tk 控件（ttk 控件由 apply_theme 自动跟随）。"""
+        prev = THEME_DARK if mode == "light" else THEME_LIGHT
+        set_theme_mode(mode)
+        self._mode = mode
+        if hasattr(self, "_theme_btn"):
+            self._theme_btn.configure(text="☀️ 亮色" if mode == "dark" else "🌙 暗色")
+        apply_theme(self)
+        swap = {}
+        for k in ("bg", "panel", "panel_alt", "border", "text", "text_dim",
+                  "header_bg", "header_fg"):
+            pv, nv = prev.get(k), THEME.get(k)
+            if pv != nv:
+                # 归一化旧色（#FFFFFF/#ffffff/white 都映射成同一键），否则 Tk 规范化后精确比对会失配
+                swap[self._color_hex(pv)] = nv
+        self._recolor(self, swap)
+        # 文本高亮标签（hl_*）不是控件，_recolor 不会碰；需随主题重设底/字色
+        for w in (getattr(self, "findings_txt", None), getattr(self, "impression_txt", None),
+                  getattr(self, "out", None), getattr(self, "history_box", None)):
+            if w:
+                try:
+                    w.tag_configure("hl_high", background=THEME["hl_high"], foreground="#B71C1C")
+                    w.tag_configure("hl_med", background=THEME["hl_med"], foreground="#8A5A00")
+                    w.tag_configure("hl_low", background=THEME["hl_low"], foreground="#0B5394")
+                except Exception:
+                    pass
+        if hasattr(self, "_update_status_bar"):
+            self._update_status_bar()
+
+    def _color_hex(self, c):
+        """把任意颜色表示（#RRGGBB / 颜色名，含 py3.14 的 Tcl_Obj）归一为小写 #rrggbb。"""
+        try:
+            r, g, b = self.winfo_rgb(str(c))
+            return f"#{r // 256:02x}{g // 256:02x}{b // 256:02x}"
+        except Exception:
+            return str(c).lower()
+
+    def _recolor(self, widget, swap):
+        """递归把 tk 控件的旧配色替换为新配色（按归一化色值精确比对，兼容大小写/颜色名）。"""
+        for child in widget.winfo_children():
+            for opt in ("bg", "fg"):
+                try:
+                    cur = self._color_hex(child.cget(opt))
+                except Exception:
+                    continue
+                if cur in swap:
+                    try:
+                        child.configure(**{opt: swap[cur]})
+                    except Exception:
+                        pass
+            try:
+                self._recolor(child, swap)
+            except Exception:
+                pass
 
     # -------------------- 顶栏帮助按钮（窗口内可见入口） --------------------
     def _post_header_help_menu(self):
@@ -1186,7 +1312,7 @@ class ReportQcApp(tk.Tk):
         # ===== 主操作条（核心三步流程，绿色高亮，置于中央双栏下方）=====
         main_bar = ttk.Frame(root)
         main_bar.grid(row=2, column=0, sticky="ew", pady=(0, 4))
-        ttk.Button(main_bar, text="▶ 运行质控", style="Primary.TButton",
+        ttk.Button(main_bar, text="▶ 运行质控 ⌘↵", style="Primary.TButton",
                    command=self._run).pack(side="left", padx=3)
         ttk.Button(main_bar, text="🔍 识别并质控", style="Primary.TButton",
                    command=self._capture_and_qc).pack(side="left", padx=3)
@@ -1199,7 +1325,7 @@ class ReportQcApp(tk.Tk):
         ttk.Button(sub_bar, text="📂 导入文件", command=self._import).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="🗑 清空", command=lambda: (self.findings_txt.delete("1.0", "end"),
                                                   self.impression_txt.delete("1.0", "end"))).pack(side="left", padx=3)
-        ttk.Button(sub_bar, text="💾 存入样本库", command=self._save).pack(side="left", padx=3)
+        ttk.Button(sub_bar, text="💾 存入样本库 ⌘S", command=self._save).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="⬇ 导出样本库", command=self._export_samples).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="⬆ 导入样本库", command=self._import_samples).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="🔍 自动识别元信息", command=self._auto_meta_btn).pack(side="left", padx=3)
@@ -2151,7 +2277,7 @@ class ReportQcApp(tk.Tk):
             win = tk.Toplevel(self)
             win.title("⚠ 报告质控提醒")
             win.geometry("520x440")
-            win.configure(bg="#FAFAFA")
+            win.configure(bg=THEME["panel"])
             self._alert_win = win
         # 高/中/低分级统计
         n = len(findings)
@@ -2160,19 +2286,19 @@ class ReportQcApp(tk.Tk):
         if n_high:
             head_txt += f"（其中 {n_high} 处高风险）"
         # ponytail: v2 — cleaner alert header with icon + severity badge
-        header_frame = tk.Frame(win, bg="#FAFAFA")
+        header_frame = tk.Frame(win, bg=THEME["panel"])
         header_frame.pack(fill="x", padx=16, pady=(14, 8))
-        tk.Label(header_frame, text="⚠️", font=("Segoe UI Emoji", 20), bg="#FAFAFA").pack(side="left", padx=(0, 8))
+        tk.Label(header_frame, text="⚠️", font=("Segoe UI Emoji", 20), bg=THEME["panel"]).pack(side="left", padx=(0, 8))
         tk.Label(header_frame, text=head_txt, font=F(FAMILY, 13, "bold"),
-                 fg="#C0392B", bg="#FAFAFA", wraplength=440, justify="left").pack(side="left", fill="x", expand=True)
+                 fg="#C0392B", bg=THEME["panel"], wraplength=440, justify="left").pack(side="left", fill="x", expand=True)
 
         # 严重度图例
-        legend = tk.Frame(win, bg="#FAFAFA")
+        legend = tk.Frame(win, bg=THEME["panel"])
         legend.pack(fill="x", padx=16, pady=(0, 4))
-        tk.Label(legend, text="● 红=严重   ● 橙=警告   ● 蓝=提示",
-                 font=F(FAMILY, 9), fg=THEME["text_dim"], bg="#FAFAFA").pack(side="left")
+        tk.Label(legend, text="⛔ 严重   ⚠ 警告   ℹ 提示",
+                 font=F(FAMILY, 9), fg=THEME["text_dim"], bg=THEME["panel"]).pack(side="left")
         # Findings list：每条按严重度着色（红=严重 / 橙=警告 / 蓝=提示）+ 左侧色条 + 忽略按钮
-        list_frame = tk.Frame(win, bg="#FAFAFA")
+        list_frame = tk.Frame(win, bg=THEME["panel"])
         list_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
         for i, fd in enumerate(findings, 1):
             sev = getattr(fd, "severity", "")
@@ -2186,7 +2312,7 @@ class ReportQcApp(tk.Tk):
             # 左侧严重度色条（红/橙/蓝），一眼区分错误程度
             bar = tk.Frame(row, bg=SEV_COLOR.get(sev, "#999999"), width=6)
             bar.pack(side="left", fill="y")
-            badge = tk.Label(row, text=f"  {sev_label}  ", font=F(FAMILY, 9, "bold"),
+            badge = tk.Label(row, text=f"  {SEV_ICON.get(sev, '')} {sev_label}  ", font=F(FAMILY, 9, "bold"),
                              fg=SEV_COLOR.get(sev, "#333333"),
                              bg=SEV_BG.get(sev, "#EEEEEE"))
             badge.pack(side="left", padx=(6, 0), pady=4)
@@ -2203,7 +2329,7 @@ class ReportQcApp(tk.Tk):
                       ).pack(side="right", padx=4, pady=4)
 
         # Buttons
-        bar = tk.Frame(win, bg="#FAFAFA")
+        bar = tk.Frame(win, bg=THEME["panel"])
         bar.pack(fill="x", padx=16, pady=(0, 14))
         ttk.Button(bar, text="写入永久忽略规则", command=self._persist_ignores).pack(side="left")
         ttk.Button(bar, text="打开自动修正", command=lambda: (win.destroy(), self._auto_fix_copy())
@@ -2378,7 +2504,7 @@ class ReportQcApp(tk.Tk):
             for i, fd in enumerate(findings, 1):
                 start = self.out.index("end-1c")
                 self.out.insert("end",
-                    f"[{i}] {fd.rule_id} | {fd.error_type} | 严重度={SEV_CN.get(fd.severity, fd.severity)}({fd.severity})\n"
+                    f"[{i}] {SEV_ICON.get(fd.severity, '')} {fd.rule_id} | {fd.error_type} | 严重度={SEV_CN.get(fd.severity, fd.severity)}({fd.severity})\n"
                     f"    {fd.message}\n")
                 end = self.out.index("end-1c")
                 self._out_ranges[i] = (start, end)
@@ -2890,6 +3016,15 @@ class ReportQcApp(tk.Tk):
         self.ris_status = tk.StringVar(value="就绪")
         ttk.Label(bar, textvariable=self.ris_status, foreground=s["primary"]).pack(side="left", padx=10)
 
+        # 批量进度条 + 取消（长任务避免假死）
+        self.ris_prog = ttk.Frame(f)
+        self.ris_prog_bar = ttk.Progressbar(self.ris_prog, orient="horizontal",
+                                            length=400, mode="determinate")
+        self.ris_prog_bar.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ttk.Button(self.ris_prog, text="✕ 取消", width=8,
+                   command=self._ris_cancel_batch).pack(side="left")
+        self.ris_prog.pack_forget()  # 默认隐藏
+
         listf = ttk.LabelFrame(f, text="📄  拉取结果（双击可送入『报告质控』页）")
         listf.pack(fill="both", expand=True, padx=2, pady=(0, 8))
         cols = ("idx", "patient", "gender", "modality", "preview")
@@ -2960,20 +3095,47 @@ class ReportQcApp(tk.Tk):
         if not self._ris_rows:
             messagebox.showinfo("提示", "请先『拉取报告』")
             return
-        n = 0
-        for it in self._ris_rows:
-            meta = {"name": it.get("patient", ""), "gender": it.get("gender", ""),
-                    "age": it.get("age", ""), "modality": it.get("modality", ""),
-                    "applied_site": it.get("applied_site", "")}
-            findings = self.engine.run(it["report_text"], meta)
-            scores = score(findings)
-            samplelib.save_sample(it["report_text"], meta, findings, scores,
-                                  anonymize=self.anon_var.get(),
-                                  user_id=self.current_user)
-            n += 1
+        if getattr(self, "_ris_running", False):
+            return
+        self._ris_running = True
+        self._ris_cancel = False
+        total = len(self._ris_rows)
+        self.ris_prog.pack(fill="x", padx=4, pady=(2, 6))
+        self.ris_prog_bar.configure(maximum=total, value=0)
+        self.ris_status.set(f"批量质控中…（{total} 份，可取消）")
+        rows = self._ris_rows
+        anon = self.anon_var.get()
+        user = self.current_user
+
+        def work():
+            n = 0
+            for it in rows:
+                if self._ris_cancel:
+                    break
+                meta = {"name": it.get("patient", ""), "gender": it.get("gender", ""),
+                        "age": it.get("age", ""), "modality": it.get("modality", ""),
+                        "applied_site": it.get("applied_site", "")}
+                findings = self.engine.run(it["report_text"], meta)
+                scores = score(findings)
+                samplelib.save_sample(it["report_text"], meta, findings, scores,
+                                      anonymize=anon, user_id=user)
+                n += 1
+                self.after(0, lambda v=n: self.ris_prog_bar.configure(value=v))
+            self.after(0, self._ris_batch_done, n, total)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ris_batch_done(self, n, total):
+        self._ris_running = False
+        self.ris_prog.pack_forget()
         self._refresh_samples()
         self.ris_status.set(f"✅ 已质控并入库 {n} 条")
         messagebox.showinfo("完成", f"已批量质控并入库 {n} 条报告，可在『质控驾驶舱』查看统计。")
+
+    def _ris_cancel_batch(self):
+        if getattr(self, "_ris_running", False):
+            self._ris_cancel = True
+            self.ris_status.set("正在取消…")
 
 
 def main():
