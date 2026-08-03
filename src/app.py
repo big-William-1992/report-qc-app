@@ -1374,6 +1374,7 @@ class ReportQcApp(tk.Tk):
         ttk.Button(sub_bar, text="🗑 清空", command=lambda: (self.findings_txt.delete("1.0", "end"),
                                                   self.impression_txt.delete("1.0", "end"))).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="💾 存入样本库 ⌘S", command=self._save).pack(side="left", padx=3)
+        ttk.Button(sub_bar, text="📄 导出质控留档", command=self._export_qc_archive).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="⬇ 导出样本库", command=self._export_samples).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="⬆ 导入样本库", command=self._import_samples).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="🔍 自动识别元信息", command=self._auto_meta_btn).pack(side="left", padx=3)
@@ -3265,6 +3266,124 @@ class ReportQcApp(tk.Tk):
                 for d, v in sorted(trend.items()):
                     w.writerow([d, v["n"], v["avg_acc"]])
             messagebox.showinfo("已导出", f"质控报表已导出：\n{path}")
+        except Exception as e:
+            show_error(f"导出失败：{e}")
+
+    def _export_qc_archive(self):
+        """导出当前报告的质控留档为自包含 HTML（可浏览器打开 / 打印成 PDF）。
+
+        内容含：元信息、综合得分与等级、四维度分项、严重度分组的发现明细
+        （含原文与建议）、操作人与时间审计。零第三方依赖。
+        """
+        sc = getattr(self, "current_scores", None)
+        if not isinstance(sc, dict) or not sc:
+            messagebox.showinfo("提示", "请先『运行质控』生成结果，再导出留档。")
+            return
+        fds = self.current_findings or []
+        overall = self._overall_score()
+        lv = self._score_level(overall)
+        meta = {k: self.vars[k].get().strip() for k in self.vars}
+        dims = [("准确性", "准确性"), ("完整性", "完整性"), ("规范性", "规范性"), ("及时性", "及时性")]
+        sev_cn = {"high": "严重", "medium": "警告", "low": "提示"}
+        sev_color = {"high": "#E03E3E", "medium": "#E8912D", "low": "#2D6CDF"}
+        now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        operator = getattr(self, "current_user", None) or "未登录"
+
+        def esc(t):
+            return (str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+        rows_meta = "".join(
+            f"<tr><th>{esc(lab)}</th><td>{esc(meta.get(key, '')) or '—'}</td></tr>"
+            for lab, key in [("影像号", "exam_no"), ("姓名", "name"), ("性别", "gender"),
+                             ("年龄", "age"), ("检查部位", "applied_site"),
+                             ("成像方式", "modality"), ("侧别", "laterality")]
+        )
+        rows_dim = "".join(
+            f"<tr><td>{esc(name)}</td><td class='num'>{sc[d]['score']}</td></tr>"
+            for name, d in dims
+        )
+        groups = [("high", "⛔ 严重"), ("medium", "⚠ 警告"), ("low", "ℹ 提示")]
+        detail_html = ""
+        if not fds:
+            detail_html = "<p class='ok'>✅ 未检出确定性错误。</p>"
+        else:
+            for sev, title in groups:
+                items = [fd for fd in fds if getattr(fd, "severity", "") == sev]
+                if not items:
+                    continue
+                detail_html += f"<h3 style='color:{sev_color[sev]}'>{esc(title)} · {len(items)}</h3>"
+                for i, fd in enumerate(items, 1):
+                    sug = getattr(fd, "suggestion", "") or ""
+                    sug_html = f"<div class='sug'>建议修正：<b>{esc(sug)}</b></div>" if sug else \
+                        f"<div class='sug'>建议：{esc(getattr(fd, 'message', '') or '请按提示修改。')}</div>"
+                    detail_html += (
+                        f"<div class='card'>"
+                        f"<div class='card-h'>{esc(fd.rule_id)} · {esc(fd.error_type)} "
+                        f"<span class='tag' style='background:{sev_color[sev]}'>{esc(sev_cn.get(fd.severity, fd.severity))}</span></div>"
+                        f"<div class='msg'>{esc(getattr(fd, 'message', ''))}</div>"
+                        f"{sug_html}</div>"
+                    )
+        level_color = "#1B9E5A" if overall >= 85 else ("#E8912D" if overall >= 70 else "#E03E3E")
+        html = f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>放射质控留档 · {esc(meta.get('exam_no', '') or '未命名')}</title>
+<style>
+  body {{ font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         color:#222; max-width:880px; margin:24px auto; padding:0 20px; }}
+  h1 {{ color:#1B3F7A; border-bottom:3px solid #3E82F0; padding-bottom:8px; }}
+  .sub {{ color:#666; font-size:13px; margin:4px 0 20px; }}
+  h2 {{ color:#1B3F7A; margin-top:28px; font-size:17px; }}
+  table {{ border-collapse:collapse; width:100%; margin:8px 0; }}
+  th,td {{ border:1px solid #DCE3EE; padding:8px 10px; text-align:left; font-size:14px; }}
+  th {{ background:#EEF3FB; width:120px; color:#1B3F7A; }}
+  .num {{ text-align:center; font-weight:700; }}
+  .score-box {{ display:flex; align-items:center; gap:20px; background:#F5F8FD;
+                border:1px solid #DCE3EE; border-radius:10px; padding:16px 20px; margin:10px 0; }}
+  .score-big {{ font-size:46px; font-weight:800; color:{level_color}; }}
+  .score-lv {{ font-size:18px; font-weight:700; color:{level_color}; }}
+  .score-hint {{ color:#666; font-size:13px; }}
+  .card {{ border:1px solid #DCE3EE; border-left:4px solid #3E82F0; border-radius:6px;
+           padding:10px 14px; margin:10px 0; background:#fff; }}
+  .card-h {{ font-weight:700; font-size:14px; }}
+  .tag {{ color:#fff; font-size:12px; padding:1px 8px; border-radius:10px; margin-left:6px; }}
+  .msg {{ color:#333; font-size:13px; margin:6px 0; }}
+  .sug {{ color:#1B3F7A; font-size:13px; background:#EEF3FB; padding:6px 10px;
+          border-radius:4px; margin-top:4px; }}
+  .ok {{ color:#1B9E5A; font-weight:700; }}
+  .foot {{ margin-top:30px; padding-top:12px; border-top:1px solid #DCE3EE;
+           color:#888; font-size:12px; }}
+</style></head><body>
+  <h1>放射报告质控留档</h1>
+  <div class="sub">星衍 AI 放射质控系统 · 生成时间 {esc(now)} · 操作人 {esc(operator)}</div>
+
+  <h2>一、报告元信息</h2>
+  <table>{rows_meta}</table>
+
+  <h2>二、综合质控评分</h2>
+  <div class="score-box">
+    <div class="score-big">{overall}</div>
+    <div><div class="score-lv">{esc(lv['txt'])}</div>
+         <div class="score-hint">{esc(lv['hint'])}</div></div>
+  </div>
+  <table><tr><th>维度</th><th class="num">得分</th></tr>{rows_dim}</table>
+
+  <h2>三、质控发现明细（{len(fds)} 项）</h2>
+  {detail_html}
+
+  <div class="foot">本报告由星衍 AI 放射质控系统自动生成，仅供质控记录与改进参考；
+  最终诊断与签发以医师审核为准。本留档不含患者影像，符合最小必要原则。</div>
+</body></html>"""
+        p = filedialog.asksaveasfilename(
+            defaultextension=".html",
+            filetypes=[("HTML 留档", "*.html"), ("全部", "*.*")],
+            title="导出质控留档",
+            initialfile=f"质控留档_{esc(meta.get('exam_no', '') or 'report')}_{time.strftime('%Y%m%d')}.html")
+        if not p:
+            return
+        try:
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(html)
+            self._toast(f"质控留档已导出：{os.path.basename(p)}", "ok")
         except Exception as e:
             show_error(f"导出失败：{e}")
 
