@@ -1575,7 +1575,8 @@ class ReportQcApp(tk.Tk):
 
     def _adopt_finding(self, i):
         """采纳一条发现：错别字(typo)直接在对应文本框内联替换为建议值并刷新；
-        其余类型（矛盾/规范/缺失）无确定性修正值，改为定位选中 + 复制建议文案，便于人工修改。"""
+        其余类型（矛盾/规范/缺失）无确定性修正值，改为定位选中 + 复制建议文案，便于人工修改。
+        替换失败时（如文本被用户改动导致偏移失效）自动降级为定位 + 复制。"""
         fds = self.current_findings or []
         if not (0 < i <= len(fds)):
             return
@@ -1585,12 +1586,20 @@ class ReportQcApp(tk.Tk):
         if sug and loc:
             box, lo, hi = loc
             w = self.impression_txt if box == "impression" else self.findings_txt
-            wrong = w.get(f"1.0+{lo}c", f"1.0+{hi}c")
-            w.replace(f"1.0+{lo}c", f"1.0+{hi}c", sug)
-            self._run()                       # 错别字修正后该条不再出现，卡片自动刷新
-            self._toast(f"已采纳并修正：『{wrong}』→『{sug}』", "ok")
-            return
-        # 非错别字类：定位并选中原文范围 + 复制建议文案到剪贴板
+            try:
+                wrong = w.get(f"1.0+{lo}c", f"1.0+{hi}c")
+                w.replace(f"1.0+{lo}c", f"1.0+{hi}c", sug)
+            except Exception:
+                wrong = None
+            if wrong is not None:
+                self._run()                       # 错别字修正后该条不再出现，卡片自动刷新
+                self._toast(f"已采纳并修正：『{wrong}』→『{sug}』", "ok")
+                return
+            # 替换失败（偏移失效）→ 降级为定位 + 复制
+        self._adopt_fallback(fd, loc)
+
+    def _adopt_fallback(self, fd, loc):
+        """非错别字类或替换失败时的兜底：定位选中原文 + 复制建议文案到剪贴板。"""
         if loc:
             box, lo, hi = loc
             w = self.impression_txt if box == "impression" else self.findings_txt
