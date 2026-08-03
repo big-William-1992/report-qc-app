@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星衍AI放射质控 · 重构后界面原型</title>
+<style>
+  :root{
+    --bg:#F4F6FA; --panel:#FFFFFF; --panel-alt:#EEF2F8; --panel-soft:#F8FAFC;
+    --text:#1F2A37; --text-dim:#6B7280; --primary:#1565C0; --primary-d:#0D47A1;
+    --primary-soft:#E3F2FD; --border:#D8DEE9; --green:#2E7D32; --green-bg:#E8F5E9;
+    --warn:#8A5A00; --radius:8px; --shadow:0 1px 3px rgba(20,40,80,.08);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{font-family:"Microsoft YaHei","PingFang SC",-apple-system,Segoe UI,sans-serif;
+    background:var(--bg);color:var(--text);font-size:13px;display:flex;flex-direction:column}
+
+  /* 顶部标签栏 */
+  .topbar{display:flex;align-items:center;gap:4px;background:var(--panel);
+    border-bottom:1px solid var(--border);padding:0 12px;height:42px;flex:0 0 auto}
+  .topbar .logo{font-weight:700;color:var(--primary);margin-right:14px;font-size:15px}
+  .tab{padding:9px 16px;border-radius:6px 6px 0 0;color:var(--text-dim);cursor:pointer;font-weight:600}
+  .tab.active{color:var(--primary);background:var(--bg);border-bottom:2px solid var(--primary)}
+
+  /* 主区域：随窗口伸缩 */
+  .qc{flex:1 1 auto;display:grid;grid-template-rows:auto 1fr auto;gap:10px;padding:12px;min-height:0}
+
+  /* 元信息卡：响应式 grid */
+  .meta{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+    padding:12px 14px;box-shadow:var(--shadow)}
+  .meta h3{margin:0 0 10px;font-size:13px;color:var(--primary)}
+  .meta-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px 18px}
+  .field{display:flex;align-items:center;gap:8px}
+  .field label{flex:0 0 auto;color:var(--text-dim)}
+  .field input{flex:1 1 auto;min-width:0;padding:6px 8px;border:1px solid var(--border);
+    border-radius:6px;background:var(--panel-soft);color:var(--text)}
+
+  /* 中央双栏：左输入 右结果，均随窗口伸长 */
+  .body{display:grid;grid-template-columns:3fr 2fr;gap:12px;min-height:0}
+  .left{display:grid;grid-template-rows:1fr 1fr;gap:10px;min-height:0}
+  .box{display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--border);
+    border-radius:var(--radius);box-shadow:var(--shadow);min-height:0;overflow:hidden}
+  .box .hd{padding:7px 10px;font-weight:600;color:var(--primary);border-bottom:1px solid var(--border);
+    background:var(--panel-soft)}
+  .box textarea{flex:1 1 auto;border:none;outline:none;resize:none;padding:10px;font-size:13px;
+    line-height:1.6;background:var(--panel);color:var(--text);font-family:inherit}
+
+  .right{display:grid;grid-template-rows:1fr auto auto;gap:10px;min-height:0}
+  .result{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .result .hd{padding:7px 10px;font-weight:600;color:var(--primary);border-bottom:1px solid var(--border);
+    background:var(--panel-soft)}
+  .result .content{flex:1 1 auto;overflow:auto;padding:10px;font-size:12px;line-height:1.7}
+  .score{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+    padding:10px;box-shadow:var(--shadow);font-family:Consolas,monospace;font-size:12px;color:var(--primary-d)}
+  .hist{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);display:flex;flex-direction:column;max-height:150px;overflow:hidden}
+  .hist .hd{padding:7px 10px;font-weight:600;color:var(--text);border-bottom:1px solid var(--border);
+    background:var(--panel-soft)}
+  .hist .content{flex:1 1 auto;overflow:auto;padding:8px 10px;font-size:11px;color:var(--text-dim);line-height:1.6}
+
+  /* 操作区：三层 */
+  .actions{flex:0 0 auto;display:flex;flex-direction:column;gap:8px}
+  .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .bar.primary .btn{background:var(--green);color:#fff;border-color:var(--green)}
+  .bar.primary .btn:hover{background:#1B5E20}
+  .btn{padding:8px 14px;border:1px solid var(--border);border-radius:6px;background:var(--panel);
+    color:var(--text);cursor:pointer;font-size:13px;font-weight:600;box-shadow:var(--shadow)}
+  .btn:hover{background:var(--primary-soft);border-color:var(--primary)}
+  .sep{width:1px;height:24px;background:var(--border);margin:0 4px}
+
+  /* 设置折叠区 */
+  .settings{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);overflow:hidden}
+  .settings .toggle{display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;
+    font-weight:600;color:var(--warn);user-select:none}
+  .settings .toggle .chev{transition:transform .2s;display:inline-block}
+  .settings.open .toggle .chev{transform:rotate(90deg)}
+  .settings .inner{max-height:0;transition:max-height .25s ease;overflow:hidden;padding:0 12px}
+  .settings.open .inner{max-height:260px;padding:4px 12px 12px}
+  .srow{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:6px 0;color:var(--text)}
+  .srow + .srow{border-top:1px dashed var(--border)}
+  .srow .glabel{color:var(--text-dim);flex:0 0 auto}
+  .pill{padding:5px 10px;border:1px solid var(--border);border-radius:14px;background:var(--panel-soft);
+    cursor:pointer;font-size:12px}
+  .pill.on{background:var(--primary-soft);border-color:var(--primary);color:var(--primary-d)}
+  .hint{color:var(--text-dim);font-size:11px}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="logo">🩺 星衍AI放射质控</span>
+    <span class="tab active">报告质控</span>
+    <span class="tab">质控看板</span>
+    <span class="tab">RIS对照</span>
+    <span class="tab">样本库</span>
+    <span class="tab">帮助</span>
+  </div>
+
+  <div class="qc">
+    <!-- 元信息卡 -->
+    <div class="meta">
+      <h3>📋 报告元信息</h3>
+      <div class="meta-grid">
+        <div class="field"><label>影像号</label><input value="CT20260801-0042"></div>
+        <div class="field"><label>姓名</label><input value="张　三"></div>
+        <div class="field"><label>性别（男/女）</label><input value="男"></div>
+        <div class="field"><label>年龄</label><input value="52"></div>
+        <div class="field"><label>检查部位</label><input value="胸部"></div>
+        <div class="field"><label>成像方式</label><input value="CT"></div>
+        <div class="field"><label>侧别</label><input value="—"></div>
+      </div>
+    </div>
+
+    <!-- 中央双栏 -->
+    <div class="body">
+      <div class="left">
+        <div class="box">
+          <div class="hd">🩻 影像描述（检查所见）</div>
+          <textarea>胸廓对称，气管居中。两肺纹理增多、紊乱，右肺上叶见斑片状密度增高影，边缘模糊，其内可见含气支气管征。纵隔居中，心影大小形态未见明显异常。两侧胸膜无增厚，胸腔未见积液。所示肋骨未见明确骨质破坏。</textarea>
+        </div>
+        <div class="box">
+          <div class="hd">📑 影像结论（诊断印象）</div>
+          <textarea>右肺上叶炎性病变可能，建议抗炎治疗后复查。
+请结合临床。</textarea>
+        </div>
+      </div>
+
+      <div class="right">
+        <div class="result">
+          <div class="hd">📊 质控结果</div>
+          <div class="content">
+            <div>✅ <b>准确性</b>：未见明显矛盾（性别/部位/结论一致）</div>
+            <div>⚠️ <b>完整性</b>：结论未描述病灶大小（建议补充测量值）</div>
+            <div>✅ <b>规范性</b>：术语规范，未见口语化表述</div>
+            <div>⚠️ <b>及时性</b>：未见检查时间与报告时间</div>
+            <hr style="border:none;border-top:1px solid var(--border);margin:8px 0">
+            <div>📌 <b>建议补充</b>：病灶最大径、检查日期、报告医师签名</div>
+          </div>
+        </div>
+        <div class="score">准确性 92 | 完整性 71 | 规范性 88 | 及时性 40</div>
+        <div class="hist">
+          <div class="hd">📋 监听捕获记录（审计）</div>
+          <div class="content">08-01 02:14  张　三 / CT / 右肺上叶 — 命中：完整性⚠️<br>
+            08-01 01:52  李　四 / MR / 颅脑 — 命中：及时性⚠️<br>
+            07-31 23:10  王　五 / DR / 腰椎 — 通过</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 操作区：三层 -->
+    <div class="actions">
+      <div class="bar primary">
+        <button class="btn">▶ 运行质控</button>
+        <button class="btn">🔍 识别并质控</button>
+        <button class="btn">🪟 从PACS读取(UIA)</button>
+      </div>
+      <div class="bar">
+        <button class="btn">📂 导入文件</button>
+        <button class="btn">🗑 清空</button>
+        <button class="btn">💾 存入样本库</button>
+        <button class="btn">🔍 自动识别元信息</button>
+        <button class="btn">✏️ 自动修正并复制</button>
+      </div>
+
+      <!-- 设置折叠区（默认折叠） -->
+      <div class="settings" id="settings">
+        <div class="toggle" onclick="document.getElementById('settings').classList.toggle('open')">
+          <span class="chev">▶</span> ⚙ 设置（监听 / 区域框选 / 快捷键 / 采集方式）
+        </div>
+        <div class="inner">
+          <div class="srow">
+            <span class="glabel">📋 监听剪贴板</span>
+            <span class="pill" onclick="this.classList.toggle('on')">复制即质控</span>
+            <span class="pill" onclick="this.classList.toggle('on')">命中即自动入库</span>
+            <span class="pill on" onclick="this.classList.toggle('on')">🔔 发现问题弹窗</span>
+            <span class="hint">状态：● 未监听</span>
+          </div>
+          <div class="srow">
+            <span class="glabel">🎯 屏幕区域框选</span>
+            <span class="pill" onclick="this.classList.toggle('on')">基础信息区</span>
+            <span class="pill" onclick="this.classList.toggle('on')">描述区</span>
+            <span class="pill" onclick="this.classList.toggle('on')">结论区</span>
+            <span class="pill" onclick="this.classList.toggle('on')">UIA检测</span>
+          </div>
+          <div class="srow">
+            <span class="glabel">⌨ 快捷键</span>
+            <span class="pill" onclick="this.classList.toggle('on')">设置快捷键</span>
+            <span class="hint" id="hk">采集方式：自动</span>
+          </div>
+          <div class="srow">
+            <span class="glabel">⌨ 快捷键采集</span>
+            <span class="pill on">自动</span>
+            <span class="pill">仅UIA</span>
+            <span class="pill">仅OCR</span>
+            <span class="pill">每次询问</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  // 模拟采集方式单选切换
+  document.querySelectorAll('.srow:last-child .pill').forEach(p=>{
+    p.addEventListener('click',()=>{
+      document.querySelectorAll('.srow:last-child .pill').forEach(x=>x.classList.remove('on'));
+      p.classList.add('on');
+      document.getElementById('hk').textContent='采集方式：'+p.textContent;
+    });
+  });
+</script>
+</body>
+</html>

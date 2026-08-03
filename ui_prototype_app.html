@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星衍AI放射质控 · 交互原型</title>
+<style>
+  :root{
+    --bg:#F4F6FA; --panel:#FFFFFF; --panel-alt:#EEF2F8; --panel-soft:#F8FAFC;
+    --text:#1F2A37; --text-dim:#6B7280; --primary:#1565C0; --primary-d:#0D47A1;
+    --primary-soft:#E3F2FD; --border:#D8DEE9; --green:#2E7D32; --green-bg:#E8F5E9;
+    --warn:#8A5A00; --red:#C62828; --radius:8px; --shadow:0 1px 3px rgba(20,40,80,.08);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{font-family:"Microsoft YaHei","PingFang SC",-apple-system,Segoe UI,sans-serif;
+    background:var(--bg);color:var(--text);font-size:13px;display:flex;flex-direction:column}
+
+  .topbar{display:flex;align-items:center;gap:4px;background:var(--panel);
+    border-bottom:1px solid var(--border);padding:0 12px;height:44px;flex:0 0 auto}
+  .topbar .logo{font-weight:700;color:var(--primary);margin-right:14px;font-size:15px}
+  .tab{padding:11px 16px;color:var(--text-dim);cursor:pointer;font-weight:600}
+  .tab.active{color:var(--primary);background:var(--bg);border-bottom:2px solid var(--primary)}
+
+  .qc{flex:1 1 auto;display:grid;grid-template-rows:auto 1fr auto;gap:10px;padding:12px;min-height:0;overflow:auto}
+  .page{display:none;flex:1 1 auto;min-height:0}
+  .page.active{display:grid;grid-template-rows:auto 1fr auto;gap:10px}
+
+  .meta{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;box-shadow:var(--shadow)}
+  .meta h3{margin:0 0 10px;font-size:13px;color:var(--primary)}
+  .meta-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px 18px}
+  .field{display:flex;align-items:center;gap:8px}
+  .field label{flex:0 0 auto;color:var(--text-dim)}
+  .field input{flex:1 1 auto;min-width:0;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--panel-soft);color:var(--text)}
+
+  .body{display:grid;grid-template-columns:3fr 2fr;gap:12px;min-height:0}
+  .left{display:grid;grid-template-rows:1fr 1fr;gap:10px;min-height:0}
+  .box{display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);min-height:0;overflow:hidden}
+  .box .hd{padding:7px 10px;font-weight:600;color:var(--primary);border-bottom:1px solid var(--border);background:var(--panel-soft)}
+  .box textarea{flex:1 1 auto;border:none;outline:none;resize:none;padding:10px;font-size:13px;line-height:1.6;background:var(--panel);color:var(--text);font-family:inherit}
+
+  .right{display:grid;grid-template-rows:1fr auto auto;gap:10px;min-height:0}
+  .result{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .result .hd{padding:7px 10px;font-weight:600;color:var(--primary);border-bottom:1px solid var(--border);background:var(--panel-soft)}
+  .result .content{flex:1 1 auto;overflow:auto;padding:10px;font-size:12px;line-height:1.7}
+  .score{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:10px;box-shadow:var(--shadow);font-family:Consolas,monospace;font-size:12px;color:var(--primary-d)}
+  .hist{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);display:flex;flex-direction:column;max-height:150px;overflow:hidden}
+  .hist .hd{padding:7px 10px;font-weight:600;color:var(--text);border-bottom:1px solid var(--border);background:var(--panel-soft)}
+  .hist .content{flex:1 1 auto;overflow:auto;padding:8px 10px;font-size:11px;color:var(--text-dim);line-height:1.6}
+
+  .actions{flex:0 0 auto;display:flex;flex-direction:column;gap:8px}
+  .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .bar.primary .btn{background:var(--green);color:#fff;border-color:var(--green)}
+  .bar.primary .btn:hover{background:#1B5E20}
+  .btn{padding:8px 14px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);cursor:pointer;font-size:13px;font-weight:600;box-shadow:var(--shadow)}
+  .btn:hover{background:var(--primary-soft);border-color:var(--primary)}
+  .btn.blue{background:var(--primary);color:#fff;border-color:var(--primary)}
+  .btn.blue:hover{background:var(--primary-d)}
+  .sep{width:1px;height:24px;background:var(--border);margin:0 4px}
+
+  .settings{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+  .settings .toggle{display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;font-weight:600;color:var(--warn);user-select:none}
+  .settings .toggle .chev{transition:transform .2s;display:inline-block}
+  .settings.open .toggle .chev{transform:rotate(90deg)}
+  .settings .inner{max-height:0;transition:max-height .25s ease;overflow:hidden;padding:0 12px}
+  .settings.open .inner{max-height:260px;padding:4px 12px 12px}
+  .srow{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:6px 0;color:var(--text)}
+  .srow + .srow{border-top:1px dashed var(--border)}
+  .srow .glabel{color:var(--text-dim);flex:0 0 auto}
+  .pill{padding:5px 10px;border:1px solid var(--border);border-radius:14px;background:var(--panel-soft);cursor:pointer;font-size:12px}
+  .pill.on{background:var(--primary-soft);border-color:var(--primary);color:var(--primary-d)}
+  .hint{color:var(--text-dim);font-size:11px}
+
+  /* RIS 面板 */
+  .ris{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px;overflow:auto;min-height:0}
+  .ris .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px}
+  .ris .card h3{margin:0 0 12px;font-size:13px;color:var(--primary)}
+  .form-row{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .form-row label{flex:0 0 96px;color:var(--text-dim)}
+  .form-row input,.form-row select{flex:1 1 auto;min-width:0;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--panel-soft);color:var(--text);font-size:13px}
+  .ris textarea{width:100%;min-height:120px;border:1px solid var(--border);border-radius:6px;padding:8px;font-family:Consolas,monospace;font-size:12px;color:var(--text);resize:vertical}
+  .ris .actions2{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}
+  .ris .status{margin-top:10px;font-size:12px;padding:8px 10px;border-radius:6px;background:var(--panel-soft);color:var(--text-dim);min-height:18px}
+  .ris .status.ok{background:var(--green-bg);color:var(--green)}
+  .ris .status.err{background:#FDECEA;color:var(--red)}
+  table.tree{width:100%;border-collapse:collapse;font-size:12px}
+  table.tree th,table.tree td{border:1px solid var(--border);padding:6px 8px;text-align:left}
+  table.tree th{background:var(--panel-soft);color:var(--primary-d);position:sticky;top:0}
+  table.tree tr:nth-child(even){background:var(--panel-soft)}
+
+  /* 看板 */
+  .dash{padding:14px;overflow:auto}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px}
+  .stat{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px}
+  .stat .n{font-size:26px;font-weight:700;color:var(--primary)}
+  .stat .l{color:var(--text-dim);margin-top:4px}
+  .chart{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px}
+  .chart h3{margin:0 0 12px;font-size:13px;color:var(--primary)}
+  .bar-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+  .bar-row .name{flex:0 0 70px;color:var(--text-dim)}
+  .bar-row .track{flex:1 1 auto;background:var(--panel-soft);border-radius:6px;height:18px;overflow:hidden}
+  .bar-row .fill{height:100%;background:var(--primary);border-radius:6px}
+  .bar-row .val{flex:0 0 40px;text-align:right;color:var(--text-dim)}
+
+  .sampletbl{width:100%;border-collapse:collapse;font-size:12px}
+  .sampletbl th,.sampletbl td{border:1px solid var(--border);padding:6px 8px;text-align:left}
+  .sampletbl th{background:var(--panel-soft);color:var(--primary-d)}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px}
+  .tag.pass{background:var(--green-bg);color:var(--green)}
+  .tag.warn{background:#FFF4E0;color:var(--warn)}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="logo">🩺 星衍AI放射质控</span>
+    <span class="tab active" data-page="qc">报告质控</span>
+    <span class="tab" data-page="dash">质控看板</span>
+    <span class="tab" data-page="ris">RIS对照</span>
+    <span class="tab" data-page="lib">样本库</span>
+  </div>
+
+  <!-- ========== 报告质控 ========== -->
+  <div class="page active qc" id="page-qc">
+    <div class="meta">
+      <h3>📋 报告元信息</h3>
+      <div class="meta-grid">
+        <div class="field"><label>影像号</label><input value="CT20260801-0042"></div>
+        <div class="field"><label>姓名</label><input value="张　三"></div>
+        <div class="field"><label>性别（男/女）</label><input value="男"></div>
+        <div class="field"><label>年龄</label><input value="52"></div>
+        <div class="field"><label>检查部位</label><input value="胸部"></div>
+        <div class="field"><label>成像方式</label><input value="CT"></div>
+        <div class="field"><label>侧别</label><input value="—"></div>
+      </div>
+    </div>
+    <div class="body">
+      <div class="left">
+        <div class="box">
+          <div class="hd">🩻 影像描述（检查所见）</div>
+          <textarea>胸廓对称，气管居中。两肺纹理增多、紊乱，右肺上叶见斑片状密度增高影，边缘模糊，其内可见含气支气管征。纵隔居中，心影大小形态未见明显异常。两侧胸膜无增厚，胸腔未见积液。所示肋骨未见明确骨质破坏。</textarea>
+        </div>
+        <div class="box">
+          <div class="hd">📑 影像结论（诊断印象）</div>
+          <textarea>右肺上叶炎性病变可能，建议抗炎治疗后复查。
+请结合临床。</textarea>
+        </div>
+      </div>
+      <div class="right">
+        <div class="result">
+          <div class="hd">📊 质控结果</div>
+          <div class="content" id="qc-result">
+            <div style="color:var(--text-dim)">点击「运行质控」查看结果…</div>
+          </div>
+        </div>
+        <div class="score" id="qc-score">准确性 — | 完整性 — | 规范性 — | 及时性 —</div>
+        <div class="hist">
+          <div class="hd">📋 监听捕获记录（审计）</div>
+          <div class="content">08-01 02:14  张　三 / CT / 右肺上叶 — 命中：完整性⚠️<br>
+            08-01 01:52  李　四 / MR / 颅脑 — 命中：及时性⚠️<br>
+            07-31 23:10  王　五 / DR / 腰椎 — 通过</div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <div class="bar primary">
+        <button class="btn" onclick="runQC()">▶ 运行质控</button>
+        <button class="btn" onclick="runQC()">🔍 识别并质控</button>
+        <button class="btn" onclick="runQC()">🪟 从PACS读取(UIA)</button>
+      </div>
+      <div class="bar">
+        <button class="btn">📂 导入文件</button>
+        <button class="btn">🗑 清空</button>
+        <button class="btn">💾 存入样本库</button>
+        <button class="btn">🔍 自动识别元信息</button>
+        <button class="btn">✏️ 自动修正并复制</button>
+      </div>
+      <div class="settings" id="settings">
+        <div class="toggle" onclick="document.getElementById('settings').classList.toggle('open')">
+          <span class="chev">▶</span> ⚙ 设置（监听 / 区域框选 / 快捷键 / 采集方式）
+        </div>
+        <div class="inner">
+          <div class="srow">
+            <span class="glabel">📋 监听剪贴板</span>
+            <span class="pill" onclick="this.classList.toggle('on')">复制即质控</span>
+            <span class="pill" onclick="this.classList.toggle('on')">命中即自动入库</span>
+            <span class="pill on" onclick="this.classList.toggle('on')">🔔 发现问题弹窗</span>
+            <span class="hint">状态：● 未监听</span>
+          </div>
+          <div class="srow">
+            <span class="glabel">🎯 屏幕区域框选</span>
+            <span class="pill" onclick="this.classList.toggle('on')">基础信息区</span>
+            <span class="pill" onclick="this.classList.toggle('on')">描述区</span>
+            <span class="pill" onclick="this.classList.toggle('on')">结论区</span>
+            <span class="pill" onclick="this.classList.toggle('on')">UIA检测</span>
+          </div>
+          <div class="srow">
+            <span class="glabel">⌨ 快捷键采集</span>
+            <span class="pill on" onclick="pickMode(this)">自动</span>
+            <span class="pill" onclick="pickMode(this)">仅UIA</span>
+            <span class="pill" onclick="pickMode(this)">仅OCR</span>
+            <span class="pill" onclick="pickMode(this)">每次询问</span>
+            <span class="hint" id="hk">采集方式：自动</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 质控看板 ========== -->
+  <div class="page dash" id="page-dash">
+    <div class="cards">
+      <div class="stat"><div class="n">1,284</div><div class="l">累计质控报告</div></div>
+      <div class="stat"><div class="n">93.6%</div><div class="l">一次通过率</div></div>
+      <div class="stat"><div class="n">312</div><div class="l">本周质控</div></div>
+      <div class="stat"><div class="n">47</div><div class="l">本周命中问题</div></div>
+    </div>
+    <div class="chart">
+      <h3>📈 各成像方式质控量</h3>
+      <div class="bar-row"><span class="name">CT</span><div class="track"><div class="fill" style="width:78%"></div></div><span class="val">502</span></div>
+      <div class="bar-row"><span class="name">MR</span><div class="track"><div class="fill" style="width:54%"></div></div><span class="val">348</span></div>
+      <div class="bar-row"><span class="name">DR</span><div class="track"><div class="fill" style="width:41%"></div></div><span class="val">264</span></div>
+      <div class="bar-row"><span class="name">US</span><div class="track"><div class="fill" style="width:26%"></div></div><span class="val">170</span></div>
+    </div>
+  </div>
+
+  <!-- ========== RIS对照（连PACS/RIS数据库） ========== -->
+  <div class="page ris" id="page-ris">
+    <div class="card">
+      <h3>🔗 连接配置</h3>
+      <div class="form-row"><label>数据库类型</label>
+        <select id="ris-dbtype">
+          <option value="sqlserver">SQL Server</option>
+          <option value="oracle">Oracle</option>
+          <option value="mysql">MySQL</option>
+          <option value="postgresql">PostgreSQL</option>
+        </select></div>
+      <div class="form-row"><label>主机 / IP</label><input id="ris-host" value="10.20.30.40"></div>
+      <div class="form-row"><label>端口</label><input id="ris-port" value="1433"></div>
+      <div class="form-row"><label>数据库名</label><input id="ris-db" value="RIS_PROD"></div>
+      <div class="form-row"><label>只读账号</label><input id="ris-user" value="qc_ro"></div>
+      <div class="form-row"><label>口令</label><input id="ris-pwd" type="password" value="••••••••"></div>
+      <div style="margin-top:6px;color:var(--text-dim);font-size:11px">配置仅保存在本机 assets/ris_config.json，不写入发行包。请用院内内网只读账号。</div>
+      <div class="actions2">
+        <button class="btn blue" onclick="risSave()">💾 保存配置</button>
+        <button class="btn" onclick="risTest()">🔌 测试连接</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>📝 报告查询（由医院IT提供，字段别名映射到 report_text）</h3>
+      <textarea id="ris-query">SELECT TOP 50 report_content AS report_text, patient_name AS patient,
+       sex AS gender, age AS age, exam_part AS modality, apply_part AS applied_site,
+       report_time AS ts
+FROM v_radiology_report
+ORDER BY report_time DESC</textarea>
+      <div class="actions2">
+        <button class="btn blue" onclick="risFetch()">⬇ 拉取报告</button>
+        <button class="btn" onclick="risBatch()">⚙ 批量质控入库</button>
+      </div>
+      <div class="status" id="ris-status">等待操作…</div>
+    </div>
+
+    <div class="card" style="grid-column:1 / -1">
+      <h3>📋 拉取到的报告（预览，双击可发送到质控）</h3>
+      <table class="tree">
+        <thead><tr><th>#</th><th>患者</th><th>性别</th><th>方式</th><th>报告预览</th></tr></thead>
+        <tbody id="ris-rows">
+          <tr><td colspan="5" style="color:var(--text-dim)">点击「拉取报告」从 RIS 数据库获取…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ========== 样本库 ========== -->
+  <div class="page dash" id="page-lib">
+    <div class="chart" style="padding:0;overflow:auto">
+      <table class="sampletbl">
+        <thead><tr><th>时间</th><th>患者</th><th>方式</th><th>部位</th><th>准确性</th><th>完整性</th><th>规范性</th><th>结果</th></tr></thead>
+        <tbody>
+          <tr><td>08-01 02:14</td><td>张　三</td><td>CT</td><td>右肺上叶</td><td>92</td><td>71</td><td>88</td><td><span class="tag warn">完整性⚠</span></td></tr>
+          <tr><td>08-01 01:52</td><td>李　四</td><td>MR</td><td>颅脑</td><td>85</td><td>90</td><td>80</td><td><span class="tag warn">及时性⚠</span></td></tr>
+          <tr><td>07-31 23:10</td><td>王　五</td><td>DR</td><td>腰椎</td><td>95</td><td>92</td><td>93</td><td><span class="tag pass">通过</span></td></tr>
+          <tr><td>07-31 21:38</td><td>赵　六</td><td>US</td><td>肝胆</td><td>88</td><td>84</td><td>90</td><td><span class="tag pass">通过</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+  // 标签页切换
+  document.querySelectorAll('.tab').forEach(t=>{
+    t.addEventListener('click',()=>{
+      document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+      document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
+      t.classList.add('active');
+      document.getElementById('page-'+t.dataset.page).classList.add('active');
+    });
+  });
+
+  function pickMode(el){
+    document.querySelectorAll('.srow:last-child .pill').forEach(x=>x.classList.remove('on'));
+    el.classList.add('on');
+    document.getElementById('hk').textContent='采集方式：'+el.textContent;
+  }
+
+  // 模拟运行质控
+  function runQC(){
+    document.getElementById('qc-result').innerHTML =
+      '<div>✅ <b>准确性</b>：未见明显矛盾（性别/部位/结论一致）</div>'+
+      '<div>⚠️ <b>完整性</b>：结论未描述病灶大小（建议补充测量值）</div>'+
+      '<div>✅ <b>规范性</b>：术语规范，未见口语化表述</div>'+
+      '<div>⚠️ <b>及时性</b>：未见检查时间与报告时间</div>'+
+      '<hr style="border:none;border-top:1px solid var(--border);margin:8px 0">'+
+      '<div>📌 <b>建议补充</b>：病灶最大径、检查日期、报告医师签名</div>';
+    document.getElementById('qc-score').textContent='准确性 92 | 完整性 71 | 规范性 88 | 及时性 40';
+  }
+
+  // RIS 模拟交互
+  const mockReports = [
+    {p:'张　三',g:'男',m:'CT',t:'右肺上叶见斑片状密度增高影，边缘模糊，其内可见含气支气管征。'},
+    {p:'李　四',g:'女',m:'MR',t:'双侧大脑半球对称，脑室系统居中，脑沟脑裂未见增宽。'},
+    {p:'王　五',g:'男',m:'DR',t:'腰椎生理曲度存在，椎体边缘见骨质增生，椎间隙未见明显变窄。'},
+    {p:'赵　六',g:'女',m:'US',t:'肝脏大小形态正常，包膜光整，实质回声均匀，胆管无扩张。'}
+  ];
+  function setStatus(msg,cls){
+    const s=document.getElementById('ris-status');
+    s.textContent=msg; s.className='status'+(cls?(' '+cls):'');
+  }
+  function risSave(){ setStatus('✅ 配置已保存到 assets/ris_config.json','ok'); }
+  function risTest(){
+    setStatus('测试中…');
+    setTimeout(()=>setStatus('✅ 连接成功（ODBC Driver 18 / 只读账号 qc_ro）','ok'),600);
+  }
+  function risFetch(){
+    setStatus('拉取中…');
+    setTimeout(()=>{
+      const tb=document.getElementById('ris-rows'); tb.innerHTML='';
+      mockReports.forEach((r,i)=>{
+        const tr=document.createElement('tr');
+        tr.innerHTML='<td>'+(i+1)+'</td><td>'+r.p+'</td><td>'+r.g+'</td><td>'+r.m+'</td><td>'+r.t.slice(0,40)+'…</td>';
+        tb.appendChild(tr);
+      });
+      setStatus('✅ 拉取 '+mockReports.length+' 条（来自 RIS 报告库）','ok');
+    },700);
+  }
+  function risBatch(){
+    setStatus('⚙ 已批量质控并入库 '+mockReports.length+' 条，可在「样本库」查看。','ok');
+  }
+</script>
+</body>
+</html>
