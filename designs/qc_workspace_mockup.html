@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星衍AI放射质控工作站 · 界面草稿</title>
+<style>
+  :root{
+    --sidebar:#171A2B; --sidebar-active:#2D6CDF; --sidebar-text:#9AA3B8; --sidebar-text-2:#5C6680;
+    --content:#ECF0F6; --card:#FFFFFF; --card-2:#F7F9FC;
+    --border:#E3E8F0; --text:#1B2230; --text-dim:#6B7585;
+    --primary:#2D6CDF; --primary-d:#235AB8; --primary-l:#E9F0FB;
+    --ok:#1FA971; --warn:#E8941A; --danger:#E5484D; --info:#64748B;
+    --shadow:0 1px 3px rgba(20,30,60,.06),0 8px 24px rgba(20,30,60,.05);
+    --radius:12px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+       background:#0d1117;color:var(--text);-webkit-font-smoothing:antialiased}
+  .window{width:1280px;height:800px;margin:24px auto;background:var(--content);
+          border-radius:14px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.45)}
+
+  /* 顶栏 */
+  .topbar{height:52px;background:var(--card);border-bottom:1px solid var(--border);
+          display:flex;align-items:center;padding:0 16px;gap:16px;flex-shrink:0}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px;color:var(--text)}
+  .brand .logo{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,var(--primary),#5B8DEF);
+                display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:800}
+  .globalsearch{flex:1;max-width:420px;height:34px;background:var(--card-2);border:1px solid var(--border);
+                border-radius:9px;display:flex;align-items:center;padding:0 12px;color:var(--text-dim);font-size:13px;gap:8px}
+  .topbar .spacer{flex:1}
+  .icon-btn{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;
+            color:var(--text-dim);font-size:16px;cursor:default;position:relative}
+  .icon-btn:hover{background:var(--card-2)}
+  .icon-btn .dot{position:absolute;top:7px;right:8px;width:7px;height:7px;border-radius:50%;background:var(--danger)}
+  .avatar{width:30px;height:30px;border-radius:50%;background:#2D6CDF;color:#fff;display:flex;
+          align-items:center;justify-content:center;font-size:13px;font-weight:600}
+
+  /* 主体三栏 */
+  .body{flex:1;display:flex;min-height:0}
+
+  /* 左侧栏 */
+  .nav{width:212px;background:var(--sidebar);flex-shrink:0;padding:14px 10px;display:flex;flex-direction:column;gap:3px}
+  .nav .grp{color:var(--sidebar-text-2);font-size:11px;font-weight:600;letter-spacing:.5px;padding:14px 12px 6px}
+  .nav .item{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:9px;color:var(--sidebar-text);
+             font-size:13.5px;cursor:default}
+  .nav .item .ic{width:18px;text-align:center;font-size:15px;opacity:.9}
+  .nav .item:hover{background:rgba(255,255,255,.05);color:#E6EAF2}
+  .nav .item.active{background:var(--sidebar-active);color:#fff;font-weight:600}
+  .nav .item .badge{margin-left:auto;background:var(--danger);color:#fff;font-size:11px;font-weight:700;
+                    min-width:18px;height:18px;border-radius:9px;display:flex;align-items:center;justify-content:center;padding:0 5px}
+  .nav .item .count{margin-left:auto;color:var(--sidebar-text-2);font-size:12px}
+
+  /* 中间：报告工作区 */
+  .center{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--content)}
+  .center-head{padding:14px 20px 10px}
+  .patient-strip{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .chip{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:6px 11px;font-size:12.5px;
+        display:flex;align-items:center;gap:6px;box-shadow:var(--shadow)}
+  .chip b{color:var(--text);font-weight:600}
+  .chip span{color:var(--text-dim)}
+  .center-toolbar{display:flex;gap:8px;margin:12px 20px 0}
+  .tbtn{height:32px;padding:0 13px;border:1px solid var(--border);background:var(--card);border-radius:8px;
+        font-size:12.5px;color:var(--text-dim);display:flex;align-items:center;gap:6px;cursor:default}
+  .tbtn:hover{border-color:var(--primary);color:var(--primary)}
+  .editor-wrap{margin:12px 20px;flex:1;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+               box-shadow:var(--shadow);display:flex;flex-direction:column;overflow:hidden}
+  .editor-bar{height:38px;border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 14px;
+              font-size:12px;color:var(--text-dim);gap:8px;background:var(--card-2)}
+  .editor{margin:0;padding:18px 22px;font-size:14px;line-height:2.05;color:#22303f;flex:1;overflow:auto;font-family:"SF Mono",Menlo,Consolas,monospace}
+  .editor .hl-danger{background:rgba(229,72,77,.16);border-bottom:2px solid var(--danger);border-radius:3px;padding:0 1px}
+  .editor .hl-warn{background:rgba(232,148,26,.15);border-bottom:2px solid var(--warn);border-radius:3px;padding:0 1px}
+  .editor .hl-ok{background:rgba(31,169,113,.13);border-radius:3px;padding:0 1px}
+  .center-foot{margin:0 20px 16px;display:flex;align-items:center;gap:14px;font-size:12.5px;color:var(--text-dim)}
+  .legend{display:flex;gap:12px}
+  .legend i{font-style:normal;display:inline-flex;align-items:center;gap:5px}
+  .legend .d::before{content:"⛔";} .legend .w::before{content:"⚠";} .legend .i::before{content:"ℹ";}
+  .foot-stat{margin-left:auto;display:flex;gap:16px}
+  .foot-stat b{color:var(--text)}
+
+  /* 右侧：AI 分析面板 */
+  .ai{width:366px;background:var(--card);border-left:1px solid var(--border);flex-shrink:0;display:flex;
+      flex-direction:column;min-height:0}
+  .ai-head{padding:16px 18px 12px;border-bottom:1px solid var(--border)}
+  .ai-head .t{font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px}
+  .ai-head .t .pulse{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 4px rgba(31,169,113,.18)}
+  .score-row{display:flex;align-items:center;gap:16px;margin-top:14px}
+  .ring{position:relative;width:88px;height:88px;flex-shrink:0}
+  .ring svg{transform:rotate(-90deg)}
+  .ring .val{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .ring .val b{font-size:24px;font-weight:800;color:var(--text)}
+  .ring .val small{font-size:10px;color:var(--text-dim)}
+  .score-meta{flex:1}
+  .score-meta .lvl{display:inline-block;background:var(--primary-l);color:var(--primary-d);font-size:12px;
+                   font-weight:700;padding:3px 10px;border-radius:6px;margin-bottom:6px}
+  .score-meta p{font-size:12px;color:var(--text-dim);line-height:1.6}
+  .findings{flex:1;overflow:auto;padding:12px 14px}
+  .fgrp{font-size:11px;font-weight:700;color:var(--text-dim);letter-spacing:.4px;margin:10px 2px 8px;display:flex;align-items:center;gap:6px}
+  .fcard{background:var(--card-2);border:1px solid var(--border);border-left:3px solid var(--text-dim);
+         border-radius:9px;padding:11px 12px;margin-bottom:9px}
+  .fcard.d{border-left-color:var(--danger)} .fcard.w{border-left-color:var(--warn)} .fcard.i{border-left-color:var(--info)}
+  .fcard .h{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;margin-bottom:5px}
+  .fcard .h .sev{font-size:12px}
+  .fcard .rule{font-size:11px;color:var(--text-dim);margin-bottom:6px}
+  .fcard .fix{font-size:12px;color:#22303f;background:#fff;border:1px dashed var(--border);border-radius:7px;
+              padding:7px 9px;margin-bottom:9px;line-height:1.5}
+  .fcard .acts{display:flex;gap:7px}
+  .fcard .acts button{font-size:11.5px;padding:5px 11px;border-radius:7px;border:1px solid var(--border);
+                      background:#fff;color:var(--text-dim);cursor:default}
+  .fcard .acts .acc{background:var(--primary);border-color:var(--primary);color:#fff;font-weight:600}
+  .ai-foot{padding:12px 14px;border-top:1px solid var(--border)}
+  .run-btn{width:100%;height:40px;background:var(--primary);color:#fff;border:none;border-radius:10px;font-size:14px;
+           font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px;cursor:default}
+  .run-btn:hover{background:var(--primary-d)}
+
+  /* 底栏 */
+  .bottombar{height:46px;background:var(--card);border-top:1px solid var(--border);display:flex;align-items:center;
+             padding:0 20px;gap:10px;flex-shrink:0}
+  .bbtn{height:32px;padding:0 14px;border-radius:8px;font-size:13px;display:flex;align-items:center;gap:7px;cursor:default;
+        border:1px solid var(--border);background:var(--card);color:var(--text-dim)}
+  .bbtn.primary{background:var(--primary);color:#fff;border-color:var(--primary);font-weight:600}
+  .bbtn.primary:hover{background:var(--primary-d)}
+  .bbtn kbd{font-size:10.5px;background:rgba(0,0,0,.08);padding:1px 5px;border-radius:4px;font-family:inherit}
+  .bbtn.primary kbd{background:rgba(255,255,255,.22)}
+  .phi{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ok);font-weight:600;
+       background:rgba(31,169,113,.1);padding:5px 11px;border-radius:8px}
+</style>
+</head>
+<body>
+<div class="window">
+  <!-- 顶栏 -->
+  <div class="topbar">
+    <div class="brand"><span class="logo">星</span>星衍 AI 放射质控</div>
+    <div class="globalsearch">🔍 搜索患者 / 影像号 / 报告…</div>
+    <div class="spacer"></div>
+    <div class="icon-btn">🌙</div>
+    <div class="icon-btn">🔔<span class="dot"></span></div>
+    <div class="avatar">谢</div>
+  </div>
+
+  <div class="body">
+    <!-- 左侧栏 -->
+    <div class="nav">
+      <div class="grp">工作</div>
+      <div class="item"><span class="ic">▦</span>工作台</div>
+      <div class="item active"><span class="ic">✎</span>质控工作区</div>
+      <div class="item"><span class="ic">☑</span>待质控队列<span class="badge">12</span></div>
+      <div class="item"><span class="ic">🗄</span>样本库<span class="count">3.2k</span></div>
+      <div class="grp">连接</div>
+      <div class="item"><span class="ic">🔗</span>RIS 直连</div>
+      <div class="item"><span class="ic">⚙</span>规则管理<span class="count">86</span></div>
+      <div class="grp">分析</div>
+      <div class="item"><span class="ic">📊</span>统计分析</div>
+      <div class="item"><span class="ic">👥</span>科室管理</div>
+    </div>
+
+    <!-- 中间 -->
+    <div class="center">
+      <div class="center-head">
+        <div class="patient-strip">
+          <div class="chip"><span>影像号</span><b>CT-20260803-0071</b></div>
+          <div class="chip"><span>姓名</span><b>张××</b></div>
+          <div class="chip"><span>性别</span><b>男</b></div>
+          <div class="chip"><span>年龄</span><b>58</b></div>
+          <div class="chip"><span>部位</span><b>胸部</b></div>
+          <div class="chip"><span>模态</span><b>CT</b></div>
+          <div class="chip" style="border-color:var(--primary);color:var(--primary-d)"><span>⚡</span><b>增强</b></div>
+        </div>
+      </div>
+      <div class="center-toolbar">
+        <div class="tbtn">📥 导入文件</div>
+        <div class="tbtn">🧹 清空</div>
+        <div class="tbtn">✨ 识别元信息</div>
+        <div class="tbtn">📝 模板</div>
+      </div>
+      <div class="editor-wrap">
+        <div class="editor-bar">📄 放射诊断报告（实时质控高亮）<span style="margin-left:auto">字数 412</span></div>
+        <div class="editor">检查所见：
+双肺纹理清晰，<span class="hl-warn">未见明确实质性占位</span>。气管居中，纵隔未见明显肿大淋巴结。
+<span class="hl-danger">心影增大</span>，主动脉及冠状动脉壁可见钙化。双侧胸腔未见积液。
+诊断意见：
+1. 主动脉及冠状动脉粥样硬化。
+2. <span class="hl-ok">慢性支气管炎表现</span>。
+3. 建议结合临床，必要时行冠脉 CTA 进一步评估。<span class="hl-warn">（未见对既往病史的对照描述）</span></div>
+      </div>
+      <div class="center-foot">
+        <div class="legend">
+          <i class="d">严重（必须修改）</i>
+          <i class="w">警告（建议修改）</i>
+          <i class="i">提示（可忽略）</i>
+        </div>
+        <div class="foot-stat">
+          <span>本次发现 <b>5</b> 项</span>
+          <span>严重 <b style="color:var(--danger)">1</b></span>
+          <span>警告 <b style="color:var(--warn)">2</b></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右侧 AI 面板 -->
+    <div class="ai">
+      <div class="ai-head">
+        <div class="t"><span class="pulse"></span>AI 质控分析</div>
+        <div class="score-row">
+          <div class="ring">
+            <svg width="88" height="88">
+              <circle cx="44" cy="44" r="38" stroke="#E3E8F0" stroke-width="8" fill="none"/>
+              <circle cx="44" cy="44" r="38" stroke="#2D6CDF" stroke-width="8" fill="none"
+                      stroke-linecap="round" stroke-dasharray="239" stroke-dashoffset="48"/>
+            </svg>
+            <div class="val"><b>80</b><small>综合得分</small></div>
+          </div>
+          <div class="score-meta">
+            <span class="lvl">B 级 · 良好</span>
+            <p>较科室均值高 6 分。修复 1 项严重问题即可达 A 级。</p>
+          </div>
+        </div>
+      </div>
+      <div class="findings">
+        <div class="fgrp">⛔ 严重 · 1</div>
+        <div class="fcard d">
+          <div class="h"><span class="sev">⛔</span>关键征象描述缺失</div>
+          <div class="rule">规则 R-CT-014 · 心影增大须量化</div>
+          <div class="fix">建议补充：心影增大，心胸比约 0.58。</div>
+          <div class="acts"><button class="acc">采纳</button><button>忽略</button></div>
+        </div>
+
+        <div class="fgrp">⚠ 警告 · 2</div>
+        <div class="fcard w">
+          <div class="h"><span class="sev">⚠</span>阴性表述不严谨</div>
+          <div class="rule">规则 R-CT-031 · 避免「未见明确」</div>
+          <div class="fix">改为：双肺未见实质性占位性病变。</div>
+          <div class="acts"><button class="acc">采纳</button><button>忽略</button></div>
+        </div>
+        <div class="fcard w">
+          <div class="h"><span class="sev">⚠</span>缺既往对照</div>
+          <div class="rule">规则 R-CT-009 · 增强需对照病史</div>
+          <div class="fix">补充与 2026-05 旧片对比描述。</div>
+          <div class="acts"><button class="acc">采纳</button><button>忽略</button></div>
+        </div>
+
+        <div class="fgrp">ℹ 提示 · 2</div>
+        <div class="fcard i">
+          <div class="h"><span class="sev">ℹ</span>建议随访语气</div>
+          <div class="rule">规则 R-CT-052 · 随访建议</div>
+          <div class="fix">可补充：建议 6 个月复查。</div>
+          <div class="acts"><button class="acc">采纳</button><button>忽略</button></div>
+        </div>
+      </div>
+      <div class="ai-foot">
+        <button class="run-btn">▶ 运行质控 ⌘↵</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 底栏 -->
+  <div class="bottombar">
+    <div class="bbtn primary">▶ 运行质控 <kbd>⌘↵</kbd></div>
+    <div class="bbtn">💾 存入样本库 <kbd>⌘S</kbd></div>
+    <div class="bbtn">📤 导出</div>
+    <div class="phi">🔒 本机处理 · 无上传</div>
+  </div>
+</div>
+</body>
+</html>

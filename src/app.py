@@ -408,10 +408,18 @@ class ReportQcApp(tk.Tk):
 
         self._build_header()                        # 内容区顶部细标题栏
 
+        # 水平工作区：左侧=页签内容（随窗口伸缩），右侧=常驻 AI 分析面板（固定宽）
+        self.work = tk.Frame(self.content, bg=THEME["bg"])
+        self.work.pack(fill="both", expand=True)
         # 主内容：隐藏原生标签页，改用侧边栏导航切换
-        self.notebook = ttk.Notebook(self.content, style="NoTabs.TNotebook")
-        self.notebook.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        self.notebook = ttk.Notebook(self.work, style="NoTabs.TNotebook")
+        self.notebook.pack(side="left", fill="both", expand=True, padx=20, pady=(0, 20))
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        # 右侧 AI 分析面板（三栏布局的第三栏）
+        self.right_panel = tk.Frame(self.work, bg=THEME["bg"], width=380)
+        self.right_panel.pack(side="right", fill="y", padx=(0, 16), pady=(0, 20))
+        self.right_panel.pack_propagate(False)
+        self._build_right_panel()
 
         # 常驻状态条：监听指示灯 + 本次会话统计（全局可见，独立于页签）
         self.session_hits = 0
@@ -502,23 +510,18 @@ class ReportQcApp(tk.Tk):
         tk.Label(brand, text="放射质控系统", bg=s["sidebar_bg"], fg="#8E97B5",
                  font=F(FAMILY, 11), padx=20).pack(anchor="w")
 
-        # 导航标题
-        tk.Label(bar, text="导航", bg=s["sidebar_bg"], fg="#5B6480",
-                 font=F(FAMILY, 10, "bold"), padx=22).pack(anchor="w", fill="x", pady=(16, 6))
-
+        # 导航（分组）：工作 / 数据 / 管理
         self._nav_buttons = []
-        specs = [("📋  报告质控", 0), ("📊  质控驾驶舱", 1), ("🔗  RIS 直连", 2)]
-        for label, idx in specs:
-            btn = tk.Button(bar, text=label, bg=s["sidebar_bg"], fg=s["sidebar_fg"],
-                            font=F(FAMILY, 12), relief="flat", borderwidth=0,
-                            anchor="w", padx=22, pady=11,
-                            command=lambda i=idx: self._select_tab(i))
-            btn.pack(fill="x", padx=10, pady=2)
-            btn.bind("<Enter>", lambda e, b=btn, a=s["sidebar_active"]:
-                     b.configure(bg=s["sidebar_hover"]) if b.cget("bg") != a else None)
-            btn.bind("<Leave>", lambda e, b=btn, a=s["sidebar_active"]:
-                     b.configure(bg=s["sidebar_bg"]) if b.cget("bg") != a else None)
-            self._nav_buttons.append(btn)
+        self._nav_group(bar, "工作")
+        self._nav_item(bar, "📋  质控工作区", 0)
+        self._nav_item(bar, "📊  质控驾驶舱", 1)
+        self._nav_item(bar, "📥  待质控队列  12", 0)
+        self._nav_group(bar, "数据")
+        self._nav_item(bar, "🗄  样本库", "samples")
+        self._nav_item(bar, "🔗  RIS 直连", 2)
+        self._nav_group(bar, "管理")
+        self._nav_item(bar, "⚙  规则管理", "rules")
+        self._nav_item(bar, "📈  统计分析", 1)
 
         # 底部版本信息
         foot = tk.Label(bar, text=f"v{version.APP_VERSION}  ·  桌面客户端",
@@ -526,9 +529,34 @@ class ReportQcApp(tk.Tk):
                         padx=22, pady=16)
         foot.pack(side="bottom", anchor="w", fill="x")
 
-    def _select_tab(self, idx):
+    def _nav_group(self, parent, title):
+        tk.Label(parent, text=title, bg=THEME["sidebar_bg"], fg="#5B6480",
+                 font=F(FAMILY, 10, "bold"), padx=22).pack(anchor="w", fill="x", pady=(16, 6))
+
+    def _nav_item(self, parent, label, target):
+        s = THEME
+        btn = tk.Button(parent, text=label, bg=s["sidebar_bg"], fg=s["sidebar_fg"],
+                        font=F(FAMILY, 12), relief="flat", borderwidth=0,
+                        anchor="w", padx=22, pady=11,
+                        command=lambda t=target: self._nav_to(t))
+        btn.pack(fill="x", padx=10, pady=2)
+        btn._nav_target = target
+        btn.bind("<Enter>", lambda e, b=btn, a=s["sidebar_active"]:
+                 b.configure(bg=s["sidebar_hover"]) if b.cget("bg") != a else None)
+        btn.bind("<Leave>", lambda e, b=btn, a=s["sidebar_active"]:
+                 b.configure(bg=s["sidebar_bg"]) if b.cget("bg") != a else None)
+        self._nav_buttons.append(btn)
+
+    def _nav_to(self, target):
+        """导航分发：整数→切到对应页签；samples/rules→打开对应窗口。"""
+        if target == "samples":
+            self._open_sample_library()
+            return
+        if target == "rules":
+            self._open_rules_editor()
+            return
         tabs = [self.tab_qc, self.tab_dash, self.tab_ris]
-        self.notebook.select(tabs[idx])
+        self.notebook.select(tabs[target])
 
     def _on_tab_changed(self, event=None):
         s = THEME
@@ -539,8 +567,15 @@ class ReportQcApp(tk.Tk):
             cur = 0
         if hasattr(self, "_page_title"):
             self._page_title.set(titles.get(cur, "报告质控"))
-        for i, btn in enumerate(getattr(self, "_nav_buttons", [])):
-            if i == cur:
+        # 右侧 AI 分析面板仅在「报告质控」页常驻；其余页签让出整宽
+        rp = getattr(self, "right_panel", None)
+        if rp is not None and rp.winfo_exists():
+            if cur == 0 and not rp.winfo_ismapped():
+                rp.pack(side="right", fill="y", padx=(0, 16), pady=(0, 20))
+            elif cur != 0 and rp.winfo_ismapped():
+                rp.pack_forget()
+        for btn in getattr(self, "_nav_buttons", []):
+            if getattr(btn, "_nav_target", None) == cur:
                 btn.configure(bg=s["sidebar_active"], fg="#FFFFFF")
             else:
                 btn.configure(bg=s["sidebar_bg"], fg=s["sidebar_fg"])
@@ -589,6 +624,9 @@ class ReportQcApp(tk.Tk):
                 # 归一化旧色（#FFFFFF/#ffffff/white 都映射成同一键），否则 Tk 规范化后精确比对会失配
                 swap[self._color_hex(pv)] = nv
         self._recolor(self, swap)
+        # 得分环是 canvas 手绘，需随主题重绘
+        if hasattr(self, "_ring"):
+            self._draw_score_ring(self._overall_score())
         # 文本高亮标签（hl_*）不是控件，_recolor 不会碰；需随主题重设底/字色
         for w in (getattr(self, "findings_txt", None), getattr(self, "impression_txt", None),
                   getattr(self, "out", None), getattr(self, "history_box", None)):
@@ -1274,10 +1312,9 @@ class ReportQcApp(tk.Tk):
         body = ttk.Frame(root)
         body.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
         body.grid_rowconfigure(0, weight=1)
-        body.grid_columnconfigure(0, weight=3)   # 左：输入区（60%）
-        body.grid_columnconfigure(1, weight=2)   # 右：结果区（40%，加宽便于即时反馈）
+        body.grid_columnconfigure(0, weight=1)   # 输入区占满整行（结果区已迁至右侧 AI 面板）
         left = ttk.Frame(body)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.grid(row=0, column=0, columnspan=2, sticky="nsew")
         left.grid_rowconfigure(0, weight=1)
         left.grid_rowconfigure(1, weight=1)
 
@@ -1343,37 +1380,199 @@ class ReportQcApp(tk.Tk):
         self._build_settings_inner()
         self._toggle_settings()  # 应用初始（折叠）状态
 
-        # 结果区（右栏，随窗口纵向伸缩；结果框占主空间，监听记录次之）
-        right = ttk.Frame(body)
-        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        right.grid_rowconfigure(1, weight=4)   # 结果框主伸缩
-        right.grid_rowconfigure(4, weight=1)   # 监听记录次伸缩
-        right.grid_columnconfigure(0, weight=1)
-        ttk.Label(right, text="📊  质控结果", font=F(FAMILY, 12, "bold"),
-                  foreground=s["primary"]).grid(row=0, column=0, sticky="w", pady=(0, 6))
-        self.out = scrolledtext.ScrolledText(right, wrap="word",
-                                              font=F(MONO, 10), bg=s["panel_alt"], fg=s["text"],
-                                              relief="solid", borderwidth=1,
-                                              highlightthickness=1, highlightbackground=s["border"])
-        self.out.grid(row=1, column=0, sticky="nsew", pady=(0, 6))
-        ttk.Label(right, text="📈  多维评分", font=F(FAMILY, 12, "bold"),
-                  foreground=s["primary"]).grid(row=2, column=0, sticky="w", pady=(8, 4))
-        self.score_var = tk.StringVar(value="准确性 - | 完整性 - | 规范性 - | 及时性 -")
-        score_lbl = ttk.Label(right, textvariable=self.score_var, foreground=s["primary_d"],
-                              font=F(MONO, 10), wraplength=360)
-        score_lbl.grid(row=3, column=0, sticky="w", pady=(0, 4))
+        # 结果区（综合得分环 + 严重度分组发现卡 + 详细结果 + 审计记录）已迁移至
+        # 右侧常驻 AI 分析面板，由 _build_right_panel() 构建，避免挤占报告编辑区。
 
-        # 监听捕获记录（审计）：每次复制触发质控时追加一行
-        hist = ttk.LabelFrame(right, text="📋  监听捕获记录（审计）")
-        hist.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
-        hist.grid_rowconfigure(0, weight=1)
-        hist.grid_columnconfigure(0, weight=1)
-        self.history_box = scrolledtext.ScrolledText(hist, wrap="word",
-                                                     font=F(MONO, 9), bg=s["panel"], fg=s["text"],
-                                                     relief="solid", borderwidth=1,
-                                                     highlightthickness=1,
+    # -------------------- 右侧常驻 AI 分析面板（三栏第三栏） --------------------
+    def _build_right_panel(self):
+        s = THEME
+        p = self.right_panel
+        p.configure(bg=s["bg"])
+
+        # 标题 + 实时脉冲点
+        hd = tk.Frame(p, bg=s["bg"]); hd.pack(fill="x", padx=16, pady=(16, 6))
+        tk.Label(hd, text="🤖  AI 质控分析", bg=s["bg"], fg=s["text"],
+                 font=F(FAMILY, 14, "bold")).pack(side="left")
+        self._ai_pulse = tk.Canvas(hd, width=10, height=10, bd=0, highlightthickness=0, bg=s["bg"])
+        self._ai_pulse.pack(side="left", padx=(8, 0))
+        self._ai_pulse.create_oval(1, 1, 9, 9, fill=s["ok"], outline="")
+
+        # 综合得分环 + 等级
+        sr = tk.Frame(p, bg=s["bg"]); sr.pack(fill="x", padx=16, pady=(0, 6))
+        self._ring = tk.Canvas(sr, width=92, height=92, bd=0, highlightthickness=0, bg=s["bg"])
+        self._ring.pack(side="left")
+        self._ring_val = tk.Label(self._ring, text="--", bg=s["bg"], fg=s["text"],
+                                  font=F(FAMILY, 22, "bold"))
+        self._ring_val.place(relx=0.5, rely=0.5, anchor="center")
+        meta = tk.Frame(sr, bg=s["bg"]); meta.pack(side="left", fill="x", expand=True, padx=(14, 0))
+        self._ring_lvl = tk.StringVar(value="待运行")
+        tk.Label(meta, textvariable=self._ring_lvl, bg=s["bg"], fg=s["primary_d"],
+                 font=F(FAMILY, 13, "bold")).pack(anchor="w")
+        self._ring_hint = tk.StringVar(value="运行质控后显示综合得分与改进建议")
+        tk.Label(meta, textvariable=self._ring_hint, bg=s["bg"], fg=s["text_dim"],
+                 font=F(FAMILY, 11), wraplength=210, justify="left").pack(anchor="w", pady=(4, 0))
+        self._draw_score_ring(0)
+
+        # 发现卡滚动区（按严重度分组、可采纳/忽略）
+        self._cards_canvas = tk.Canvas(p, bg=s["bg"], highlightthickness=0)
+        self._cards_canvas.pack(fill="both", expand=True, padx=6, pady=(6, 0))
+        self._cards_inner = tk.Frame(self._cards_canvas, bg=s["bg"])
+        self._cards_win = self._cards_canvas.create_window((0, 0), window=self._cards_inner, anchor="nw")
+        self._cards_canvas.configure(scrollregion=(0, 0, 0, 0))
+        self._cards_canvas.bind("<Configure>",
+            lambda e: self._cards_canvas.itemconfigure(self._cards_win, width=e.width))
+        self._cards_inner.bind("<Configure>",
+            lambda e: self._cards_canvas.configure(scrollregion=self._cards_canvas.bbox("all")))
+        self._cards_canvas.bind_all("<MouseWheel>", self._on_cards_wheel, add="+")
+
+        # 详细结果 / 评分依据
+        out_f = ttk.LabelFrame(p, text="📊  详细结果 / 评分依据")
+        out_f.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        out_f.grid_rowconfigure(0, weight=1); out_f.grid_columnconfigure(0, weight=1)
+        self.out = scrolledtext.ScrolledText(out_f, wrap="word", font=F(MONO, 9),
+                                             bg=s["panel_alt"], fg=s["text"], relief="solid",
+                                             borderwidth=1, highlightthickness=1,
+                                             highlightbackground=s["border"])
+        self.out.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        # 审计记录
+        hist = ttk.LabelFrame(p, text="📋  监听捕获记录（审计）")
+        hist.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        hist.grid_rowconfigure(0, weight=1); hist.grid_columnconfigure(0, weight=1)
+        self.history_box = scrolledtext.ScrolledText(hist, wrap="word", font=F(MONO, 9),
+                                                     bg=s["panel"], fg=s["text"], relief="solid",
+                                                     borderwidth=1, highlightthickness=1,
                                                      highlightbackground=s["border"], state="disabled")
         self.history_box.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+
+        # 运行按钮
+        rb = tk.Frame(p, bg=s["bg"]); rb.pack(fill="x", padx=16, pady=(0, 14))
+        ttk.Button(rb, text="▶ 运行质控 ⌘↵", style="Primary.TButton",
+                   command=self._run).pack(fill="x")
+        # 多维评分汇总（被 _run 设置）
+        self.score_var = tk.StringVar(value="准确性 - | 完整性 - | 规范性 - | 及时性 -")
+
+    def _on_cards_wheel(self, event):
+        try:
+            x = self._cards_canvas.winfo_rootx(); y = self._cards_canvas.winfo_rooty()
+            w = self._cards_canvas.winfo_width(); h = self._cards_canvas.winfo_height()
+            if not (x <= event.x_root <= x + w and y <= event.y_root <= y + h):
+                return
+        except Exception:
+            return
+        self._cards_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    # ---------- 综合得分环 ----------
+    def _draw_score_ring(self, value):
+        s = THEME
+        c = getattr(self, "_ring", None)
+        if c is None or not c.winfo_exists():
+            return
+        c.delete("all")
+        r, cx, cy = 38, 46, 46
+        c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=s["border"], width=9)
+        v = max(0, min(100, value))
+        if v > 0:
+            col = s["ok"] if v >= 85 else (s["warn"] if v >= 70 else s["danger"])
+            c.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-359.99 * v / 100,
+                         outline=col, width=9, style="arc")
+        self._ring_val.configure(text=str(int(v)) if v > 0 else "--", bg=s["bg"], fg=s["text"])
+
+    def _overall_score(self):
+        sc = getattr(self, "current_scores", None)
+        if not isinstance(sc, dict):
+            return 0
+        vals = [sc[d]["score"] for d in ("准确性", "完整性", "规范性", "及时性")
+                if isinstance(sc.get(d), dict)]
+        return round(sum(vals) / len(vals)) if vals else 0
+
+    def _score_level(self, v):
+        if v >= 85:
+            return {"txt": "A 级 · 优秀", "hint": "质控质量优秀，可放心签发。"}
+        if v >= 70:
+            return {"txt": "B 级 · 良好", "hint": "整体良好，修复严重项即可达 A 级。"}
+        if v >= 60:
+            return {"txt": "C 级 · 合格", "hint": "存在若干质量问题，建议修改后签发。"}
+        return {"txt": "D 级 · 待改进", "hint": "质量问题较多，请重点处理严重/警告项。"}
+
+    def _update_score_ring(self):
+        v = self._overall_score()
+        self._draw_score_ring(v)
+        lv = self._score_level(v)
+        self._ring_lvl.set(lv["txt"])
+        self._ring_hint.set(lv["hint"])
+
+    # ---------- 严重度分组发现卡 ----------
+    def _render_finding_cards(self):
+        s = THEME
+        inner = getattr(self, "_cards_inner", None)
+        if inner is None:
+            return
+        for w in inner.winfo_children():
+            w.destroy()
+        fds = self.current_findings or []
+        if not fds:
+            tk.Label(inner, text="运行质控后，此处按严重度列出可采纳的改进建议。",
+                     bg=s["bg"], fg=s["text_dim"], font=F(FAMILY, 11),
+                     wraplength=320, justify="left").pack(padx=14, pady=22)
+            return
+        groups = [("high", "⛔ 严重", "d"), ("medium", "⚠ 警告", "w"), ("low", "ℹ 提示", "i")]
+        counter = [0]
+        for sev, title, cls in groups:
+            items = [fd for fd in fds if getattr(fd, "severity", "") == sev]
+            if not items:
+                continue
+            tk.Label(inner, text=f"{title} · {len(items)}", bg=s["bg"], fg=s["text"],
+                     font=F(FAMILY, 11, "bold")).pack(anchor="w", padx=14, pady=(10, 4))
+            for fd in items:
+                counter[0] += 1
+                self._make_find_card(fd, counter[0], cls)
+
+    def _make_find_card(self, fd, i, cls):
+        s = THEME
+        bar_col = {"d": s["sev_high"], "w": s["sev_med"], "i": s["sev_low"]}[cls]
+        card = tk.Frame(self._cards_inner, bg=s["panel"], bd=0,
+                        highlightbackground=s["border"], highlightthickness=1)
+        card.pack(fill="x", padx=10, pady=4)
+        tk.Frame(card, bg=bar_col, width=4).pack(side="left", fill="y")
+        body = tk.Frame(card, bg=s["panel"]); body.pack(side="left", fill="both", expand=True,
+                                                       padx=10, pady=8)
+        tk.Label(body, text=f"{SEV_ICON.get(fd.severity, '')} {fd.rule_id} · {fd.error_type}",
+                 bg=s["panel"], fg=s["text"], font=F(FAMILY, 12, "bold")).pack(anchor="w")
+        tk.Label(body, text=getattr(fd, "message", ""), bg=s["panel"], fg=s["text_dim"],
+                 font=F(FAMILY, 11), wraplength=300, justify="left").pack(anchor="w", pady=(4, 6))
+        acts = tk.Frame(body, bg=s["panel"]); acts.pack(anchor="w")
+        ttk.Button(acts, text="采纳", width=7,
+                   command=lambda i=i: self._goto_finding(i)).pack(side="left", padx=(0, 6))
+        ttk.Button(acts, text="忽略", width=7,
+                   command=lambda fd=fd: self._ignore_finding(fd)).pack(side="left")
+
+    def _ignore_finding(self, fd):
+        """忽略一条发现：加入会话级忽略名单后重新运行（过滤该条）。"""
+        self.ignored.add(self._ig_key(fd))
+        self._run()
+
+    def _open_sample_library(self):
+        """样本库窗口：展示样本数量并提供导入/导出入口（复用既有方法）。"""
+        s = THEME
+        win = tk.Toplevel(self)
+        win.title("样本库")
+        win.geometry("520x420")
+        win.configure(bg=s["bg"])
+        win.transient(self)
+        try:
+            samples = samplelib.load_samples() if hasattr(samplelib, "load_samples") else []
+            cnt = len(samples)
+        except Exception:
+            cnt = 0
+        tk.Label(win, text="🗄  质控样本库", bg=s["bg"], fg=s["text"],
+                 font=F(FAMILY, 16, "bold")).pack(pady=14)
+        tk.Label(win, text=f"当前共 {cnt} 份样本", bg=s["bg"], fg=s["text_dim"],
+                 font=F(FAMILY, 12)).pack()
+        bf = tk.Frame(win, bg=s["bg"]); bf.pack(pady=16)
+        ttk.Button(bf, text="⬇ 导出样本库", command=self._export_samples).pack(side="left", padx=8)
+        ttk.Button(bf, text="⬆ 导入样本库", command=self._import_samples).pack(side="left", padx=8)
+        tk.Label(win, text="（双击样本库中的报告可回看；样本均在本机存储，无上传）",
+                 bg=s["bg"], fg=s["text_dim"], font=F(FAMILY, 10)).pack(pady=(10, 0))
 
     # -------------------- 设置 / 高级功能（可折叠） --------------------
     def _build_settings_inner(self):
@@ -2527,6 +2726,9 @@ class ReportQcApp(tk.Tk):
         self.score_var.set(
             f"准确性 {sc['准确性']['score']} | 完整性 {sc['完整性']['score']} | "
             f"规范性 {sc['规范性']['score']} | 及时性 {sc['及时性']['score']}")
+        # 右侧 AI 面板：刷新综合得分环 + 严重度分组发现卡
+        self._update_score_ring()
+        self._render_finding_cards()
 
     # ---------- 结果区 ↔ 原文 双向定位 ----------
     @staticmethod
