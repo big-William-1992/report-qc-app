@@ -62,11 +62,11 @@ THEME = {
     "card_hover": "#EAF0FB",   # 发现卡悬停底色
     "border":     "#DCE3EE",   # 边框（浅，略增可见度）
 
-    # 侧边栏（暗色）
-    "sidebar_bg":     "#171A2B",   # 侧边栏底
-    "sidebar_fg":     "#C7CCDB",   # 侧边栏文字
-    "sidebar_active": "#2D6CDF",   # 选中项（医用蓝）
-    "sidebar_hover":  "#222740",   # 悬停
+    # 侧边栏（医用蓝）
+    "sidebar_bg":     "#1B3F7A",   # 侧边栏底（医用深蓝）
+    "sidebar_fg":     "#DDE7F6",   # 侧边栏文字（蓝调白）
+    "sidebar_active": "#3E82F0",   # 选中项（更亮的医用蓝）
+    "sidebar_hover":  "#2A559B",   # 悬停
 
     # 主色 / 强调（蓝）
     "primary":   "#2D6CDF",
@@ -516,7 +516,7 @@ class ReportQcApp(tk.Tk):
         brand.pack(fill="x", pady=(20, 8))
         tk.Label(brand, text="✚ 星衍", bg=s["sidebar_bg"], fg="#FFFFFF",
                  font=F(FAMILY, 20, "bold"), padx=20).pack(anchor="w")
-        tk.Label(brand, text="放射质控系统", bg=s["sidebar_bg"], fg="#8E97B5",
+        tk.Label(brand, text="放射质控系统", bg=s["sidebar_bg"], fg="#A9C2EA",
                  font=F(FAMILY, 11), padx=20).pack(anchor="w")
 
         # 导航（分组）：工作 / 数据 / 管理
@@ -533,12 +533,12 @@ class ReportQcApp(tk.Tk):
 
         # 底部版本信息
         foot = tk.Label(bar, text=f"v{version.APP_VERSION}  ·  桌面客户端",
-                        bg=s["sidebar_bg"], fg="#5B6480", font=F(FAMILY, 10),
+                        bg=s["sidebar_bg"], fg="#7FA1D4", font=F(FAMILY, 10),
                         padx=22, pady=16)
         foot.pack(side="bottom", anchor="w", fill="x")
 
     def _nav_group(self, parent, title):
-        tk.Label(parent, text=title, bg=THEME["sidebar_bg"], fg="#5B6480",
+        tk.Label(parent, text=title, bg=THEME["sidebar_bg"], fg="#A9C2EA",
                  font=F(FAMILY, 10, "bold"), padx=22).pack(anchor="w", fill="x", pady=(16, 6))
 
     def _nav_item(self, parent, label, target):
