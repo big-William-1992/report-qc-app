@@ -31,7 +31,8 @@ ls -la | grep " 2"
 rm -f ".gitignore 2" "LICENSE 2" "README 2.md" \
       "requirements 2.txt" "requirements-windows 2.txt" \
       "gen_activation_code 2.py" "gen_activation_gui 2.py" \
-      "ui_prototype_app 2.html" "ui_prototype_redesign 2.html"
+      "ui_prototype_app 2.html" "ui_prototype_redesign 2.html" \
+      "星衍质控启动 2.command" "启动星衍质控软件 2.command" "星衍发卡工具 2.spec"
 ```
 
 ## 步骤 4 · 确认 git 仓库完整并还原受控文件
