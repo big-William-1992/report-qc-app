@@ -84,7 +84,7 @@ THEME = {
     # 严重度配色：红=严重(high) / 橙=警告(medium) / 蓝=提示(low)
     "sev_high":  "#E5484D",   # 严重错误——红
     "sev_med":   "#F0A020",   # 警告——橙
-    "sev_low":   "#6E8BB5",   # 提示——蓝（与红/橙区分，且不与主色蓝撞色）
+    "sev_low":   "#6E8BB5",   # 提示——低饱和蓝灰（弱于主色，不抢视线）
     "sev_high_bg": "#FDE8E8", # 严重行/块背景（清晰红染）
     "sev_med_bg":  "#FEF3DD", # 警告行/块背景（清晰橙染）
     "sev_low_bg":  "#EDF1F6", # 提示行/块背景（中性浅染）
@@ -341,6 +341,19 @@ def hotkey_tk_sequence(hk):
     return f"<{seq}{key}>"
 
 
+# 应用内可配置快捷键（默认 Windows Ctrl+ 风；设置页可逐条重绑，持久化到 shortcuts_config.json）
+DEFAULT_SHORTCUTS = {
+    "run_qc":       {"mods": ["ctrl"], "key": "Return"},
+    "save_sample":  {"mods": ["ctrl"], "key": "s"},
+    "toggle_theme": {"mods": ["ctrl"], "key": "t"},
+}
+_SHORTCUT_LABELS = {
+    "run_qc":       "运行质控",
+    "save_sample":  "存入样本库",
+    "toggle_theme": "明暗主题切换",
+}
+
+
 class ReportQcApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -396,6 +409,9 @@ class ReportQcApp(tk.Tk):
         self._last_hotkey_ts = 0.0         # 防抖时间戳：忽略 0.5s 内的重复触发（含 Tk 与全局监听同时触发）
         if self.qc_hotkey:
             self.after(400, self._register_qc_hotkey)   # 主循环起来后再注册
+
+        # 应用内可配置快捷键（默认 Windows Ctrl+；设置页可重绑）
+        self.shortcuts = self._load_shortcuts()
 
         self.style = apply_theme(self)
 
@@ -472,10 +488,7 @@ class ReportQcApp(tk.Tk):
 
         # 全局快捷键：核心三步流程键盘优先（放射科医生高速录入）
         self._mode = "light"
-        self.bind_all("<Control-Return>", lambda e: (self._run(), "break")[1])
-        self.bind_all("<Command-Return>", lambda e: (self._run(), "break")[1])
-        self.bind_all("<Control-s>", self._on_ctrl_s)
-        self.bind_all("<Command-s>", self._on_ctrl_s)
+        self._apply_shortcuts()
         self.bind_all("<Escape>", self._on_escape)
 
     # -------------------- 顶栏 --------------------
@@ -502,7 +515,7 @@ class ReportQcApp(tk.Tk):
                                      command=self._toggle_theme)
         self._theme_btn.pack(side="right", padx=4, anchor="center")
 
-    # -------------------- 左侧暗色侧边栏导航（宫格化） --------------------
+    # -------------------- 左侧暗色侧边栏导航 --------------------
     def _build_sidebar(self):
         s = THEME
         bar = tk.Frame(self, bg=s["sidebar_bg"], width=180)
@@ -511,112 +524,105 @@ class ReportQcApp(tk.Tk):
 
         # 品牌区
         brand = tk.Frame(bar, bg=s["sidebar_bg"])
-        brand.pack(fill="x", pady=(20, 10))
+        brand.pack(fill="x", pady=(18, 4))
         tk.Label(brand, text="✚ 星衍", bg=s["sidebar_bg"], fg="#FFFFFF",
-                 font=F(FAMILY, 20, "bold"), padx=16).pack(anchor="w")
+                 font=F(FAMILY, 17, "bold"), padx=14).pack(anchor="w")
         tk.Label(brand, text="放射质控系统", bg=s["sidebar_bg"], fg="#A9C2EA",
-                 font=F(FAMILY, 11), padx=16).pack(anchor="w")
+                 font=F(FAMILY, 10), padx=14).pack(anchor="w")
 
-        # 导航（宫格）：图标 + 文字，两列排布
+        # 导航宫格：图标在上、文字在下，两列排布
         self._nav_buttons = []
-        body = tk.Frame(bar, bg=s["sidebar_bg"])
-        body.pack(fill="both", expand=True, padx=12, pady=(6, 10))
-        body.grid_columnconfigure(0, weight=1, uniform="nav")
-        body.grid_columnconfigure(1, weight=1, uniform="nav")
-        items = [
+        self._nav_group(bar, "工作台")
+        self._nav_grid(bar, [
             ("📋", "质控工作区", 0),
             ("📊", "质控驾驶舱", 1),
             ("📥", "待质控队列", "queue"),
             ("🗄", "样本库", "samples"),
             ("🔗", "RIS 直连", 2),
             ("⚙", "规则管理", "rules"),
-        ]
-        r = c = 0
-        for icon, label, target in items:
-            cell = self._nav_cell(body, icon, label, target)
-            cell.grid(row=r, column=c, padx=4, pady=4, sticky="nsew")
-            body.grid_rowconfigure(r, weight=1)
-            c += 1
-            if c > 1:
-                c = 0
-                r += 1
-        # 最后一行若只有一格，让其占满整行宽度更协调
-        if c == 1:
-            body.grid_columnconfigure(0, weight=1, uniform="nav")
+        ])
 
-        # 底部：版本信息 + 快捷键速查
+        # 底部：快捷键速查 + 版本信息
         self._build_sidebar_foot(bar)
 
-    def _nav_cell(self, parent, icon, label, target):
-        """宫格导航单元：Frame 容器包裹图标与文字，整体可点、整体着色。"""
+    def _nav_group(self, parent, title):
+        tk.Label(parent, text=title, bg=THEME["sidebar_bg"], fg="#7FA1D4",
+                 font=F(FAMILY, 9, "bold"), padx=14).pack(anchor="w", fill="x", pady=(14, 5))
+
+    def _nav_grid(self, parent, cells):
+        """两列宫格容器：等宽列，逐格填充。"""
+        g = tk.Frame(parent, bg=THEME["sidebar_bg"])
+        g.pack(fill="x", padx=8)
+        g.grid_columnconfigure(0, weight=1, uniform="nav")
+        g.grid_columnconfigure(1, weight=1, uniform="nav")
+        for i, (icon, label, target) in enumerate(cells):
+            self._nav_cell(g, icon, label, target, i // 2, i % 2)
+
+    def _nav_cell(self, parent, icon, label, target, row, col):
+        """单个导航宫格：图标 + 文字，整块（含子控件）响应悬停与点击。"""
         s = THEME
-        cell = tk.Frame(parent, bg=s["sidebar_bg"], relief="flat", bd=0,
-                        cursor="hand2")
-        cell._nav_target = target
-        cell._nav_on = False
+        cell = tk.Frame(parent, bg=s["sidebar_bg"], cursor="hand2")
+        cell.grid(row=row, column=col, sticky="nsew", padx=2, pady=2)
         ico = tk.Label(cell, text=icon, bg=s["sidebar_bg"], fg=s["sidebar_fg"],
-                       font=F(FAMILY, 22))
-        ico.place(relx=0.5, rely=0.40, anchor="center")
+                       font=F(FAMILY, 15), cursor="hand2")
+        ico.pack(pady=(9, 0))
         txt = tk.Label(cell, text=label, bg=s["sidebar_bg"], fg=s["sidebar_fg"],
-                       font=F(FAMILY, 10))
-        txt.place(relx=0.5, rely=0.82, anchor="center")
-        cell._ico = ico
-        cell._txt = txt
-
-        def _enter(e=None):
-            if not cell._nav_on:
-                self._nav_paint(cell, s["sidebar_hover"], s["sidebar_fg"])
-
-        def _leave(e=None):
-            if not cell._nav_on:
-                self._nav_paint(cell, s["sidebar_bg"], s["sidebar_fg"])
-
-        def _click(e=None):
-            self._nav_to(target)
-
-        for w in (cell, ico, txt):
-            w.bind("<Enter>", _enter)
-            w.bind("<Leave>", _leave)
-            w.bind("<Button-1>", _click)
+                       font=F(FAMILY, 9), cursor="hand2")
+        txt.pack(pady=(1, 9))
+        cell._nav_target = target
+        cell._nav_parts = (ico, txt)
+        cell._nav_on = False          # 选中态标记（比读 bg 判断更可靠）
         if target == "queue":
-            self._queue_nav_btn = txt
+            self._queue_nav_btn = cell
+
+        def on_enter(_e, c=cell):
+            if not getattr(c, "_nav_on", False):
+                self._nav_paint(c, THEME["sidebar_hover"], "#FFFFFF")
+
+        def on_leave(_e, c=cell):
+            if not getattr(c, "_nav_on", False):
+                self._nav_paint(c, THEME["sidebar_bg"], THEME["sidebar_fg"])
+
+        # 子控件同样绑定：否则指针移到图标/文字上会误判为离开
+        for w in (cell, ico, txt):
+            w.bind("<Enter>", on_enter)
+            w.bind("<Leave>", on_leave)
+            w.bind("<Button-1>", lambda _e, t=target: self._nav_to(t))
         self._nav_buttons.append(cell)
-        return cell
 
     @staticmethod
     def _nav_paint(cell, bg, fg):
-        """整体着色宫格单元（容器 + 子控件）。"""
+        """整块着色：容器与其图标/文字子控件同步。"""
         try:
             cell.configure(bg=bg)
-        except Exception:
+            for w in getattr(cell, "_nav_parts", ()):
+                w.configure(bg=bg, fg=fg)
+        except tk.TclError:
             pass
-        if getattr(cell, "_ico", None):
-            try:
-                cell._ico.configure(bg=bg, fg=fg)
-            except Exception:
-                pass
-        if getattr(cell, "_txt", None):
-            try:
-                cell._txt.configure(bg=bg, fg=fg)
-            except Exception:
-                pass
 
     def _build_sidebar_foot(self, bar):
+        """侧边栏底部：版本信息 + 快捷键速查卡（跟随 self.shortcuts 配置）。"""
         s = THEME
-        foot = tk.Frame(bar, bg="#16356A")
-        foot.pack(side="bottom", fill="x", padx=10, pady=10)
-        tk.Label(foot, text=f"v{version.APP_VERSION}  ·  桌面客户端",
-                 bg="#16356A", fg="#7FA1D4", font=F(FAMILY, 10)).pack(
-            anchor="w", padx=12, pady=(10, 6))
-        mod = "⌘" if platform.system() == "Darwin" else "Ctrl+"
-        rows = (("报告质控", f"{mod}R"), ("明暗切换", f"{mod}T"), ("存样本", f"{mod}S"))
-        for k, v in rows:
-            rf = tk.Frame(foot, bg="#16356A")
-            rf.pack(fill="x", padx=12, pady=2)
-            tk.Label(rf, text=k, bg="#16356A", fg="#A9C2EA",
-                     font=F(FAMILY, 10)).pack(side="left")
-            tk.Label(rf, text=v, bg="#16356A", fg="#DDE7F6",
-                     font=F(FAMILY, 10, "bold")).pack(side="right")
+        tk.Label(bar, text=f"v{version.APP_VERSION}  ·  桌面客户端",
+                 bg=s["sidebar_bg"], fg="#7FA1D4", font=F(FAMILY, 9),
+                 padx=14, pady=10).pack(side="bottom", anchor="w", fill="x")
+
+        tips_bg = "#16356A"          # 略深于侧边栏底，形成内嵌卡片感
+        tips = tk.Frame(bar, bg=tips_bg)
+        tips.pack(side="bottom", fill="x", padx=8, pady=(0, 6))
+        tk.Label(tips, text="⌨  快捷键", bg=tips_bg, fg="#A9C2EA",
+                 font=F(FAMILY, 9, "bold")).pack(anchor="w", padx=10, pady=(8, 3))
+        for act, action in (("运行质控", "run_qc"), ("存入样本库", "save_sample"),
+                            ("清空录入", None)):
+            key = hotkey_display(self.shortcuts.get(action)) if action else "Esc"
+            row = tk.Frame(tips, bg=tips_bg)
+            row.pack(fill="x", padx=10, pady=1)
+            tk.Label(row, text=act, bg=tips_bg, fg="#DDE7F6",
+                     font=F(FAMILY, 9)).pack(side="left")
+            tk.Label(row, text=key, bg=tips_bg, fg="#7FD4FF",
+                     font=F(FAMILY, 9, "bold")).pack(side="right")
+        tk.Frame(tips, bg=tips_bg, height=8).pack()
+        self._sidebar_tips = tips
 
     def _nav_to(self, target):
         """导航分发：整数→切到对应页签；samples/rules/queue→打开对应窗口。"""
@@ -649,10 +655,11 @@ class ReportQcApp(tk.Tk):
             elif cur != 0 and rp.winfo_ismapped():
                 rp.pack_forget()
         for cell in getattr(self, "_nav_buttons", []):
-            on = getattr(cell, "_nav_target", None) == cur
+            on = (getattr(cell, "_nav_target", None) == cur)
             cell._nav_on = on
-            self._nav_paint(cell, s["sidebar_active"] if on else s["sidebar_bg"],
-                           "#FFFFFF" if on else s["sidebar_fg"])
+            self._nav_paint(cell,
+                            s["sidebar_active"] if on else s["sidebar_bg"],
+                            "#FFFFFF" if on else s["sidebar_fg"])
 
     # -------------------- 全局快捷键 --------------------
     def _has_dialog(self):
@@ -677,6 +684,156 @@ class ReportQcApp(tk.Tk):
             return
         self.findings_txt.delete("1.0", "end")
         self.impression_txt.delete("1.0", "end")
+
+    # -------------------- 应用内可配置快捷键 --------------------
+    def _apply_shortcuts(self):
+        """按 self.shortcuts 绑定应用内快捷键；同时绑定 Control（Windows/Linux）与
+        Command（macOS）两种变体，保证跨平台可用。Esc 仍固定为清空录入。"""
+        dispatch = {
+            "run_qc":       lambda e: (self._run(), "break")[1],
+            "save_sample":  self._on_ctrl_s,
+            "toggle_theme": lambda e: (self._toggle_theme(), "break")[1],
+        }
+        # 先注销上一次绑定的序列（重绑时避免叠加）
+        for seq in getattr(self, "_bound_shortcut_seqs", []) or []:
+            try:
+                self.unbind_all(seq)
+            except Exception:
+                pass
+        seqs = []
+        for action, hk in self.shortcuts.items():
+            seq = hotkey_tk_sequence(hk)
+            if not seq:
+                continue
+            handler = dispatch.get(action)
+            if not handler:
+                continue
+            # 主序列 = Control 变体；再补一个 Command 变体（macOS 兼容）
+            variants = [seq]
+            if seq.startswith("<Control-"):
+                variants.append("<Command-" + seq[len("<Control-"):])
+            for s in variants:
+                try:
+                    self.bind_all(s, handler)
+                    seqs.append(s)
+                except Exception:
+                    pass
+        self._bound_shortcut_seqs = seqs
+        self._refresh_shortcut_labels()
+
+    def _refresh_shortcut_labels(self):
+        """运行/入库按钮文字跟随快捷键配置刷新（仅当按钮已构建）。"""
+        for action, btn in (("run_qc", getattr(self, "_run_btn", None)),
+                            ("save_sample", getattr(self, "_save_btn", None))):
+            if btn is not None and btn.winfo_exists():
+                base = "▶ 运行质控" if action == "run_qc" else "💾 存入样本库"
+                btn.configure(text=f"{base} {hotkey_display(self.shortcuts.get(action))}")
+
+    def _set_shortcut(self, action):
+        """弹窗捕获指定动作的快捷键组合；Esc 取消。"""
+        dlg = tk.Toplevel(self)
+        dlg.title(f"设置「{_SHORTCUT_LABELS.get(action, action)}」快捷键")
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        frm = ttk.Frame(dlg, padding=18)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="请按下要设置的快捷键组合",
+                  font=(FAMILY, 12, "bold")).pack()
+        preview = tk.StringVar(value=f"当前：{hotkey_display(self.shortcuts.get(action))}")
+        ttk.Label(frm, textvariable=preview, font=(FAMILY, 14)).pack(pady=(10, 6))
+        ttk.Label(frm, text="推荐 Ctrl/Alt/Shift 组合（如 Ctrl+Enter、Ctrl+S）\n"
+                            "Esc 取消",
+                  foreground="#7A8794", justify="center").pack()
+        held = set()
+
+        def _mods_of():
+            mods = []
+            if held & {"Control_L", "Control_R"}:
+                mods.append("ctrl")
+            if held & {"Alt_L", "Alt_R", "Meta_L", "Meta_R"}:
+                mods.append("alt")
+            if held & {"Shift_L", "Shift_R"}:
+                mods.append("shift")
+            if held & {"Super_L", "Super_R", "Win_L", "Win_R"}:
+                mods.append("win")
+            return mods
+
+        def on_press(e):
+            ks = e.keysym
+            if ks == "Escape":
+                dlg.destroy()
+                return "break"
+            if ks in _HOTKEY_MODIFIER_KEYSYMS:
+                held.add(ks)
+                m = _mods_of()
+                preview.set("+".join(hotkey_display({"mods": m, "key": "x"}).split("+")[:-1]) + "+…"
+                            if m else "…")
+                return "break"
+            mods = _mods_of()
+            if e.state & 0x4 and "ctrl" not in mods:
+                mods.append("ctrl")
+            if e.state & 0x1 and "shift" not in mods:
+                mods.append("shift")
+            hk = {"mods": mods, "key": ks}
+            if not mods and len(ks) == 1:
+                if not messagebox.askyesno(
+                        "确认快捷键",
+                        f"「{hotkey_display(hk)}」没有修饰键，任何窗口里输入该字符都会触发"
+                        f"「{_SHORTCUT_LABELS.get(action, action)}」，容易误触。\n\n仍要使用吗？",
+                        parent=dlg):
+                    return "break"
+            dlg.destroy()
+            self.shortcuts[action] = hk
+            self._save_shortcuts()
+            self._apply_shortcuts()
+            self._build_sidebar_foot_refresh()
+            return "break"
+
+        def on_release(e):
+            held.discard(e.keysym)
+            return "break"
+
+        dlg.bind("<KeyPress>", on_press)
+        dlg.bind("<KeyRelease>", on_release)
+        dlg.focus_force()
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - dlg.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 3
+        dlg.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def _reset_shortcuts(self):
+        """恢复默认快捷键并立即生效。"""
+        self.shortcuts = {k: dict(v) for k, v in DEFAULT_SHORTCUTS.items()}
+        self._save_shortcuts()
+        self._apply_shortcuts()
+        self._build_sidebar_foot_refresh()
+        messagebox.showinfo("快捷键", "已恢复默认（Windows Ctrl+ 风格）")
+
+    def _build_sidebar_foot_refresh(self):
+        """重绑后刷新侧边栏速查卡（销毁重建 tips 卡片）。"""
+        tips = getattr(self, "_sidebar_tips", None)
+        if tips is None or not tips.winfo_exists():
+            return
+        parent = tips.master
+        tips.destroy()
+        # 复用 _build_sidebar_foot 的速查卡绘制逻辑：重建一个干净的 tips 容器
+        tips_bg = "#16356A"
+        new = tk.Frame(parent, bg=tips_bg)
+        new.pack(side="bottom", fill="x", padx=8, pady=(0, 6))
+        tk.Label(new, text="⌨  快捷键", bg=tips_bg, fg="#A9C2EA",
+                 font=F(FAMILY, 9, "bold")).pack(anchor="w", padx=10, pady=(8, 3))
+        for act, action in (("运行质控", "run_qc"), ("存入样本库", "save_sample"),
+                            ("清空录入", None)):
+            key = hotkey_display(self.shortcuts.get(action)) if action else "Esc"
+            row = tk.Frame(new, bg=tips_bg)
+            row.pack(fill="x", padx=10, pady=1)
+            tk.Label(row, text=act, bg=tips_bg, fg="#DDE7F6",
+                     font=F(FAMILY, 9)).pack(side="left")
+            tk.Label(row, text=key, bg=tips_bg, fg="#7FD4FF",
+                     font=F(FAMILY, 9, "bold")).pack(side="right")
+        tk.Frame(new, bg=tips_bg, height=8).pack()
+        self._sidebar_tips = new
 
     # -------------------- 明暗主题切换 --------------------
     def _toggle_theme(self):
@@ -711,8 +868,6 @@ class ReportQcApp(tk.Tk):
                     w.tag_configure("hl_low", background=THEME["hl_low"], foreground="#0B5394")
                 except Exception:
                     pass
-        if hasattr(self, "_nav_buttons"):
-            self._on_tab_changed()  # 主题切换后重绘宫格导航选中态
         if hasattr(self, "_update_status_bar"):
             self._update_status_bar()
 
@@ -1436,8 +1591,10 @@ class ReportQcApp(tk.Tk):
         # ===== 主操作条（核心三步流程，绿色高亮，置于中央双栏下方）=====
         main_bar = ttk.Frame(root)
         main_bar.grid(row=2, column=0, sticky="ew", pady=(0, 4))
-        ttk.Button(main_bar, text="▶ 运行质控 ⌘↵", style="Primary.TButton",
-                   command=self._run).pack(side="left", padx=3)
+        self._run_btn = ttk.Button(main_bar,
+                                   text=f"▶ 运行质控 {hotkey_display(self.shortcuts.get('run_qc'))}",
+                                   style="Primary.TButton", command=self._run)
+        self._run_btn.pack(side="left", padx=3)
         ttk.Button(main_bar, text="🔍 识别并质控", style="Primary.TButton",
                    command=self._capture_and_qc).pack(side="left", padx=3)
         ttk.Button(main_bar, text="🪟 从PACS读取(UIA)", style="Primary.TButton",
@@ -1449,7 +1606,10 @@ class ReportQcApp(tk.Tk):
         ttk.Button(sub_bar, text="📂 导入文件", command=self._import).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="🗑 清空", command=lambda: (self.findings_txt.delete("1.0", "end"),
                                                   self.impression_txt.delete("1.0", "end"))).pack(side="left", padx=3)
-        ttk.Button(sub_bar, text="💾 存入样本库 ⌘S", command=self._save).pack(side="left", padx=3)
+        self._save_btn = ttk.Button(sub_bar,
+                                    text=f"💾 存入样本库 {hotkey_display(self.shortcuts.get('save_sample'))}",
+                                    command=self._save)
+        self._save_btn.pack(side="left", padx=3)
         ttk.Button(sub_bar, text="📄 导出质控留档", command=self._export_qc_archive).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="⬇ 导出样本库", command=self._export_samples).pack(side="left", padx=3)
         ttk.Button(sub_bar, text="⬆ 导入样本库", command=self._import_samples).pack(side="left", padx=3)
@@ -1534,8 +1694,8 @@ class ReportQcApp(tk.Tk):
 
         # 运行按钮
         rb = tk.Frame(p, bg=s["bg"]); rb.pack(fill="x", padx=16, pady=(0, 14))
-        ttk.Button(rb, text="▶ 运行质控 ⌘↵", style="Primary.TButton",
-                   command=self._run).pack(fill="x")
+        ttk.Button(rb, text=f"▶ 运行质控 {hotkey_display(self.shortcuts.get('run_qc'))}",
+                   style="Primary.TButton", command=self._run).pack(fill="x")
         # 多维评分汇总（被 _run 设置）
         self.score_var = tk.StringVar(value="准确性 - | 完整性 - | 规范性 - | 及时性 -")
 
@@ -1747,11 +1907,15 @@ class ReportQcApp(tk.Tk):
             pass
 
     def _refresh_queue_badge(self):
-        """左栏『待质控队列』宫格徽标显示真实数量。"""
-        btn = getattr(self, "_queue_nav_btn", None)
-        if btn is not None and btn.winfo_exists():
-            n = len(self.qc_queue)
-            btn.configure(text=f"待质控队列 · {n}" if n else "待质控队列")
+        """左栏『待质控队列』宫格显示真实数量。"""
+        cell = getattr(self, "_queue_nav_btn", None)
+        if cell is None or not cell.winfo_exists():
+            return
+        parts = getattr(cell, "_nav_parts", None)
+        if not parts:
+            return
+        n = len(self.qc_queue)
+        parts[1].configure(text=f"待质控 · {n}" if n else "待质控队列")
 
     def _enqueue_current(self, source="手动"):
         """把当前工作区报告加入待质控队列（按文本哈希去重）；RIS直连/采集入口调用。"""
@@ -1935,6 +2099,17 @@ class ReportQcApp(tk.Tk):
         ttk.Label(ocr_bar2, textvariable=self.ocr_regions_status,
                   foreground=s["text_dim"]).pack(side="left", padx=6)
 
+        # 应用内可配置快捷键（默认 Windows Ctrl+；逐条重绑，持久化到 shortcuts_config.json）
+        sc_bar = ttk.Frame(p)
+        sc_bar.pack(fill="x", pady=(6, 0))
+        ttk.Separator(sc_bar, orient="horizontal").pack(fill="x", pady=(0, 6))
+        ttk.Label(sc_bar, text="⌨ 应用内快捷键：", foreground=s["text_dim"]).pack(side="left", padx=2)
+        for _act in ("run_qc", "save_sample", "toggle_theme"):
+            ttk.Button(sc_bar, text=f"设置{_SHORTCUT_LABELS[_act]}", width=12,
+                       command=lambda a=_act: self._set_shortcut(a)).pack(side="left", padx=2)
+        ttk.Button(sc_bar, text="↺ 恢复默认", width=10,
+                   command=self._reset_shortcuts).pack(side="left", padx=(6, 2))
+
         # 快捷键「识别并质控」采集方式选择（按钮直连不受影响，仅快捷键分派受此控）
         cap_bar = ttk.Frame(p)
         cap_bar.pack(fill="x", pady=(6, 0))
@@ -2063,6 +2238,35 @@ class ReportQcApp(tk.Tk):
                    "capture_mode": getattr(self, "capture_mode", "auto")}
             with open(self._ocr_config_path(), "w", encoding="utf-8") as fh:
                 json.dump(cfg, fh, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _shortcuts_path(self) -> str:
+        """应用内快捷键配置持久化路径（与 ocr_config 同目录）。"""
+        if getattr(sys, "frozen", False):
+            d = os.path.join(os.path.expandvars("%APPDATA%"), "MedicalReportQC")
+        else:
+            d = os.path.join(os.path.expanduser("~"), ".config", "MedicalReportQC")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        return os.path.join(d, "shortcuts_config.json")
+
+    def _load_shortcuts(self) -> dict:
+        try:
+            with open(self._shortcuts_path(), encoding="utf-8") as fh:
+                saved = json.load(fh) or {}
+        except Exception:
+            saved = {}
+        out = {k: dict(v) for k, v in DEFAULT_SHORTCUTS.items()}
+        out.update({k: v for k, v in saved.items() if k in DEFAULT_SHORTCUTS})
+        return out
+
+    def _save_shortcuts(self):
+        try:
+            with open(self._shortcuts_path(), "w", encoding="utf-8") as fh:
+                json.dump(self.shortcuts, fh, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
