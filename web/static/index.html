@@ -8,6 +8,67 @@
 </head>
 <body>
 
+<!-- ========== 授权闸门（免责 / 创建账号 / 登录 / 激活） ========== -->
+<div class="gate" id="gate" style="display:none">
+  <div class="gate-card">
+    <div class="gate-brand">✚ 星衍 · 放射质控系统</div>
+
+    <!-- 免责声明 -->
+    <div class="gate-step" id="gate-disclaimer" style="display:none">
+      <h2>用户协议与免责声明</h2>
+      <div class="gate-disclaimer" id="disclaimerText"></div>
+      <div class="gate-actions">
+        <button class="btn btn-primary btn-block" id="btnAccept" onclick="gateAccept()">同意并继续</button>
+        <button class="btn btn-outline btn-block" id="btnReject" onclick="gateReject()">不同意，退出</button>
+      </div>
+    </div>
+
+    <!-- 创建首个账号 -->
+    <div class="gate-step" id="gate-account" style="display:none">
+      <h2>创建首个账号</h2>
+      <p class="gate-hint">质控责任到人，请使用您的工号作为登录名。</p>
+      <div class="gate-form">
+        <input id="gaEmpId" placeholder="工号（登录名）" autocomplete="username" />
+        <input id="gaName" placeholder="姓名（可选）" />
+        <input id="gaPwd" type="password" placeholder="密码（至少 6 位）" autocomplete="new-password" />
+        <input id="gaPwd2" type="password" placeholder="确认密码" autocomplete="new-password" />
+      </div>
+      <div class="gate-err" id="gaErr"></div>
+      <div class="gate-actions">
+        <button class="btn btn-primary btn-block" id="btnCreate" onclick="gateCreate()">创建并进入</button>
+      </div>
+    </div>
+
+    <!-- 登录 -->
+    <div class="gate-step" id="gate-login" style="display:none">
+      <h2>账号登录</h2>
+      <div class="gate-form">
+        <input id="glEmpId" placeholder="工号" autocomplete="username" />
+        <input id="glPwd" type="password" placeholder="密码" autocomplete="current-password" />
+      </div>
+      <div class="gate-err" id="glErr"></div>
+      <div class="gate-actions">
+        <button class="btn btn-primary btn-block" id="btnLogin" onclick="gateLogin()">登录</button>
+      </div>
+    </div>
+
+    <!-- 激活 -->
+    <div class="gate-step" id="gate-activation" style="display:none">
+      <h2>免费试用期已结束</h2>
+      <p class="gate-hint">请输入激活码以继续使用。机器识别码（发卡用）：</p>
+      <div class="gate-mid" id="gateMid">—</div>
+      <div class="gate-form">
+        <input id="gActCode" placeholder="激活码，如 XXXX-XXXX-XXXX-XXXX" />
+      </div>
+      <div class="gate-err" id="gActErr"></div>
+      <div class="gate-actions">
+        <button class="btn btn-primary btn-block" id="btnActivate" onclick="gateActivate()">激活</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
 <!-- ==================== 左侧导航栏（宫格化） ==================== -->
 <aside class="sidebar">
   <!-- 品牌区 -->
@@ -80,12 +141,23 @@
       <button class="topbar-btn" title="通知">🔔<span class="dot"></span></button>
       <button class="topbar-btn" id="themeToggle" title="切换明暗主题" onclick="toggleTheme()">🌙</button>
       <button class="topbar-btn" title="设置" onclick="openSettings()">⚙️</button>
-      <div class="user-dropdown">
-        <div class="user-avatar">谢</div>
-        <span>Emma ▾</span>
+      <div class="user-dropdown" id="userDropdown" onclick="toggleUserMenu(event)">
+        <div class="user-avatar" id="userAvatar">?</div>
+        <span id="userName">未登录</span>
+      </div>
+      <div class="user-menu" id="userMenu" style="display:none">
+        <div class="user-menu-info">
+          <div id="userMenuName">—</div>
+          <div class="user-menu-sub" id="userMenuSub"></div>
+        </div>
+        <div class="user-menu-row" id="userMenuStatus"></div>
+        <button class="user-menu-item" onclick="logout()">🚪 退出登录</button>
       </div>
     </div>
   </header>
+
+  <!-- 试用期提示条 -->
+  <div class="trial-banner" id="trialBanner" style="display:none"></div>
 
   <!-- 内容区 -->
   <main class="content">
@@ -593,6 +665,24 @@
           </div>
         </div>
         <button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="resetShortcuts()">↺ 恢复默认快捷键</button>
+      </div>
+
+      <div class="settings-section" style="margin-top:18px;">
+        <div class="settings-section-title">🔑 授权与激活</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>授权状态</label>
+            <div id="setLicenseStatus" class="license-status">—</div>
+          </div>
+          <div class="form-group">
+            <label>机器识别码（发卡用）</label>
+            <div class="machine-id-row">
+              <code id="setMachineId">—</code>
+              <button class="btn btn-outline btn-sm" type="button" onclick="copyMachineId()">复制</button>
+            </div>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" type="button" id="btnOpenActivate" onclick="openActivateFromSettings()">输入激活码激活</button>
       </div>
 
       <div style="margin-top:12px;font-size:12px;color:var(--text-muted);">

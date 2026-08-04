@@ -26,6 +26,24 @@ let APP_SETTINGS = {
   },
 };
 
+// ==================== 账号 / 授权上下文 ====================
+// 登录态在 localStorage 持久化：刷新页面不必重复登录
+let AUTH = {
+  token: localStorage.getItem('xy-token') || '',
+  empId: localStorage.getItem('xy-emp') || '',
+  name:  localStorage.getItem('xy-name') || '',
+};
+let LICENSE_STATUS = null;   // 最近一次授权状态聚合
+
+// 统一 API 封装：自动附加鉴权头（授权相关请求使用；业务请求沿用原 fetch 不受影响）
+async function apiFetch(url, opts = {}) {
+  opts.headers = Object.assign({}, opts.headers || {});
+  opts.headers['Content-Type'] = opts.headers['Content-Type'] || 'application/json';
+  if (AUTH.token)    opts.headers['Authorization'] = 'Bearer ' + AUTH.token;
+  if (AUTH.empId)    opts.headers['X-Emp-Id'] = AUTH.empId;
+  return fetch(url, opts);
+}
+
 // 严重度元数据：图标 + 文字（色盲可用）
 const SEV_META = {
   high:   { icon: '⛔', label: '严重', cls: 'danger' },
@@ -295,6 +313,7 @@ function openSettings() {
   document.getElementById('setScreenRefresh').checked = !!s.screen_refresh_on_ocr;
   document.getElementById('setAnonymize').checked     = !!s.anonymize;
   renderShortcuts();
+  populateLicenseSettings();   // 填授权状态 + 机器码
   document.getElementById('settingsModal').style.display = 'flex';
 }
 
@@ -1529,5 +1548,224 @@ function _renderShortcutRow(action) {
   if (cell) cell.textContent = fmtShortcut((APP_SETTINGS.shortcuts || {})[action]);
 }
 
+// ==================== 账号 / 授权（启动闸门） ====================
+function showGate(v) {
+  const g = document.getElementById('gate');
+  if (g) g.style.display = v ? 'flex' : 'none';
+}
+function gateShow(step) {
+  document.querySelectorAll('.gate-step').forEach(el => el.style.display = 'none');
+  const el = document.getElementById('gate-' + step);
+  if (el) el.style.display = 'block';
+}
+function setGateErr(id, msg) { const e = document.getElementById(id); if (e) e.textContent = msg || ''; }
+
+async function loadDisclaimer() {
+  try {
+    const r = await apiFetch('/api/v1/license/disclaimer');
+    const d = await r.json();
+    const t = document.getElementById('disclaimerText');
+    if (t && d.data) t.textContent = d.data.text || '';
+  } catch (e) {}
+}
+
+function fillMachineCode() {
+  apiFetch('/api/v1/license/machine-code').then(r => r.json()).then(d => {
+    const mid = d.data && d.data.machine_id;
+    const g = document.getElementById('gateMid'); if (g && mid) g.textContent = mid;
+    const s = document.getElementById('setMachineId'); if (s && mid) s.textContent = mid;
+  }).catch(() => {});
+}
+
+async function gateAccept() {
+  setGateErr('gaErr', '');
+  try {
+    await apiFetch('/api/v1/license/disclaimer', { method: 'POST' });
+    bootstrapGate();
+  } catch (e) { setGateErr('gaErr', '网络错误：' + e.message); }
+}
+function gateReject() {
+  const t = document.getElementById('disclaimerText');
+  if (t) t.innerHTML = '<p style="color:#c0392b">您未同意用户协议，无法使用本软件。请关闭窗口。</p>';
+  const b1 = document.getElementById('btnAccept'); if (b1) b1.style.display = 'none';
+  const b2 = document.getElementById('btnReject'); if (b2) { b2.textContent = '关闭'; b2.onclick = () => window.close(); }
+}
+
+async function gateCreate() {
+  setGateErr('gaErr', '');
+  const empId = document.getElementById('gaEmpId').value.trim();
+  const name  = document.getElementById('gaName').value.trim();
+  const pwd   = document.getElementById('gaPwd').value;
+  const pwd2  = document.getElementById('gaPwd2').value;
+  if (!empId) return setGateErr('gaErr', '请输入工号');
+  if (pwd.length < 6) return setGateErr('gaErr', '密码至少 6 位');
+  if (pwd !== pwd2) return setGateErr('gaErr', '两次密码不一致');
+  try {
+    const res = await apiFetch('/api/v1/accounts', {
+      method: 'POST', body: JSON.stringify({ emp_id: empId, name, password: pwd })
+    });
+    const d = await res.json();
+    if (!d.ok) throw new Error(d.message || '创建失败');
+    AUTH.token = d.data.token; AUTH.empId = d.data.emp_id; AUTH.name = d.data.name || '';
+    localStorage.setItem('xy-token', AUTH.token);
+    localStorage.setItem('xy-emp', AUTH.empId);
+    localStorage.setItem('xy-name', AUTH.name);
+    enterApp(LICENSE_STATUS);
+  } catch (e) { setGateErr('gaErr', e.message); }
+}
+
+async function gateLogin() {
+  setGateErr('glErr', '');
+  const empId = document.getElementById('glEmpId').value.trim();
+  const pwd   = document.getElementById('glPwd').value;
+  if (!empId || !pwd) return setGateErr('glErr', '请输入工号和密码');
+  try {
+    const res = await apiFetch('/api/v1/accounts/login', {
+      method: 'POST', body: JSON.stringify({ emp_id: empId, password: pwd })
+    });
+    const d = await res.json();
+    if (!d.ok) throw new Error(d.message || '登录失败');
+    AUTH.token = d.data.token; AUTH.empId = d.data.emp_id; AUTH.name = d.data.name || '';
+    localStorage.setItem('xy-token', AUTH.token);
+    localStorage.setItem('xy-emp', AUTH.empId);
+    localStorage.setItem('xy-name', AUTH.name);
+    enterApp(LICENSE_STATUS);
+  } catch (e) { setGateErr('glErr', e.message); }
+}
+
+async function gateActivate() {
+  setGateErr('gActErr', '');
+  const code = document.getElementById('gActCode').value.trim();
+  if (!code) return setGateErr('gActErr', '请输入激活码');
+  try {
+    const res = await apiFetch('/api/v1/license/activate', {
+      method: 'POST', body: JSON.stringify({ code })
+    });
+    const d = await res.json();
+    if (!d.ok) throw new Error(d.message || '激活失败');
+    LICENSE_STATUS = d.data;
+    enterApp(d.data);
+  } catch (e) { setGateErr('gActErr', e.message); }
+}
+
+function enterApp(status) {
+  showGate(false);
+  LICENSE_STATUS = status || LICENSE_STATUS;
+  loadSettings();
+  refreshUserUI();
+  updateTrialBanner(LICENSE_STATUS);
+}
+
+function updateTrialBanner(status) {
+  const b = document.getElementById('trialBanner');
+  if (!b) return;
+  if (!status || status.activated) { b.style.display = 'none'; return; }
+  if (status.trial_state === 'expired') {
+    b.className = 'trial-banner expired';
+    b.textContent = '⚠ 免费试用期已结束，请到「设置 → 授权与激活」输入激活码以继续使用。';
+    b.style.display = 'block';
+  } else if (status.trial_state === 'trial') {
+    b.className = 'trial-banner';
+    b.textContent = '🕒 免费试用期剩余 ' + status.trial_days_left + ' 天（共 ' + status.trial_days_total + ' 天）';
+    b.style.display = status.trial_days_left <= 14 ? 'block' : 'none';
+  } else {
+    b.style.display = 'none';
+  }
+}
+
+function refreshUserUI() {
+  const av = document.getElementById('userAvatar');
+  const nm = document.getElementById('userName');
+  const mi = document.getElementById('userMenuName');
+  const ms = document.getElementById('userMenuSub');
+  const mr = document.getElementById('userMenuStatus');
+  const label = AUTH.name || AUTH.empId || '未登录';
+  if (av) av.textContent = (label[0] || '?').toUpperCase();
+  if (nm) nm.textContent = AUTH.empId || '未登录';
+  if (mi) mi.textContent = label;
+  if (ms) ms.textContent = AUTH.empId ? '工号 ' + AUTH.empId : '';
+  if (mr) {
+    const st = LICENSE_STATUS;
+    if (!st) mr.textContent = '';
+    else if (st.activated) mr.textContent = '✅ 已激活';
+    else if (st.trial_state === 'trial') mr.textContent = '🕒 试用期 ' + st.trial_days_left + ' 天';
+    else mr.textContent = '⚠ 需激活';
+  }
+  if (AUTH.empId) {
+    const u = document.getElementById('mUser'); if (u) u.value = AUTH.empId;
+    if (APP_SETTINGS) APP_SETTINGS.emp_id = AUTH.empId;
+  }
+}
+
+function populateLicenseSettings() {
+  fillMachineCode();
+  apiFetch('/api/v1/license/status').then(r => r.json()).then(d => {
+    LICENSE_STATUS = d.data;
+    const st = d.data, el = document.getElementById('setLicenseStatus');
+    if (el && st) {
+      if (st.activated) el.textContent = '✅ 已激活（永久）';
+      else if (st.trial_state === 'trial') el.textContent = '🕒 试用期 · 剩余 ' + st.trial_days_left + ' 天';
+      else el.textContent = '⚠ 试用期已结束，需激活';
+    }
+    refreshUserUI();
+    updateTrialBanner(st);
+  }).catch(() => {});
+}
+
+async function bootstrapGate() {
+  loadSettings();   // 修复：进入前先加载设置（此前从未在启动期调用）
+  let status = null;
+  try {
+    const r = await apiFetch('/api/v1/license/status');
+    const d = await r.json();
+    status = d.data; LICENSE_STATUS = status;
+  } catch (e) {
+    // 后端不可达（开发态）：直接放行，避免锁死界面
+    showGate(false); refreshUserUI();
+    return;
+  }
+  // 已有登录态：跳过登录步骤直接进入
+  if (AUTH.token && status.account_count > 0) {
+    showGate(false); refreshUserUI(); updateTrialBanner(status);
+    return;
+  }
+  showGate(true);
+  if (!status.disclaimer_accepted) { gateShow('disclaimer'); loadDisclaimer(); return; }
+  if (status.trial_state === 'expired' && !status.activated) { gateShow('activation'); fillMachineCode(); return; }
+  gateShow(status.account_count === 0 ? 'account' : 'login');
+}
+
+function toggleUserMenu(e) {
+  e.stopPropagation();
+  const m = document.getElementById('userMenu');
+  if (m) m.style.display = m.style.display === 'block' ? 'none' : 'block';
+}
+document.addEventListener('click', () => {
+  const m = document.getElementById('userMenu');
+  if (m) m.style.display = 'none';
+});
+
+function logout() {
+  localStorage.removeItem('xy-token');
+  localStorage.removeItem('xy-emp');
+  localStorage.removeItem('xy-name');
+  AUTH.token = ''; AUTH.empId = ''; AUTH.name = '';
+  location.reload();
+}
+function openActivateFromSettings() {
+  closeSettings();
+  showGate(true); gateShow('activation'); fillMachineCode();
+}
+function copyMachineId() {
+  const el = document.getElementById('setMachineId');
+  const txt = el ? el.textContent : '';
+  if (navigator.clipboard && txt) {
+    navigator.clipboard.writeText(txt).then(
+      () => toast('机器码已复制', 'success'),
+      () => toast('复制失败，请手动复制', 'error'));
+  }
+}
+
 // ==================== 初始化 ====================
+bootstrapGate();
 console.log('星衍AI放射质控 · Web 版 v1.0 已加载');

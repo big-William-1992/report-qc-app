@@ -31,6 +31,11 @@ _SRC = str(Path(__file__).resolve().parent.parent / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+# 把 server 自身目录加入 path，便于 import license_web（授权模块）
+_SERVER = str(Path(__file__).resolve().parent)
+if _SERVER not in sys.path:
+    sys.path.insert(0, _SERVER)
+
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -40,6 +45,7 @@ import engine
 import ris
 import accounts
 import samplelib
+import license_web
 
 # ----------------------------- 鉴权（stdlib HMAC 签名 token） -----------------------------
 SECRET = os.environ.get("QC_API_SECRET", "change-me-in-prod")
@@ -383,14 +389,15 @@ def account_create(req: AccountCreate,
             raise HTTPException(401, "创建账号需登录：Authorization: Bearer <token> 或 X-Emp-Id 头")
     ok, msg = accounts.create_account(req.emp_id, req.password, req.name)
     if not ok:
-        raise HTTPException(400, msg)
-    return _envelope(True, "OK", {"emp_id": req.emp_id, "name": req.name}, msg)
+        return _envelope(False, "ERR", {}, msg)
+    token = make_token(req.emp_id)   # 首个账号创建即登录，免去二次登录
+    return _envelope(True, "OK", {"token": token, "emp_id": req.emp_id, "name": req.name}, msg)
 
 
 @app.post("/api/v1/accounts/login")
 def account_login(req: LoginReq):
     if not accounts.verify_account(req.emp_id, req.password):
-        raise HTTPException(401, "工号或密码错误")
+        return _envelope(False, "ERR", {}, "工号或密码错误")
     token = make_token(req.emp_id)
     return _envelope(True, "OK",
                       {"token": token, "emp_id": req.emp_id, "name": accounts.get_name(req.emp_id)})
@@ -399,6 +406,47 @@ def account_login(req: LoginReq):
 @app.get("/api/v1/accounts")
 def account_list(emp: str = Depends(require_emp_local)):
     return _envelope(True, "OK", [{"emp_id": e, "name": n} for e, n in accounts.list_accounts()])
+
+
+# ----------------------------- 授权（免责声明 / 试用期 / 激活码） -----------------------------
+# 以下端点均为公开（无需登录），因为登录/激活本身就是闸门流程的一部分。
+class ActivateReq(BaseModel):
+    code: str
+
+
+@app.get("/api/v1/license/status")
+def license_status_get():
+    """前端闸门用：免责/激活/试用剩余天数/机器码/账号数。"""
+    return _envelope(True, "OK",
+                      license_web.license_status(_appdata_dir(), accounts.count_accounts()))
+
+
+@app.get("/api/v1/license/disclaimer")
+def license_disclaimer_text():
+    return _envelope(True, "OK", {"text": license_web.disclaimer_text()})
+
+
+@app.post("/api/v1/license/disclaimer")
+def license_disclaimer_accept():
+    license_web.accept_disclaimer(_appdata_dir())
+    return _envelope(True, "OK", {"disclaimer_accepted": True})
+
+
+@app.get("/api/v1/license/machine-code")
+def license_machine_code():
+    return _envelope(True, "OK", {"machine_id": license_web.machine_id()})
+
+
+@app.post("/api/v1/license/activate")
+def license_activate(req: ActivateReq):
+    ok = license_web.activate(_appdata_dir(), req.code)
+    if not ok:
+        return _envelope(False, "ERR",
+                         license_web.license_status(_appdata_dir(), accounts.count_accounts()),
+                         "激活码无效，请检查后重试")
+    return _envelope(True, "OK",
+                      license_web.license_status(_appdata_dir(), accounts.count_accounts()),
+                      "激活成功")
 
 
 # ----------------------------- 样本库（持久化 + 统计） -----------------------------
