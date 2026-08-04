@@ -56,11 +56,11 @@ else:
 
 THEME = {
     # Be.Healthy 风格：暗色侧边栏 + 浅色内容区 + 白色卡片 + 蓝/绿/橙/红色板
-    "bg":         "#ECF0F6",   # 内容区背景（浅蓝灰，更深一档让白卡片浮起）
+    "bg":         "#EEF3FB",   # 内容区背景（浅蓝灰，更深一档让白卡片浮起）
     "panel":      "#FFFFFF",   # 卡片 / 面板（白）
-    "panel_alt":  "#EEF1F7",   # 次级面板 / 输入框底
-    "card_hover": "#EAF0FB",   # 发现卡悬停底色
-    "border":     "#DCE3EE",   # 边框（浅，略增可见度）
+    "panel_alt":  "#F7FAFF",   # 次级面板 / 输入框底
+    "card_hover": "#F2F6FD",   # 发现卡悬停底色
+    "border":     "#DCE7F7",   # 边框（浅，略增可见度）
 
     # 侧边栏（医用蓝）
     "sidebar_bg":     "#1B3F7A",   # 侧边栏底（医用深蓝）
@@ -74,17 +74,17 @@ THEME = {
     "primary_l": "#E7EFFD",
     "accent":    "#2D6CDF",
 
-    "text":      "#1F2533",
-    "text_dim":  "#6B7280",
+    "text":      "#12233F",
+    "text_dim":  "#5A6E8C",
     "header_bg": "#FFFFFF",   # 内容区顶部细标题栏（白）
-    "header_fg": "#1F2533",
+    "header_fg": "#12233F",
 
-    "ok":        "#1FA971",   # 正常/通过（医疗绿）
+    "ok":        "#12A594",   # 正常/通过（医疗青绿）
 
     # 严重度配色：红=严重(high) / 橙=警告(medium) / 蓝=提示(low)
     "sev_high":  "#E5484D",   # 严重错误——红
-    "sev_med":   "#E8941A",   # 警告——橙
-    "sev_low":   "#64748B",   # 提示——中性石板灰（避免与主色蓝撞色）
+    "sev_med":   "#F0A020",   # 警告——橙
+    "sev_low":   "#6E8BB5",   # 提示——蓝（与红/橙区分，且不与主色蓝撞色）
     "sev_high_bg": "#FDE8E8", # 严重行/块背景（清晰红染）
     "sev_med_bg":  "#FEF3DD", # 警告行/块背景（清晰橙染）
     "sev_low_bg":  "#EDF1F6", # 提示行/块背景（中性浅染）
@@ -92,7 +92,7 @@ THEME = {
     "hl_med":    "#FCE8BE",   # 内文高亮背景——橙
     "hl_low":    "#DDE6F1",   # 内文高亮背景——中性
     # 图表调色（协调、低饱和医疗感）
-    "chart": ["#2D6CDF", "#1FA971", "#E8941A", "#7C6CF0", "#0E9F8E", "#E5484D"],
+    "chart": ["#2D6CDF", "#12A594", "#F0A020", "#7C6CF0", "#0E9F8E", "#E5484D"],
 }
 
 SEV_COLOR = {"high": THEME["sev_high"], "medium": THEME["sev_med"], "low": THEME["sev_low"]}
@@ -502,58 +502,121 @@ class ReportQcApp(tk.Tk):
                                      command=self._toggle_theme)
         self._theme_btn.pack(side="right", padx=4, anchor="center")
 
-    # -------------------- 左侧暗色侧边栏导航 --------------------
+    # -------------------- 左侧暗色侧边栏导航（宫格化） --------------------
     def _build_sidebar(self):
         s = THEME
-        bar = tk.Frame(self, bg=s["sidebar_bg"], width=224)
+        bar = tk.Frame(self, bg=s["sidebar_bg"], width=180)
         bar.pack(side="left", fill="y")
         bar.pack_propagate(False)
 
         # 品牌区
         brand = tk.Frame(bar, bg=s["sidebar_bg"])
-        brand.pack(fill="x", pady=(20, 8))
+        brand.pack(fill="x", pady=(20, 10))
         tk.Label(brand, text="✚ 星衍", bg=s["sidebar_bg"], fg="#FFFFFF",
-                 font=F(FAMILY, 20, "bold"), padx=20).pack(anchor="w")
+                 font=F(FAMILY, 20, "bold"), padx=16).pack(anchor="w")
         tk.Label(brand, text="放射质控系统", bg=s["sidebar_bg"], fg="#A9C2EA",
-                 font=F(FAMILY, 11), padx=20).pack(anchor="w")
+                 font=F(FAMILY, 11), padx=16).pack(anchor="w")
 
-        # 导航（分组）：工作 / 数据 / 管理
+        # 导航（宫格）：图标 + 文字，两列排布
         self._nav_buttons = []
-        self._nav_group(bar, "工作")
-        self._nav_item(bar, "📋  质控工作区", 0)
-        self._nav_item(bar, "📊  质控驾驶舱", 1)
-        self._nav_item(bar, "📥  待质控队列", "queue")
-        self._nav_group(bar, "数据")
-        self._nav_item(bar, "🗄  样本库", "samples")
-        self._nav_item(bar, "🔗  RIS 直连", 2)
-        self._nav_group(bar, "管理")
-        self._nav_item(bar, "⚙  规则管理", "rules")
+        body = tk.Frame(bar, bg=s["sidebar_bg"])
+        body.pack(fill="both", expand=True, padx=12, pady=(6, 10))
+        body.grid_columnconfigure(0, weight=1, uniform="nav")
+        body.grid_columnconfigure(1, weight=1, uniform="nav")
+        items = [
+            ("📋", "质控工作区", 0),
+            ("📊", "质控驾驶舱", 1),
+            ("📥", "待质控队列", "queue"),
+            ("🗄", "样本库", "samples"),
+            ("🔗", "RIS 直连", 2),
+            ("⚙", "规则管理", "rules"),
+        ]
+        r = c = 0
+        for icon, label, target in items:
+            cell = self._nav_cell(body, icon, label, target)
+            cell.grid(row=r, column=c, padx=4, pady=4, sticky="nsew")
+            body.grid_rowconfigure(r, weight=1)
+            c += 1
+            if c > 1:
+                c = 0
+                r += 1
+        # 最后一行若只有一格，让其占满整行宽度更协调
+        if c == 1:
+            body.grid_columnconfigure(0, weight=1, uniform="nav")
 
-        # 底部版本信息
-        foot = tk.Label(bar, text=f"v{version.APP_VERSION}  ·  桌面客户端",
-                        bg=s["sidebar_bg"], fg="#7FA1D4", font=F(FAMILY, 10),
-                        padx=22, pady=16)
-        foot.pack(side="bottom", anchor="w", fill="x")
+        # 底部：版本信息 + 快捷键速查
+        self._build_sidebar_foot(bar)
 
-    def _nav_group(self, parent, title):
-        tk.Label(parent, text=title, bg=THEME["sidebar_bg"], fg="#A9C2EA",
-                 font=F(FAMILY, 10, "bold"), padx=22).pack(anchor="w", fill="x", pady=(16, 6))
-
-    def _nav_item(self, parent, label, target):
+    def _nav_cell(self, parent, icon, label, target):
+        """宫格导航单元：Frame 容器包裹图标与文字，整体可点、整体着色。"""
         s = THEME
-        btn = tk.Button(parent, text=label, bg=s["sidebar_bg"], fg=s["sidebar_fg"],
-                        font=F(FAMILY, 12), relief="flat", borderwidth=0,
-                        anchor="w", padx=22, pady=11,
-                        command=lambda t=target: self._nav_to(t))
-        btn.pack(fill="x", padx=10, pady=2)
-        btn._nav_target = target
+        cell = tk.Frame(parent, bg=s["sidebar_bg"], relief="flat", bd=0,
+                        cursor="hand2")
+        cell._nav_target = target
+        cell._nav_on = False
+        ico = tk.Label(cell, text=icon, bg=s["sidebar_bg"], fg=s["sidebar_fg"],
+                       font=F(FAMILY, 22))
+        ico.place(relx=0.5, rely=0.40, anchor="center")
+        txt = tk.Label(cell, text=label, bg=s["sidebar_bg"], fg=s["sidebar_fg"],
+                       font=F(FAMILY, 10))
+        txt.place(relx=0.5, rely=0.82, anchor="center")
+        cell._ico = ico
+        cell._txt = txt
+
+        def _enter(e=None):
+            if not cell._nav_on:
+                self._nav_paint(cell, s["sidebar_hover"], s["sidebar_fg"])
+
+        def _leave(e=None):
+            if not cell._nav_on:
+                self._nav_paint(cell, s["sidebar_bg"], s["sidebar_fg"])
+
+        def _click(e=None):
+            self._nav_to(target)
+
+        for w in (cell, ico, txt):
+            w.bind("<Enter>", _enter)
+            w.bind("<Leave>", _leave)
+            w.bind("<Button-1>", _click)
         if target == "queue":
-            self._queue_nav_btn = btn
-        btn.bind("<Enter>", lambda e, b=btn, a=s["sidebar_active"]:
-                 b.configure(bg=s["sidebar_hover"]) if b.cget("bg") != a else None)
-        btn.bind("<Leave>", lambda e, b=btn, a=s["sidebar_active"]:
-                 b.configure(bg=s["sidebar_bg"]) if b.cget("bg") != a else None)
-        self._nav_buttons.append(btn)
+            self._queue_nav_btn = txt
+        self._nav_buttons.append(cell)
+        return cell
+
+    @staticmethod
+    def _nav_paint(cell, bg, fg):
+        """整体着色宫格单元（容器 + 子控件）。"""
+        try:
+            cell.configure(bg=bg)
+        except Exception:
+            pass
+        if getattr(cell, "_ico", None):
+            try:
+                cell._ico.configure(bg=bg, fg=fg)
+            except Exception:
+                pass
+        if getattr(cell, "_txt", None):
+            try:
+                cell._txt.configure(bg=bg, fg=fg)
+            except Exception:
+                pass
+
+    def _build_sidebar_foot(self, bar):
+        s = THEME
+        foot = tk.Frame(bar, bg="#16356A")
+        foot.pack(side="bottom", fill="x", padx=10, pady=10)
+        tk.Label(foot, text=f"v{version.APP_VERSION}  ·  桌面客户端",
+                 bg="#16356A", fg="#7FA1D4", font=F(FAMILY, 10)).pack(
+            anchor="w", padx=12, pady=(10, 6))
+        mod = "⌘" if platform.system() == "Darwin" else "Ctrl+"
+        rows = (("报告质控", f"{mod}R"), ("明暗切换", f"{mod}T"), ("存样本", f"{mod}S"))
+        for k, v in rows:
+            rf = tk.Frame(foot, bg="#16356A")
+            rf.pack(fill="x", padx=12, pady=2)
+            tk.Label(rf, text=k, bg="#16356A", fg="#A9C2EA",
+                     font=F(FAMILY, 10)).pack(side="left")
+            tk.Label(rf, text=v, bg="#16356A", fg="#DDE7F6",
+                     font=F(FAMILY, 10, "bold")).pack(side="right")
 
     def _nav_to(self, target):
         """导航分发：整数→切到对应页签；samples/rules/queue→打开对应窗口。"""
@@ -585,11 +648,11 @@ class ReportQcApp(tk.Tk):
                 rp.pack(side="right", fill="y", padx=(0, 16), pady=(0, 20))
             elif cur != 0 and rp.winfo_ismapped():
                 rp.pack_forget()
-        for btn in getattr(self, "_nav_buttons", []):
-            if getattr(btn, "_nav_target", None) == cur:
-                btn.configure(bg=s["sidebar_active"], fg="#FFFFFF")
-            else:
-                btn.configure(bg=s["sidebar_bg"], fg=s["sidebar_fg"])
+        for cell in getattr(self, "_nav_buttons", []):
+            on = getattr(cell, "_nav_target", None) == cur
+            cell._nav_on = on
+            self._nav_paint(cell, s["sidebar_active"] if on else s["sidebar_bg"],
+                           "#FFFFFF" if on else s["sidebar_fg"])
 
     # -------------------- 全局快捷键 --------------------
     def _has_dialog(self):
@@ -648,6 +711,8 @@ class ReportQcApp(tk.Tk):
                     w.tag_configure("hl_low", background=THEME["hl_low"], foreground="#0B5394")
                 except Exception:
                     pass
+        if hasattr(self, "_nav_buttons"):
+            self._on_tab_changed()  # 主题切换后重绘宫格导航选中态
         if hasattr(self, "_update_status_bar"):
             self._update_status_bar()
 
@@ -1682,11 +1747,11 @@ class ReportQcApp(tk.Tk):
             pass
 
     def _refresh_queue_badge(self):
-        """左栏『待质控队列』徽标显示真实数量。"""
+        """左栏『待质控队列』宫格徽标显示真实数量。"""
         btn = getattr(self, "_queue_nav_btn", None)
         if btn is not None and btn.winfo_exists():
             n = len(self.qc_queue)
-            btn.configure(text=f"📥  待质控队列  {n}" if n else "📥  待质控队列")
+            btn.configure(text=f"待质控队列 · {n}" if n else "待质控队列")
 
     def _enqueue_current(self, source="手动"):
         """把当前工作区报告加入待质控队列（按文本哈希去重）；RIS直连/采集入口调用。"""
@@ -3345,15 +3410,15 @@ class ReportQcApp(tk.Tk):
   .sub {{ color:#666; font-size:13px; margin:4px 0 20px; }}
   h2 {{ color:#1B3F7A; margin-top:28px; font-size:17px; }}
   table {{ border-collapse:collapse; width:100%; margin:8px 0; }}
-  th,td {{ border:1px solid #DCE3EE; padding:8px 10px; text-align:left; font-size:14px; }}
+  th,td {{ border:1px solid #DCE7F7; padding:8px 10px; text-align:left; font-size:14px; }}
   th {{ background:#EEF3FB; width:120px; color:#1B3F7A; }}
   .num {{ text-align:center; font-weight:700; }}
   .score-box {{ display:flex; align-items:center; gap:20px; background:#F5F8FD;
-                border:1px solid #DCE3EE; border-radius:10px; padding:16px 20px; margin:10px 0; }}
+                border:1px solid #DCE7F7; border-radius:10px; padding:16px 20px; margin:10px 0; }}
   .score-big {{ font-size:46px; font-weight:800; color:{level_color}; }}
   .score-lv {{ font-size:18px; font-weight:700; color:{level_color}; }}
   .score-hint {{ color:#666; font-size:13px; }}
-  .card {{ border:1px solid #DCE3EE; border-left:4px solid #3E82F0; border-radius:6px;
+  .card {{ border:1px solid #DCE7F7; border-left:4px solid #3E82F0; border-radius:6px;
            padding:10px 14px; margin:10px 0; background:#fff; }}
   .card-h {{ font-weight:700; font-size:14px; }}
   .tag {{ color:#fff; font-size:12px; padding:1px 8px; border-radius:10px; margin-left:6px; }}
@@ -3361,7 +3426,7 @@ class ReportQcApp(tk.Tk):
   .sug {{ color:#1B3F7A; font-size:13px; background:#EEF3FB; padding:6px 10px;
           border-radius:4px; margin-top:4px; }}
   .ok {{ color:#1B9E5A; font-weight:700; }}
-  .foot {{ margin-top:30px; padding-top:12px; border-top:1px solid #DCE3EE;
+  .foot {{ margin-top:30px; padding-top:12px; border-top:1px solid #DCE7F7;
            color:#888; font-size:12px; }}
 </style></head><body>
   <h1>放射报告质控留档</h1>
