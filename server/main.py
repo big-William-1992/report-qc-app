@@ -203,6 +203,21 @@ def _eng_scores(cn: dict) -> dict:
     return out
 
 
+# 引擎 Finding.severity 用 high/medium/low；看板 by_severity 用 critical/warning/info。
+_SEV_MAP = {"high": "critical", "medium": "warning", "low": "info"}
+_SEV_RANK = {"high": 3, "medium": 2, "low": 1}
+
+
+def _worst_sev(findings: list) -> str:
+    """从 findings 推导最严重级别（high>medium>low）；无 findings 视为 low→info。"""
+    worst = "low"
+    for f in (findings or []):
+        sv = f.get("severity", "low") if isinstance(f, dict) else getattr(f, "severity", "low")
+        if _SEV_RANK.get(sv, 0) > _SEV_RANK.get(worst, 0):
+            worst = sv
+    return _SEV_MAP.get(worst, "info")
+
+
 def _run_qc(report: str, meta: dict, auto_fix: bool) -> dict:
     eng = engine.RuleEngine()
     findings = eng.run(report, meta)
@@ -530,11 +545,8 @@ def sample_dashboard(emp: str = Depends(require_emp_local)):
     for row in rows:
         mod = row.get("modality", "未知")
         by_modality[mod] = by_modality.get(mod, 0) + 1
-        scores = json.loads(row.get("scores_json") or "{}")
-        worst = scores.get("worst_severity", "info")
-        if worst not in by_severity:
-            worst = "info"
-        by_severity[worst] = by_severity.get(worst, 0) + 1
+        findings = json.loads(row.get("findings_json") or "[]")
+        by_severity[_worst_sev(findings)] = by_severity.get(_worst_sev(findings), 0) + 1
         ts = row.get("ts", "")
         if ts and ts.startswith(today_str):
             today += 1
