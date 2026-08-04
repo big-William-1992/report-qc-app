@@ -519,13 +519,225 @@ function toggleTheme() {
 })();
 
 // ==================== 全局快捷键 ====================
+// ==================== 框选 OCR（三段识别） ====================
+const OCR_MODAL = 'ocrModal';
+const ocrState = {
+  img: null, naturalW: 0, naturalH: 0,
+  // 框以图片自然尺寸的比例表示 (0~1)
+  boxes: [
+    { key: 'patient',  name: '病人基础信息', color: '#3b82f6', x: 0.03, y: 0.02, w: 0.94, h: 0.26 },
+    { key: 'findings', name: '影像描述',   color: '#22c55e', x: 0.03, y: 0.30, w: 0.94, h: 0.32 },
+    { key: 'report',   name: '影像报告',   color: '#f59e0b', x: 0.03, y: 0.64, w: 0.94, h: 0.33 },
+  ],
+  drag: null,
+};
+
+function openOcrModal() {
+  if (!document.getElementById('page-qc').classList.contains('active')) switchPage('qc', document.querySelector('.nav-cell[data-page="qc"]'));
+  document.getElementById(OCR_MODAL).style.display = 'flex';
+}
+function closeOcrModal() { document.getElementById(OCR_MODAL).style.display = 'none'; }
+
+function ocrResetBoxes() {
+  ocrState.boxes = [
+    { key: 'patient',  name: '病人基础信息', color: '#3b82f6', x: 0.03, y: 0.02, w: 0.94, h: 0.26 },
+    { key: 'findings', name: '影像描述',   color: '#22c55e', x: 0.03, y: 0.30, w: 0.94, h: 0.32 },
+    { key: 'report',   name: '影像报告',   color: '#f59e0b', x: 0.03, y: 0.64, w: 0.94, h: 0.33 },
+  ];
+  ocrRender();
+}
+
+function ocrLoadFile(e) {
+  const f = e.target.files && e.target.files[0];
+  if (f) ocrSetImageFromUrl(URL.createObjectURL(f));
+}
+function ocrSetImageFromUrl(url) {
+  const img = new Image();
+  img.onload = () => {
+    ocrState.img = img;
+    ocrState.naturalW = img.naturalWidth;
+    ocrState.naturalH = img.naturalHeight;
+    document.getElementById('ocrPlaceholder').style.display = 'none';
+    document.getElementById('ocrCanvas').style.display = 'block';
+    ocrRender();
+  };
+  img.onerror = () => toast('图片加载失败', 'error');
+  img.src = url;
+}
+
+// 粘贴截图（仅在模态打开时处理）
+document.getElementById('ocrCanvasWrap').addEventListener('paste', (e) => {
+  if (document.getElementById(OCR_MODAL).style.display !== 'flex') return;
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  for (const it of items) {
+    if (it.type.startsWith('image/')) {
+      ocrSetImageFromUrl(URL.createObjectURL(it.getAsFile()));
+      e.preventDefault();
+      break;
+    }
+  }
+});
+
+function ocrScale() {
+  const cv = document.getElementById('ocrCanvas');
+  const wrap = document.getElementById('ocrCanvasWrap');
+  const maxW = wrap.clientWidth - 12;
+  const maxH = 460;
+  let w = ocrState.naturalW, h = ocrState.naturalH;
+  const r = Math.min(maxW / w, maxH / h, 1);
+  w = Math.round(w * r); h = Math.round(h * r);
+  if (cv.width !== w) cv.width = w;
+  if (cv.height !== h) cv.height = h;
+  return { w, h };
+}
+
+function ocrRender() {
+  const cv = document.getElementById('ocrCanvas');
+  const ctx = cv.getContext('2d');
+  if (!ocrState.img) return;
+  const { w, h } = ocrScale();
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(ocrState.img, 0, 0, w, h);
+  ocrState.boxes.forEach((b, idx) => {
+    const x = b.x * w, y = b.y * h, bw = b.w * w, bh = b.h * h;
+    ctx.strokeStyle = b.color; ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, bw, bh);
+    ctx.fillStyle = b.color; ctx.font = '12px sans-serif';
+    const tw = ctx.measureText(b.name).width + 10;
+    ctx.fillRect(x, y - 18, tw, 18);
+    ctx.fillStyle = '#fff'; ctx.fillText(b.name, x + 5, y - 5);
+    ctx.fillStyle = b.color;
+    ctx.fillRect(x + bw - 10, y + bh - 10, 10, 10);
+    ctx.beginPath(); ctx.arc(x + 12, y + 12, 9, 0, 7); ctx.fill();
+    ctx.fillStyle = b.color; ctx.font = 'bold 11px sans-serif';
+    ctx.fillText(String(idx + 1), x + 8, y + 16);
+  });
+}
+
+// 鼠标交互：移动 / 缩放
+(function bindOcrCanvas() {
+  const cv = document.getElementById('ocrCanvas');
+  function pos(e) {
+    const rect = cv.getBoundingClientRect();
+    return { px: e.clientX - rect.left, py: e.clientY - rect.top };
+  }
+  cv.addEventListener('mousedown', (e) => {
+    const p = pos(e);
+    const { w, h } = ocrScale();
+    for (let i = ocrState.boxes.length - 1; i >= 0; i--) {
+      const b = ocrState.boxes[i];
+      const bx = b.x * w, by = b.y * h, bw = b.w * w, bh = b.h * h;
+      if (p.px >= bx + bw - 12 && p.px <= bx + bw + 2 && p.py >= by + bh - 12 && p.py <= by + bh + 2) {
+        ocrState.drag = { idx: i, mode: 'resize' }; return;
+      }
+      if (p.px >= bx && p.px <= bx + bw && p.py >= by && p.py <= by + bh) {
+        ocrState.drag = { idx: i, mode: 'move', ox: p.px - bx, oy: p.py - by }; return;
+      }
+    }
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!ocrState.drag) return;
+    const p = pos(e);
+    const { w, h } = ocrScale();
+    const b = ocrState.boxes[ocrState.drag.idx];
+    if (ocrState.drag.mode === 'move') {
+      b.x = Math.max(0, Math.min(1 - b.w, (p.px - ocrState.drag.ox) / w));
+      b.y = Math.max(0, Math.min(1 - b.h, (p.py - ocrState.drag.oy) / h));
+    } else {
+      b.w = Math.max(0.05, Math.min(1 - b.x, (p.px - b.x * w) / w));
+      b.h = Math.max(0.05, Math.min(1 - b.y, (p.py - b.y * h) / h));
+    }
+    ocrRender();
+  });
+  window.addEventListener('mouseup', () => { ocrState.drag = null; });
+})();
+
+async function ocrCropAndRecognize(box) {
+  const off = document.createElement('canvas');
+  off.width = Math.max(1, Math.round(box.w * ocrState.naturalW));
+  off.height = Math.max(1, Math.round(box.h * ocrState.naturalH));
+  const octx = off.getContext('2d');
+  octx.drawImage(ocrState.img, box.x * ocrState.naturalW, box.y * ocrState.naturalH, off.width, off.height, 0, 0, off.width, off.height);
+  const b64 = off.toDataURL('image/png').split(',')[1];
+  const res = await fetch('/api/v1/ocr/base64', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image_base64: b64 })
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.message || 'OCR 失败');
+  return (data.data && data.data.text) || '';
+}
+
+async function ocrRecognize() {
+  if (!ocrState.img) { toast('请先粘贴或选择报告截图', 'error'); return; }
+  try {
+    const results = await Promise.all(ocrState.boxes.map(async (b) => ({ key: b.key, text: await ocrCropAndRecognize(b) })));
+    const map = {}; results.forEach(r => map[r.key] = r.text);
+    ocrFill(map);
+    toast('三段识别完成，已填充到对应区域', 'success');
+  } catch (e) { toast('OCR 出错: ' + e.message, 'error'); }
+}
+
+function parsePatientInfo(text) {
+  const out = {}; let m;
+  if ((m = text.match(/(?:姓名|name)[:：]?\s*([\u4e00-\u9fa5A-Za-z]{1,20})/i))) out.patient = m[1].trim();
+  if ((m = text.match(/(?:性别|gender)[:：]?\s*(男|女|M|F)/i))) out.gender = (/m/i.test(m[1]) ? '男' : '女');
+  if ((m = text.match(/(?:年龄|age)[:：]?\s*(\d{1,3})/i))) out.age = m[1];
+  const mod = text.match(/(CT|MRI|MR|DR|CR|DSA|XA|US|超声|核磁共振|计算机断层)/i);
+  if (mod) {
+    const v = mod[1].toUpperCase();
+    const map = { CT:'CT', MRI:'MR', MR:'MR', DR:'DR', CR:'DR', DSA:'XA', XA:'XA', US:'US', '超声':'US', '核磁共振':'MR', '计算机断层':'CT' };
+    out.modality = map[v] || v;
+  }
+  return out;
+}
+
+function setVal(id, v) {
+  const el = document.getElementById(id);
+  if (!el || !v) return;
+  el.value = v;
+  el.dispatchEvent(new Event('input'));
+}
+
+function ocrFill(map) {
+  if (map.patient) {
+    const p = parsePatientInfo(map.patient);
+    setVal('mPatient', p.patient);
+    setVal('mGender', p.gender);
+    setVal('mAge', p.age);
+    setVal('mModality', p.modality);
+  }
+  if (map.findings) setVal('findingsText', map.findings.trim());
+  if (map.report) setVal('impressionText', map.report.trim());
+}
+
+async function ocrPipeline() {
+  if (!ocrState.img) { toast('请先粘贴或选择报告截图', 'error'); return; }
+  try {
+    const results = await Promise.all(ocrState.boxes.map(async (b) => ({ key: b.key, text: await ocrCropAndRecognize(b) })));
+    const map = {}; results.forEach(r => map[r.key] = r.text);
+    ocrFill(map);
+    toast('已识别并填充，正在导入并质控...', 'info');
+    closeOcrModal();
+    await saveToLibrary(); // 导入（其内部会先运行质控）
+    toast('识别 → 导入 → 质控 完成', 'success');
+  } catch (e) { toast('流程出错: ' + e.message, 'error'); }
+}
+
 document.addEventListener('keydown', function(e) {
   const meta = e.metaKey || e.ctrlKey;
   if (meta && e.key === 'Enter')        { e.preventDefault(); runQC(); }
   else if (meta && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveToLibrary(); }
   else if (e.key === 'Escape') {
-    const qcActive = document.getElementById('page-qc').classList.contains('active');
-    if (qcActive) clearInput();
+    const modalOpen = document.getElementById('ocrModal').style.display === 'flex';
+    if (modalOpen) { closeOcrModal(); }
+    else if (document.getElementById('page-qc').classList.contains('active')) { clearInput(); }
+  }
+  else if (meta && e.shiftKey && (e.key === 'O' || e.key === 'o')) {
+    e.preventDefault();
+    if (document.getElementById('ocrModal').style.display === 'flex') ocrPipeline();
+    else openOcrModal();
   }
 });
 

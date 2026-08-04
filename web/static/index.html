@@ -50,6 +50,7 @@
       <div class="tips-row"><span>运行质控</span><span class="tips-key">⌘↵</span></div>
       <div class="tips-row"><span>存入样本库</span><span class="tips-key">⌘S</span></div>
       <div class="tips-row"><span>清空录入</span><span class="tips-key">Esc</span></div>
+      <div class="tips-row"><span>框选OCR·一键</span><span class="tips-key">⌘⇧O</span></div>
     </div>
     <div class="sidebar-version">v1.0 · 桌面客户端</div>
   </div>
@@ -135,6 +136,7 @@
             </button>
             <button class="btn btn-outline" onclick="clearInput()">🗑 清空</button>
             <button class="btn btn-outline" onclick="saveToLibrary()">💾 入库</button>
+            <button class="btn btn-outline" onclick="openOcrModal()">📷 框选OCR</button>
             <div style="flex:1"></div>
             <button class="btn btn-outline btn-sm" onclick="toggleSettings()">⚙ 高级设置</button>
           </div>
@@ -397,6 +399,42 @@
 
   </main><!-- /content -->
 </div><!-- /main-area -->
+
+<!-- ========== 框选 OCR 模态（三段识别） ========== -->
+<div class="modal-overlay" id="ocrModal" style="display:none">
+  <div class="modal ocr-modal">
+    <div class="modal-header">
+      <h3>📷 框选 OCR · 三段识别</h3>
+      <button class="modal-close" onclick="closeOcrModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="ocr-toolbar">
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('ocrFile').click()">📁 选择报告图</button>
+        <input type="file" id="ocrFile" accept="image/*" style="display:none" onchange="ocrLoadFile(event)" />
+        <span class="ocr-hint">支持粘贴截图（⌘/Ctrl+V）到下方区域</span>
+        <div style="flex:1"></div>
+        <button class="btn btn-primary btn-sm" onclick="ocrRecognize()">🔍 识别填充</button>
+        <button class="btn btn-success btn-sm" onclick="ocrPipeline()">⚡ 识别·导入·质控</button>
+      </div>
+
+      <div class="ocr-canvas-wrap" id="ocrCanvasWrap">
+        <div class="ocr-placeholder" id="ocrPlaceholder">
+          在此粘贴或选择一张放射报告截图<br/>
+          然后用三个彩色框分别框选：<b>病人基础信息 / 影像描述 / 影像报告</b><br/>
+          <span style="font-size:12px;color:var(--text-muted)">拖拽框体移动，拖右下角缩放</span>
+        </div>
+        <canvas id="ocrCanvas" style="display:none"></canvas>
+      </div>
+
+      <div class="ocr-boxes-legend">
+        <span class="ocr-legend"><i style="background:#3b82f6"></i>病人基础信息</span>
+        <span class="ocr-legend"><i style="background:#22c55e"></i>影像描述</span>
+        <span class="ocr-legend"><i style="background:#f59e0b"></i>影像报告</span>
+        <span class="ocr-reset" onclick="ocrResetBoxes()">↺ 重置框位置</span>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- Toast 容器 -->
 <div class="toast-container" id="toastContainer"></div>
