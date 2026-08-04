@@ -26,6 +26,12 @@
     python3 tools/ocr_bench.py --degrade
     python3 tools/ocr_bench.py --image /tmp/pacs.png --gt /tmp/pacs.txt
     python3 tools/ocr_bench.py --image /tmp/pacs.png --dump
+
+    # A/B 对比换模型是否划算（如评估 PP-OCRv5 相比内置 PP-OCRv3 的增益）
+    python3 tools/ocr_bench.py --degrade                       # 基线（内置 v3）
+    python3 tools/ocr_bench.py --degrade \
+        --det ~/ocrv5/det.onnx --rec ~/ocrv5/rec.onnx          # 候选（v5）
+    # 注意：det 与 rec 必须同代，v5 det 不能配 v3 rec。
 """
 from __future__ import annotations
 
@@ -148,10 +154,55 @@ def show_diff(gt_text: str, rec_text: str, limit: int = 10):
         print(f"    …（另有 {len(ops) - limit} 处差异省略）")
 
 
-def run_image(ocr_provider, img, label: str, gt_text: str | None):
+class AltEngine:
+    """
+    用指定的一组 .onnx 模型构造独立引擎，用于 A/B 对比（如 PP-OCRv3 vs PP-OCRv5）。
+
+    复用 ocr_provider 的预处理（灰度+CLAHE+小区域放大）与置信度过滤，
+    只替换底层模型，确保对比只有「模型」这一个变量。
+    """
+
+    def __init__(self, ocr_provider, det: str, rec: str, cls: str | None = None):
+        from rapidocr_onnxruntime import RapidOCR
+        # 换模型前先校验字典（未内嵌字典的 rec 会在解码时崩，提前给可读提示）
+        ocr_provider._check_rec_dict(rec, str(Path(rec).parent))
+        kw = {"det_model_path": det, "rec_model_path": rec}
+        if cls:
+            kw["cls_model_path"] = cls
+        self._eng = RapidOCR(**kw)
+        self._op = ocr_provider
+
+    def ocr_image(self, img, min_score: float | None = None):
+        arr = self._op.preprocess_for_ocr(img)
+        result, _ = self._eng(arr)
+        if not result:
+            return ""
+        thr = self._op.MIN_SCORE if min_score is None else min_score
+        lines = []
+        for item in result:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            payload = item[1]
+            if isinstance(payload, (list, tuple)):
+                txt = payload[0] if payload else ""
+                sc = payload[1] if len(payload) > 1 else None
+            else:
+                txt, sc = payload, (item[2] if len(item) > 2 else None)
+            try:
+                sc = float(sc) if sc is not None else None
+            except (TypeError, ValueError):
+                sc = None
+            if sc is not None and sc < thr:
+                continue
+            if txt:
+                lines.append(txt)
+        return "\n".join(lines).strip()
+
+
+def run_image(engine, img, label: str, gt_text: str | None):
     t0 = time.time()
     try:
-        text = ocr_provider.ocr_image(img)
+        text = engine.ocr_image(img)
     except Exception as exc:  # noqa: BLE001
         print(f"  [{label}] ❌ 识别异常：{exc!r}")
         return None
@@ -174,6 +225,9 @@ def main():
     ap.add_argument("--dump", action="store_true", help="只打印识别结果，不算分")
     ap.add_argument("--sizes", default="16,20,24", help="合成基准字号，逗号分隔")
     ap.add_argument("--degrade", action="store_true", help="额外跑一组降质样本（更接近真实截图）")
+    ap.add_argument("--det", help="A/B 对比：指定检测模型 .onnx（如 PP-OCRv5 det）")
+    ap.add_argument("--rec", help="A/B 对比：指定识别模型 .onnx（需与 det 同代）")
+    ap.add_argument("--cls", help="A/B 对比：指定方向分类模型 .onnx（可选）")
     args = ap.parse_args()
 
     import ocr_provider
@@ -183,24 +237,37 @@ def main():
         print("→ 请先安装依赖：pip install -r requirements.txt")
         sys.exit(1)
 
+    # 默认用项目内置引擎；给了 --det/--rec 则换成待评测的候选模型
+    engine = ocr_provider
+    if args.det or args.rec:
+        if not (args.det and args.rec):
+            print("❌ --det 与 --rec 必须成对给出（检测与识别模型需同代，v5 det 不能配 v3 rec）")
+            sys.exit(2)
+        try:
+            engine = AltEngine(ocr_provider, args.det, args.rec, args.cls)
+            print(f"A/B 模式：det={Path(args.det).name} rec={Path(args.rec).name}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"❌ 候选模型加载失败：{exc}")
+            sys.exit(3)
+
     if args.image:
         from PIL import Image
         img = Image.open(args.image).convert("RGB")
         gt_text = None
         if args.gt and not args.dump:
             gt_text = Path(args.gt).read_text(encoding="utf-8")
-        run_image(ocr_provider, img, Path(args.image).name, gt_text)
+        run_image(engine, img, Path(args.image).name, gt_text)
         return
 
     gt_text = "\n".join(GT_LINES)
     summary = []
     for size in [int(s) for s in args.sizes.split(",") if s.strip()]:
         img = render(GT_LINES, size)
-        r = run_image(ocr_provider, img, f"合成 {size}px 清晰印刷体", gt_text)
+        r = run_image(engine, img, f"合成 {size}px 清晰印刷体", gt_text)
         if r is not None:
             summary.append((f"{size}px 清晰", r))
         if args.degrade:
-            r2 = run_image(ocr_provider, degrade(img), f"合成 {size}px 降质(0.75x+噪声+JPEG60)",
+            r2 = run_image(engine, degrade(img), f"合成 {size}px 降质(0.75x+噪声+JPEG60)",
                            gt_text)
             if r2 is not None:
                 summary.append((f"{size}px 降质", r2))

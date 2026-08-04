@@ -8,6 +8,20 @@ report_qc_app/src/ocr_provider.py
     → 回填元信息输入框 → 触发 engine.run → 自动驱动 R1/R3/R6
 
 引擎选型：RapidOCR（onnxruntime 本地推理，中文效果好，~16MB 模型）。
+
+【与 PaddleOCR 的关系】
+本项目**已经在用 PaddleOCR 的模型**：assets/ocr_models 下三个 .onnx 全部由百度
+PaddleOCR 官方模型（PP-OCRv3 检测/识别 + PP-OCRv2 方向分类）转换而来。
+RapidOCR = PaddleOCR 模型 + ONNXRuntime 推理，剥离了 paddlepaddle 训练框架。
+选它而非官方 paddleocr 包的原因：
+    - 体积：本方案模型共 ~13MB；装 paddlepaddle 框架后环境膨胀到 1GB+，PyInstaller
+      打包 exe 极难（动态库/hidden import/mkldnn 一堆坑），不适合医院桌面分发。
+    - 离线：PaddleOCR 3.x 默认从 HuggingFace 拉模型，医院内网直接不可用；
+      本方案模型随包内置，零联网，满足「医疗数据不出域」。
+    - 依赖面：依赖越少，等保/器械软件审查越好过。
+若要升级到 PP-OCRv4/v5，正确做法是**换 assets 下的 .onnx 模型文件**，而不是引入
+paddlepaddle 框架。换模型前务必确认新 rec 模型内嵌字符字典（见 _check_rec_dict）。
+
 模型放置优先级：
     1) assets/ocr_models（随 exe/源码分发内置，完全离线）
     2) RapidOCR 包内置默认模型（首次运行会从官网自动下载，需联网一次）
@@ -78,6 +92,31 @@ def availability() -> (bool, str):
     return True, ""
 
 
+def _check_rec_dict(rec_path: str, model_dir: str) -> None:
+    """
+    校验识别模型自带字符字典（换 PP-OCRv4/v5 模型时的第一道防线）。
+
+    PaddleOCR 官方导出的 rec.onnx 通常把字典写进 metadata['character']，
+    RapidOCR 会自动读取。但部分第三方转换版本没有内嵌，此时 rapidocr-onnxruntime
+    1.2.x 无法通过构造参数注入外部字典（详见 _get_engine 内注释），
+    会在 CTCLabelDecode 处抛 "character_dict_path should not be None"。
+    这里提前给出可执行的修复建议，而不是让用户面对一句底层断言。
+    """
+    try:
+        from onnxruntime import InferenceSession
+        meta = InferenceSession(rec_path).get_modelmeta().custom_metadata_map
+    except Exception:
+        return                       # 探测失败不阻断，交给 RapidOCR 自己报错
+    if meta.get("character"):
+        return                       # 已内嵌字典（PP-OCRv3 内置模型走这条路，6623 字）
+    raise RuntimeError(
+        f"识别模型 {os.path.basename(rec_path)} 未内嵌字符字典，"
+        f"当前 rapidocr-onnxruntime 版本无法从外部 keys.txt 注入。"
+        f"解决方式二选一：①换用内嵌字典的 onnx（PaddleOCR 官方导出版通常已内嵌）；"
+        f"②升级 rapidocr-onnxruntime 到 >=1.3.0 并改用 rec_keys_path 参数。"
+        f"模型目录：{model_dir}")
+
+
 def _get_engine():
     """懒加载 RapidOCR 实例；失败只记录一次原因并返回 None（不抛异常）。"""
     global _engine, _engine_err
@@ -96,16 +135,20 @@ def _get_engine():
         rec = os.path.join(mdir, "ch_PP-OCRv3_rec_infer.onnx")
         cls = os.path.join(mdir, "ch_ppocr_mobile_v2.0_cls_infer.onnx")
         if os.path.isfile(det) and os.path.isfile(rec) and os.path.isfile(cls):
-            # 离线内置模型：新版 RapidOCR 字符字典已内嵌在 rec.onnx，无需外部 keys.txt
+            # 离线内置模型：字符字典内嵌在 rec.onnx 的 metadata['character'] 里。
             # 注意：RapidOCR 的合法参数名是 det_model_path / rec_model_path / cls_model_path
             # （旧写法 model_path=det 不是合法名，会被丢进 Global 配置而失效，
             # 导致实际用的是 RapidOCR 包内模型而非 assets 内置模型——既浪费打进 exe 的
             # 模型，也让「完全离线」的合规叙事不严谨）。这里用正确参数名确保优先加载 assets。
-            kw = dict(det_model_path=det, rec_model_path=rec, cls_model_path=cls)
-            keys = os.path.join(mdir, "ppocr_keys_v1.txt")
-            if os.path.isfile(keys):
-                kw["rec_char_dict_path"] = keys
-            _engine = RapidOCR(**kw)
+            #
+            # 【坑，换模型时必看】rapidocr-onnxruntime 1.2.x 的 TextRecognizer 只从
+            # onnx metadata 或 config['keys_path'] 取字典；而 kwargs 里带 rec_ 前缀的键
+            # 除 rec_model_path 外都不会被去前缀，所以 `rec_char_dict_path=xxx`
+            # **是静默失效的伪参数**（历史代码曾这样写）。换成未内嵌字典的模型
+            # （如部分 PP-OCRv5 导出版）会直接抛断言错误。故先做前置检查。
+            _check_rec_dict(rec, mdir)
+            _engine = RapidOCR(det_model_path=det, rec_model_path=rec,
+                               cls_model_path=cls)
         else:
             # 回退到 RapidOCR 自带模型（首次会从官网下载，需联网一次；
             # 若已下载则走本地缓存 ~/.cache/rapidocr_onnxruntime）
