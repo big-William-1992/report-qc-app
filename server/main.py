@@ -510,12 +510,32 @@ def sample_export(req: SampleExportReq, emp: str = Depends(require_emp_local)):
 
 @app.post("/api/v1/samples/import")
 def sample_import(req: SampleImportReq, emp: str = Depends(require_emp_local)):
-    """导入样本库文件。"""
+    """导入样本库文件（按服务端路径）。"""
     try:
         inserted, skipped = samplelib.import_samples(req.path)
         return _envelope(True, "OK", {"inserted": inserted, "skipped": skipped})
     except Exception as exc:
         raise HTTPException(500, str(exc))
+
+
+@app.post("/api/v1/samples/import/upload")
+async def sample_import_upload(file: UploadFile = File(...), emp: str = Depends(require_emp_local)):
+    """浏览器端上传 CSV/JSON 文件导入样本库。"""
+    import tempfile
+    suffix = os.path.splitext(file.filename or "import.csv")[1] or ".csv"
+    tf = tempfile.NamedTemporaryFile("wb", suffix=suffix, delete=False)
+    try:
+        tf.write(await file.read())
+        tf.close()
+        inserted, skipped = samplelib.import_samples(tf.name)
+        return _envelope(True, "OK", {"inserted": inserted, "skipped": skipped})
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+    finally:
+        try:
+            os.remove(tf.name)
+        except Exception:
+            pass
 
 
 # ----------------------------- 统计 -----------------------------
@@ -561,6 +581,305 @@ def sample_dashboard(emp: str = Depends(require_emp_local)):
 @app.get("/api/v1/health")
 def health():
     return _envelope(True, "OK", {"status": "up", "version": "3.0"})
+
+
+# ============================================================================
+# 以下为「SPA 功能追平桌面版」新增能力（P0/P1）
+#   1) 待质控队列   —— 与 Tkinter 版共用 ~/.medical_report_qc/qc_queue.json
+#   2) 屏幕采集 OCR —— 真·框选 PACS 屏幕三区（基础信息/影像描述/影像诊断）
+#   3) 应用设置     —— SPA 侧设置面板的持久化
+#   4) 规则配置读取 —— 供规则维护页编辑 R8 错别字 / R9 矛盾对 / 忽略词
+# 注意：必须注册在文件末尾的 SPA catch-all 路由「之前」，否则 GET 会被兜底吞掉。
+# ============================================================================
+import uuid as _uuid
+
+
+def _appdata_dir() -> str:
+    """跨平台数据目录（与 src/app.py 的 _appdata_dir 保持完全一致，实现队列互通）。"""
+    ap = os.path.expandvars("%APPDATA%")
+    if ap and os.path.isabs(ap):
+        base = os.path.join(ap, "MedicalReportQC")
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".medical_report_qc")
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+def _queue_path() -> str:
+    return os.path.join(_appdata_dir(), "qc_queue.json")
+
+
+def _load_queue() -> list:
+    try:
+        with open(_queue_path(), encoding="utf-8") as fh:
+            return json.load(fh) or []
+    except Exception:
+        return []
+
+
+def _save_queue(items: list) -> None:
+    with open(_queue_path(), "w", encoding="utf-8") as fh:
+        json.dump(items, fh, ensure_ascii=False, indent=2)
+
+
+class QueueItemReq(BaseModel):
+    text: str
+    patient: str = ""
+    site: str = ""
+    source: str = "手动"
+    meta: Dict[str, str] = {}
+
+
+@app.get("/api/v1/queue")
+def queue_list():
+    items = _load_queue()
+    return _envelope(True, "OK", {"items": items, "count": len(items)})
+
+
+@app.post("/api/v1/queue")
+def queue_add(req: QueueItemReq, emp: str = Depends(require_emp_local)):
+    """加入待质控队列；按正文 MD5 去重（与桌面版同一去重口径）。"""
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "text 不能为空")
+    norm = "".join(text.split())
+    h = hashlib.md5(norm.encode("utf-8", "ignore")).hexdigest()
+    items = _load_queue()
+    for it in items:
+        if it.get("hash") == h:
+            return _envelope(True, "OK", {"id": it["id"], "duplicated": True}, "该报告已在队列中")
+    item = {
+        "id": _uuid.uuid4().hex[:8],
+        "hash": h,
+        "patient": (req.patient or req.meta.get("patient", "")).strip(),
+        "site": (req.site or req.meta.get("applied_site", "")).strip(),
+        "text": text,
+        "source": req.source or "手动",
+        "ts": time.strftime("%Y-%m-%d %H:%M"),
+        "meta": req.meta or {},
+    }
+    items.append(item)
+    _save_queue(items)
+    return _envelope(True, "OK", {"id": item["id"], "duplicated": False, "count": len(items)})
+
+
+@app.delete("/api/v1/queue")
+def queue_clear(emp: str = Depends(require_emp_local)):
+    _save_queue([])
+    return _envelope(True, "OK", {"count": 0}, "队列已清空")
+
+
+@app.delete("/api/v1/queue/{qid}")
+def queue_remove(qid: str, emp: str = Depends(require_emp_local)):
+    items = _load_queue()
+    kept = [it for it in items if it.get("id") != qid]
+    if len(kept) == len(items):
+        raise HTTPException(404, "队列条目不存在")
+    _save_queue(kept)
+    return _envelope(True, "OK", {"count": len(kept)}, "已移出队列")
+
+
+# ----------------------------- 屏幕采集（真·框选 PACS 屏幕） -----------------------------
+# 用户诉求：不是上传报告图，而是在 PACS 软件窗口上框选三个区域
+#   basic=病人基础信息 / findings=影像描述 / impression=影像诊断
+# 流程：/screen/capture 抓全屏（原图缓存于内存）→ SPA 在缩略图上拖三个框
+#      → /screen/ocr 传比例框 → 后端在「原始分辨率」截图上裁剪 → RapidOCR
+# 在原图上裁剪（而非缩略图）可避免下采样导致的小字识别率骤降。
+_SHOT: Dict[str, Any] = {"img": None, "w": 0, "h": 0, "ts": 0.0}
+_SHOT_MAX_W = 1600          # 传给前端的缩略图最大宽度（省带宽，不影响识别精度）
+
+
+class ScreenRegion(BaseModel):
+    x: float = 0.0
+    y: float = 0.0
+    w: float = 1.0
+    h: float = 1.0
+
+
+class ScreenOCRReq(BaseModel):
+    regions: Dict[str, ScreenRegion] = {}
+    refresh: bool = False       # True=识别前重新抓屏（画面已变动时用）
+
+
+def _grab_fullscreen():
+    from PIL import ImageGrab
+    img = ImageGrab.grab()
+    if img is None:
+        raise RuntimeError("截屏返回空图")
+    # macOS 未授予「屏幕录制」权限时会返回纯黑图（不抛异常），这里做启发式检测
+    try:
+        ext = img.convert("L").getextrema()
+        if ext == (0, 0):
+            raise RuntimeError(
+                "截屏结果全黑：macOS 需在『系统设置 → 隐私与安全性 → 屏幕录制』"
+                "中勾选本应用（终端/星衍质控），授权后需重启应用。")
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
+    return img
+
+
+@app.post("/api/v1/screen/capture")
+def screen_capture(emp: str = Depends(require_emp_local)):
+    """抓取整屏，返回缩略图 base64（原图缓存于服务端供后续高精度裁剪）。"""
+    try:
+        img = _grab_fullscreen()
+    except Exception as exc:
+        return JSONResponse(status_code=503,
+                            content=_envelope(False, "SCREEN_UNAVAILABLE", None, str(exc)))
+    _SHOT["img"], _SHOT["w"], _SHOT["h"], _SHOT["ts"] = img, img.width, img.height, time.time()
+    thumb = img
+    if img.width > _SHOT_MAX_W:
+        ratio = _SHOT_MAX_W / float(img.width)
+        thumb = img.resize((_SHOT_MAX_W, max(1, int(img.height * ratio))))
+    buf = io.BytesIO()
+    thumb.convert("RGB").save(buf, format="PNG")
+    return _envelope(True, "OK", {
+        "image_base64": base64.b64encode(buf.getvalue()).decode(),
+        "width": img.width, "height": img.height,
+        "thumb_width": thumb.width, "thumb_height": thumb.height,
+        "ts": _SHOT["ts"],
+    })
+
+
+@app.post("/api/v1/screen/ocr")
+def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local)):
+    """按比例框在缓存的整屏原图上裁剪并 OCR，返回三区文本 + 结构化 meta。"""
+    import ocr_provider
+    ok, why = ocr_provider.availability()
+    if not ok:
+        return JSONResponse(status_code=503,
+                            content=_envelope(False, "OCR_UNAVAILABLE", None, why))
+    img = _SHOT.get("img")
+    if req.refresh or img is None:
+        try:
+            img = _grab_fullscreen()
+            _SHOT["img"], _SHOT["w"], _SHOT["h"], _SHOT["ts"] = \
+                img, img.width, img.height, time.time()
+        except Exception as exc:
+            return JSONResponse(status_code=503,
+                                content=_envelope(False, "SCREEN_UNAVAILABLE", None, str(exc)))
+    W, H = img.width, img.height
+    texts: Dict[str, str] = {}
+    errors: Dict[str, str] = {}
+    for role, r in (req.regions or {}).items():
+        x0 = max(0, min(W - 1, int(r.x * W)))
+        y0 = max(0, min(H - 1, int(r.y * H)))
+        x1 = max(x0 + 1, min(W, int((r.x + r.w) * W)))
+        y1 = max(y0 + 1, min(H, int((r.y + r.h) * H)))
+        try:
+            texts[role] = ocr_provider.ocr_image(img.crop((x0, y0, x1, y1))) or ""
+        except Exception as exc:
+            texts[role] = ""
+            errors[role] = str(exc)
+    meta = {}
+    try:
+        meta = engine.extract_meta_full(texts.get("basic", ""),
+                                        texts.get("findings", ""),
+                                        texts.get("impression", ""))
+    except Exception:
+        try:
+            meta = engine.extract_meta(texts.get("basic", ""))
+        except Exception:
+            meta = {}
+    return _envelope(True, "OK", {"texts": texts, "meta": meta, "errors": errors})
+
+
+def _ocr_config_path() -> str:
+    """与 src/app.py 的 _ocr_config_path 同路径，实现桌面/Web 区域配置互通。"""
+    ap = os.path.expandvars("%APPDATA%")
+    if ap and os.path.isabs(ap):
+        d = os.path.join(ap, "MedicalReportQC")
+    else:
+        d = os.path.join(os.path.expanduser("~"), ".config", "MedicalReportQC")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, "ocr_config.json")
+
+
+@app.get("/api/v1/screen/regions")
+def screen_regions_get():
+    """读取 SPA 侧保存的比例框（web_regions）。"""
+    try:
+        with open(_ocr_config_path(), encoding="utf-8") as fh:
+            cfg = json.load(fh) or {}
+    except Exception:
+        cfg = {}
+    return _envelope(True, "OK", {"web_regions": cfg.get("web_regions") or {}})
+
+
+@app.put("/api/v1/screen/regions")
+def screen_regions_put(regions: Dict[str, Any], emp: str = Depends(require_emp_local)):
+    try:
+        with open(_ocr_config_path(), encoding="utf-8") as fh:
+            cfg = json.load(fh) or {}
+    except Exception:
+        cfg = {}
+    cfg["web_regions"] = regions
+    with open(_ocr_config_path(), "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, ensure_ascii=False, indent=2)
+    return _envelope(True, "OK", {"web_regions": regions}, "框选区域已保存")
+
+
+# ----------------------------- 应用设置（SPA 设置面板） -----------------------------
+_DEFAULT_SETTINGS = {
+    "emp_id": "demo01",            # 默认工号（责任到人）
+    "default_modality": "",        # 默认成像方式
+    "auto_qc_on_ocr": True,        # OCR 回填后自动跑质控
+    "auto_enqueue": True,          # 采集/RIS 拉取自动进待质控队列
+    "ocr_min_score": 0.55,         # OCR 置信度阈值
+    "screen_refresh_on_ocr": False,  # 识别前重新抓屏
+    "anonymize": False,            # 入库脱敏
+    "theme": "light",
+}
+
+
+def _settings_path() -> str:
+    return os.path.join(_appdata_dir(), "web_settings.json")
+
+
+@app.get("/api/v1/settings")
+def settings_get():
+    data = dict(_DEFAULT_SETTINGS)
+    try:
+        with open(_settings_path(), encoding="utf-8") as fh:
+            data.update(json.load(fh) or {})
+    except Exception:
+        pass
+    return _envelope(True, "OK", data)
+
+
+@app.put("/api/v1/settings")
+def settings_put(cfg: Dict[str, Any], emp: str = Depends(require_emp_local)):
+    data = dict(_DEFAULT_SETTINGS)
+    try:
+        with open(_settings_path(), encoding="utf-8") as fh:
+            data.update(json.load(fh) or {})
+    except Exception:
+        pass
+    for k in _DEFAULT_SETTINGS:          # 只接受已知键，避免写入杂项
+        if k in cfg:
+            data[k] = cfg[k]
+    with open(_settings_path(), "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+    return _envelope(True, "OK", data, "设置已保存")
+
+
+# ----------------------------- 规则配置（供规则维护页编辑） -----------------------------
+@app.get("/api/v1/qc/rules/config")
+def qc_rules_config_get():
+    """返回可编辑的规则配置：R8 错别字表 / R9 矛盾对 / 忽略词 / 模板规范。"""
+    return _envelope(True, "OK", engine.load_rules_config())
+
+
+@app.put("/api/v1/qc/rules/config")
+def qc_rules_config_put(cfg: Dict[str, Any], emp: str = Depends(require_emp_local)):
+    """覆盖保存规则配置（typos/conflicts/ignores/template）。"""
+    try:
+        engine.save_rules_config(cfg)
+        return _envelope(True, "OK", engine.load_rules_config(), "规则配置已保存")
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
 
 
 # ----------------------------- 静态前端托管（SPA） -----------------------------

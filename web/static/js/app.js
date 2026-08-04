@@ -5,11 +5,18 @@
 
 // ==================== SPA 页面切换 ====================
 const PAGE_TITLES = {
-  qc:        { title: '报告质控',   sub: 'AI 驱动的放射报告质量检测引擎' },
-  dashboard: { title: '质控看板',   sub: '数据统计与质量趋势分析' },
-  ris:       { title: 'RIS 直连',   sub: '连接 PACS/RIS 数据库获取报告' },
-  samples:   { title: '样本库',     sub: '已质控报告的存储与管理' },
-  rules:     { title: '规则维护',   sub: '查看和管理质控规则' },
+  qc:        { title: '报告质控',     sub: 'AI 驱动的放射报告质量检测引擎' },
+  queue:     { title: '待质控队列',   sub: '排队中的报告，逐份质控并入库后自动出队' },
+  dashboard: { title: '质控看板',     sub: '数据统计与质量趋势分析' },
+  ris:       { title: 'RIS 直连',     sub: '连接 PACS/RIS 数据库获取报告' },
+  samples:   { title: '样本库',       sub: '已质控报告的存储与管理' },
+  rules:     { title: '规则维护',     sub: '查看和管理质控规则' },
+};
+
+// 全局应用设置（从 /api/v1/settings 载入，影响 OCR/入库/自动化行为）
+let APP_SETTINGS = {
+  emp_id: 'demo01', default_modality: '', auto_qc_on_ocr: true, auto_enqueue: true,
+  ocr_min_score: 0.55, screen_refresh_on_ocr: false, anonymize: false, theme: 'light',
 };
 
 // 严重度元数据：图标 + 文字（色盲可用）
@@ -37,7 +44,12 @@ function switchPage(pageName, navEl) {
   // 页面加载时自动拉取数据
   if (pageName === 'dashboard') loadDashboard();
   if (pageName === 'samples') loadSamples();
-  if (pageName === 'rules') loadRules();
+  if (pageName === 'rules') { loadRules(); loadRulesConfig(true); }
+  if (pageName === 'queue') loadQueue();
+}
+
+function gotoPage(pageName) {
+  switchPage(pageName, document.querySelector(`.nav-cell[data-page="${pageName}"]`));
 }
 
 // ==================== Toast 通知 ====================
@@ -220,22 +232,271 @@ async function saveToLibrary() {
           applied_site: document.getElementById('mSite').value,
           laterality:   document.getElementById('mLaterality').value,
           user_id:      document.getElementById('mUser').value,
-        }
+        },
+        anonymize: !!APP_SETTINGS.anonymize,
+        user_id:   document.getElementById('mUser').value || APP_SETTINGS.emp_id,
       })
     });
     const data = await res.json();
-    if (data.ok) toast('已存入样本库（ID=' + (data.data.id || '?') + '）', 'success');
+    if (data.ok) {
+      toast('已存入样本库（ID=' + (data.data.id || '?') + '）', 'success');
+      // 从队列载入的报告，入库成功后自动出队（与桌面版 _dequeue_active 一致）
+      if (ACTIVE_QUEUE_ID) {
+        const qid = ACTIVE_QUEUE_ID; ACTIVE_QUEUE_ID = null;
+        try { await fetch('/api/v1/queue/' + encodeURIComponent(qid), { method: 'DELETE' }); } catch (e) {}
+        loadQueue(true);
+      }
+    }
     else toast('入库失败: ' + (data.message || ''), 'error');
   } catch (e) {
     toast('入库请求失败: ' + e.message, 'error');
   }
 }
 
-// ==================== 高级设置折叠 ====================
-let settingsOpen = false;
-function toggleSettings() {
-  settingsOpen = !settingsOpen;
-  toast(settingsOpen ? '高级设置已展开' : '高级设置已收起', 'info');
+// ==================== 系统设置（真实持久化） ====================
+async function loadSettings(applyUI = true) {
+  try {
+    const res = await fetch('/api/v1/settings');
+    const data = await res.json();
+    if (data.ok) APP_SETTINGS = Object.assign(APP_SETTINGS, data.data || {});
+  } catch (e) { /* 离线兜底：沿用默认值 */ }
+  if (applyUI) {
+    // 工号与默认模态回填到质控页
+    const u = document.getElementById('mUser');
+    if (u && APP_SETTINGS.emp_id) u.value = APP_SETTINGS.emp_id;
+    const m = document.getElementById('mModality');
+    if (m && !m.value && APP_SETTINGS.default_modality) m.value = APP_SETTINGS.default_modality;
+    // 主题
+    if (APP_SETTINGS.theme && !localStorage.getItem('xy-theme')) {
+      document.documentElement.setAttribute('data-theme', APP_SETTINGS.theme);
+    }
+    const rf = document.getElementById('ocrRefresh');
+    if (rf) rf.checked = !!APP_SETTINGS.screen_refresh_on_ocr;
+  }
+  return APP_SETTINGS;
+}
+
+function openSettings() {
+  const s = APP_SETTINGS;
+  document.getElementById('setEmpId').value       = s.emp_id || '';
+  document.getElementById('setModality').value    = s.default_modality || '';
+  document.getElementById('setOcrScore').value    = s.ocr_min_score ?? 0.55;
+  document.getElementById('setTheme').value       = document.documentElement.getAttribute('data-theme') || s.theme || 'light';
+  document.getElementById('setAutoQC').checked        = !!s.auto_qc_on_ocr;
+  document.getElementById('setAutoEnqueue').checked   = !!s.auto_enqueue;
+  document.getElementById('setScreenRefresh').checked = !!s.screen_refresh_on_ocr;
+  document.getElementById('setAnonymize').checked     = !!s.anonymize;
+  document.getElementById('settingsModal').style.display = 'flex';
+}
+function closeSettings() { document.getElementById('settingsModal').style.display = 'none'; }
+
+async function saveSettings() {
+  const payload = {
+    emp_id:                document.getElementById('setEmpId').value.trim() || 'demo01',
+    default_modality:      document.getElementById('setModality').value,
+    ocr_min_score:         parseFloat(document.getElementById('setOcrScore').value) || 0.55,
+    theme:                 document.getElementById('setTheme').value,
+    auto_qc_on_ocr:        document.getElementById('setAutoQC').checked,
+    auto_enqueue:          document.getElementById('setAutoEnqueue').checked,
+    screen_refresh_on_ocr: document.getElementById('setScreenRefresh').checked,
+    anonymize:             document.getElementById('setAnonymize').checked,
+  };
+  try {
+    const res = await fetch('/api/v1/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '保存失败');
+    APP_SETTINGS = Object.assign(APP_SETTINGS, data.data || payload);
+    // 立即生效：主题 / 工号 / 抓屏开关
+    document.documentElement.setAttribute('data-theme', payload.theme);
+    localStorage.setItem('xy-theme', payload.theme);
+    const t = document.getElementById('themeToggle');
+    if (t) t.textContent = payload.theme === 'dark' ? '☀️' : '🌙';
+    const u = document.getElementById('mUser'); if (u) u.value = payload.emp_id;
+    const rf = document.getElementById('ocrRefresh'); if (rf) rf.checked = payload.screen_refresh_on_ocr;
+    closeSettings();
+    toast('设置已保存并生效', 'success');
+  } catch (e) { toast('保存设置失败: ' + e.message, 'error'); }
+}
+
+// ==================== 待质控队列 ====================
+let QUEUE_ITEMS = [];
+let ACTIVE_QUEUE_ID = null;   // 从队列载入工作区的条目，入库后自动出队
+
+async function loadQueue(silent = false) {
+  try {
+    const res = await fetch('/api/v1/queue');
+    const data = await res.json();
+    QUEUE_ITEMS = ((data.data || {}).items) || [];
+  } catch (e) {
+    QUEUE_ITEMS = [];
+    if (!silent) toast('队列读取失败: ' + e.message, 'error');
+  }
+  refreshQueueBadge();
+  renderQueue();
+  return QUEUE_ITEMS;
+}
+
+function refreshQueueBadge() {
+  const badge = document.getElementById('navQueueBadge');
+  const label = document.getElementById('navQueueLabel');
+  const n = QUEUE_ITEMS.length;
+  if (badge) { badge.textContent = n > 99 ? '99+' : n; badge.style.display = n ? 'block' : 'none'; }
+  if (label) label.textContent = n ? `待质控 · ${n}` : '待质控队列';
+}
+
+function renderQueue() {
+  const box = document.getElementById('queueList');
+  if (!box) return;
+  if (!QUEUE_ITEMS.length) {
+    box.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div>' +
+      '<p>队列为空。通过「RIS 直连 → 全部加入队列」「框选 OCR 采集」或质控页「📥 加入队列」拉入报告。</p></div>';
+    return;
+  }
+  box.innerHTML = QUEUE_ITEMS.map(it => `
+    <div class="queue-row">
+      <div class="queue-main">
+        <div class="queue-title">${escapeHtml(it.patient || '未知患者')} · ${escapeHtml(it.site || '—')}</div>
+        <div class="queue-sub">来源：${escapeHtml(it.source || '—')} · ${escapeHtml(it.ts || '')}</div>
+        <div class="queue-preview">${escapeHtml((it.text || '').replace(/\s+/g, ' ').slice(0, 120))}</div>
+      </div>
+      <div class="queue-acts">
+        <button class="btn btn-primary btn-sm" onclick="queueLoad('${it.id}')">▶ 加载质控</button>
+        <button class="btn btn-outline btn-sm" onclick="queueRemove('${it.id}')">✕ 移除</button>
+      </div>
+    </div>`).join('');
+}
+
+/** 把当前工作区报告加入队列 */
+async function enqueueCurrent(source = '手动', silent = false) {
+  const findings = document.getElementById('findingsText').value.trim();
+  const impression = document.getElementById('impressionText').value.trim();
+  if (!findings && !impression) { if (!silent) toast('没有可入队的内容', 'error'); return null; }
+  const text = [findings, impression].filter(Boolean).join('\n');
+  return enqueueText(text, {
+    patient:      document.getElementById('mPatient').value,
+    gender:       document.getElementById('mGender').value,
+    age:          document.getElementById('mAge').value,
+    modality:     document.getElementById('mModality').value,
+    applied_site: document.getElementById('mSite').value,
+    laterality:   document.getElementById('mLaterality').value,
+  }, source, silent);
+}
+
+async function enqueueText(text, meta, source, silent = false) {
+  try {
+    const res = await fetch('/api/v1/queue', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text, meta: meta || {},
+        patient: (meta || {}).patient || '', site: (meta || {}).applied_site || '',
+        source,
+      })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '入队失败');
+    ACTIVE_QUEUE_ID = data.data.id;
+    await loadQueue(true);
+    if (!silent) toast(data.data.duplicated ? '该报告已在队列中' : '已加入待质控队列', data.data.duplicated ? 'info' : 'success');
+    return data.data.id;
+  } catch (e) {
+    if (!silent) toast('入队失败: ' + e.message, 'error');
+    return null;
+  }
+}
+
+/** 队列条目载入质控工作区并立即跑一次质控 */
+async function queueLoad(qid) {
+  const it = QUEUE_ITEMS.find(x => x.id === qid);
+  if (!it) return;
+  const m = it.meta || {};
+  setVal('mPatient', it.patient || m.patient);
+  setVal('mGender', m.gender);
+  setVal('mAge', m.age);
+  setVal('mModality', m.modality);
+  setVal('mSite', it.site || m.applied_site);
+  setVal('mLaterality', m.laterality);
+  // 队列正文按「描述 / 结论」两段还原（无明确分段则整体进描述）
+  const parts = splitReportSections(it.text || '');
+  document.getElementById('findingsText').value = parts.findings;
+  document.getElementById('impressionText').value = parts.impression;
+  document.getElementById('findingsCount').textContent = parts.findings.length + ' 字';
+  document.getElementById('impressionCount').textContent = parts.impression.length + ' 字';
+  ACTIVE_QUEUE_ID = qid;
+  gotoPage('qc');
+  await runQC();
+  toast('已载入工作区，入库后自动出队', 'success');
+}
+
+/** 把整段报告粗分为「影像描述 / 影像诊断」两段 */
+function splitReportSections(text) {
+  const t = (text || '').trim();
+  const m = t.match(/(诊断印象|影像诊断|影像结论|诊断意见|结论|印象|impression)\s*[:：]?\s*/i);
+  if (m && m.index > 0) {
+    return {
+      findings: t.slice(0, m.index).replace(/^(检查所见|影像描述|影像所见|findings)\s*[:：]?\s*/i, '').trim(),
+      impression: t.slice(m.index + m[0].length).trim(),
+    };
+  }
+  return { findings: t.replace(/^(检查所见|影像描述|影像所见|findings)\s*[:：]?\s*/i, '').trim(), impression: '' };
+}
+
+async function queueRemove(qid) {
+  try {
+    const res = await fetch('/api/v1/queue/' + encodeURIComponent(qid), { method: 'DELETE' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '移除失败');
+    if (ACTIVE_QUEUE_ID === qid) ACTIVE_QUEUE_ID = null;
+    await loadQueue(true);
+  } catch (e) { toast('移除失败: ' + e.message, 'error'); }
+}
+
+async function queueClear() {
+  if (!QUEUE_ITEMS.length) { toast('队列已是空的', 'info'); return; }
+  if (!confirm(`确认清空队列中的 ${QUEUE_ITEMS.length} 份报告？此操作不可撤销。`)) return;
+  try {
+    const res = await fetch('/api/v1/queue', { method: 'DELETE' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '清空失败');
+    ACTIVE_QUEUE_ID = null;
+    await loadQueue(true);
+    toast('队列已清空', 'success');
+  } catch (e) { toast('清空失败: ' + e.message, 'error'); }
+}
+
+/** 队列批量质控入库：逐条送引擎并入库，成功后出队 */
+async function queueRunAll() {
+  if (!QUEUE_ITEMS.length) { toast('队列为空', 'info'); return; }
+  if (!confirm(`将对队列中 ${QUEUE_ITEMS.length} 份报告批量质控并入库，继续？`)) return;
+  const prog = document.getElementById('queueProgress');
+  const fill = document.getElementById('queueProgressFill');
+  if (prog) prog.classList.add('show');
+  const items = QUEUE_ITEMS.slice();
+  let okCount = 0, failCount = 0;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    try {
+      const res = await fetch('/api/v1/samples', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          report: it.text,
+          meta: Object.assign({ patient: it.patient, applied_site: it.site }, it.meta || {}),
+          anonymize: !!APP_SETTINGS.anonymize,
+          user_id: APP_SETTINGS.emp_id,
+        })
+      });
+      const d = await res.json();
+      if (d.ok) { okCount++; await fetch('/api/v1/queue/' + encodeURIComponent(it.id), { method: 'DELETE' }); }
+      else failCount++;
+    } catch (e) { failCount++; }
+    if (fill) fill.style.width = Math.round(((i + 1) / items.length) * 100) + '%';
+  }
+  if (prog) prog.classList.remove('show');
+  if (fill) fill.style.width = '0%';
+  await loadQueue(true);
+  toast(`批量完成：入库 ${okCount} 份${failCount ? '，失败 ' + failCount + ' 份' : ''}`, failCount ? 'warning' : 'success');
 }
 
 // ==================== 看板页：加载数据 ====================
@@ -264,6 +525,90 @@ async function loadDashboard() {
 
   } catch (err) {
     console.error('Dashboard load error:', err);
+  }
+  // 错误类型分布 + 趋势（独立失败不影响主卡片）
+  loadErrorTypes();
+  loadTrend();
+}
+
+// ---------- 错误类型分布（接 /api/v1/stats/error-types） ----------
+const ERR_COLORS = ['#2d6cdf', '#1fa971', '#e8941a', '#e5484d', '#7c6cf0', '#0ea5e9', '#db2777', '#65a30d'];
+
+async function loadErrorTypes() {
+  const box = document.getElementById('errorTypeChart');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/v1/stats/error-types');
+    const data = await res.json();
+    const stats = data.data || {};
+    const entries = Object.entries(stats).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+    document.getElementById('errTypeTotal').textContent = entries.length + ' 项';
+    if (!entries.length) {
+      box.innerHTML = '<div class="empty-state"><div class="empty-icon">✅</div><p>暂无错误记录</p></div>';
+      return;
+    }
+    const max = Math.max(...entries.map(e => e[1]), 1);
+    const sum = entries.reduce((a, e) => a + e[1], 0);
+    box.innerHTML = entries.map(([name, cnt], i) => `
+      <div class="errbar-row">
+        <span class="errbar-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+        <span class="errbar-track">
+          <span class="errbar-fill" style="width:${Math.max(3, (cnt / max) * 100)}%;background:${ERR_COLORS[i % ERR_COLORS.length]}"></span>
+        </span>
+        <span class="errbar-val">${cnt}</span>
+      </div>`).join('') +
+      `<div style="margin-top:10px;font-size:12px;color:var(--text-muted);text-align:right;">共 ${sum} 条发现</div>`;
+  } catch (e) {
+    box.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><p>加载失败</p></div>';
+  }
+}
+
+// ---------- 质控量趋势（接 /api/v1/stats/trend），内联 SVG 折线 ----------
+async function loadTrend() {
+  const box = document.getElementById('trendChart');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/v1/stats/trend');
+    const data = await res.json();
+    const stats = data.data || {};
+    let entries = Object.entries(stats).sort((a, b) => a[0].localeCompare(b[0])).slice(-30);
+    document.getElementById('trendTotal').textContent = entries.length + ' 天有数据';
+    if (!entries.length) {
+      box.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div><p>暂无数据</p></div>';
+      return;
+    }
+    if (entries.length === 1) entries = [[entries[0][0], entries[0][1]], entries[0]]; // 单点也画得出线
+    const W = 460, H = 220, PL = 34, PR = 10, PT = 14, PB = 26;
+    const max = Math.max(...entries.map(e => e[1]), 1);
+    const stepX = (W - PL - PR) / Math.max(1, entries.length - 1);
+    const yOf = v => PT + (H - PT - PB) * (1 - v / max);
+    const pts = entries.map((e, i) => [PL + i * stepX, yOf(e[1])]);
+    const line = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+    const area = `${line} L${pts[pts.length - 1][0].toFixed(1)},${H - PB} L${pts[0][0].toFixed(1)},${H - PB} Z`;
+    // Y 轴 3 条参考线
+    const grid = [0, 0.5, 1].map(f => {
+      const v = Math.round(max * f), y = yOf(v);
+      return `<line x1="${PL}" y1="${y}" x2="${W - PR}" y2="${y}" stroke="var(--border-color)" stroke-dasharray="3 4"/>
+              <text x="${PL - 6}" y="${y + 4}" text-anchor="end" font-size="10" fill="var(--text-muted)">${v}</text>`;
+    }).join('');
+    // X 轴首/中/末日期
+    const idxs = [...new Set([0, Math.floor(entries.length / 2), entries.length - 1])];
+    const xLabels = idxs.map(i => `<text x="${(PL + i * stepX).toFixed(1)}" y="${H - 8}" text-anchor="middle"
+      font-size="10" fill="var(--text-muted)">${entries[i][0].slice(5)}</text>`).join('');
+    const dots = pts.map((p, i) => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.6"
+      fill="var(--primary)"><title>${entries[i][0]}：${entries[i][1]} 份</title></circle>`).join('');
+    box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:240px;">
+      <defs><linearGradient id="trendGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="var(--primary)" stop-opacity="0.28"/>
+        <stop offset="100%" stop-color="var(--primary)" stop-opacity="0.02"/>
+      </linearGradient></defs>
+      ${grid}
+      <path d="${area}" fill="url(#trendGrad)"/>
+      <path d="${line}" fill="none" stroke="var(--primary)" stroke-width="2.2" stroke-linejoin="round"/>
+      ${dots}${xLabels}
+    </svg>`;
+  } catch (e) {
+    box.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><p>加载失败</p></div>';
   }
 }
 
@@ -333,7 +678,7 @@ async function loadSamples() {
     const tbody = document.getElementById('samplesBody');
 
     if (!items.length) {
-      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:32px;">暂无样本数据</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:32px;">暂无样本数据</td></tr>';
       return;
     }
 
@@ -341,17 +686,91 @@ async function loadSamples() {
       <tr>
         <td style="color:var(--text-muted);font-size:12px;">${r.id}</td>
         <td style="font-size:12px;">${r.ts||'--'}</td>
-        <td>${r.patient||'--'}</td>
+        <td>${escapeHtml(r.patient)||'--'}</td>
         <td>${r.gender||'--'}</td>
         <td>${r.age||'--'}</td>
         <td><span class="tag info">${r.modality||'--'}</span></td>
-        <td>${r.applied_site||'--'}</td>
+        <td>${escapeHtml(r.applied_site)||'--'}</td>
         <td>${r.findings_count||0}</td>
         <td><span class="tag ${(r.scores?.accuracy||0)>=90?'success':'warning'}">${(r.scores?.accuracy||0).toFixed(0)}</span></td>
         <td><span class="tag ${(r.scores?.completeness||0)>=90?'success':'warning'}">${(r.scores?.completeness||0).toFixed(0)}</span></td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-outline btn-sm" onclick="viewSample(${r.id})">👁 查看</button>
+          <button class="btn btn-outline btn-sm" onclick="deleteSample(${r.id})">🗑</button>
+        </td>
       </tr>
     `).join('');
   } catch (e) { console.error(e); }
+}
+
+// ---------- 样本详情 / 删除 ----------
+async function viewSample(sid) {
+  try {
+    const res = await fetch('/api/v1/samples/' + sid);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '读取失败');
+    const s = data.data || {};
+    let findings = [];
+    try { findings = JSON.parse(s.findings_json || '[]'); } catch (e) {}
+    let scores = {};
+    try { scores = JSON.parse(s.scores_json || '{}'); } catch (e) {}
+
+    document.getElementById('sampleModalTitle').textContent = `📄 样本 #${s.id} · ${s.patient || '未知患者'}`;
+    document.getElementById('sampleModalBody').innerHTML = `
+      <div class="sample-kv">
+        <div><span>时间</span><b>${escapeHtml(s.ts || '--')}</b></div>
+        <div><span>性别 / 年龄</span><b>${escapeHtml(s.gender || '--')} / ${escapeHtml(String(s.age || '--'))}</b></div>
+        <div><span>成像方式</span><b>${escapeHtml(s.modality || '--')}</b></div>
+        <div><span>检查部位</span><b>${escapeHtml(s.applied_site || '--')}${s.laterality ? '（' + escapeHtml(s.laterality) + '）' : ''}</b></div>
+        <div><span>操作工号</span><b>${escapeHtml(s.user_id || '--')}</b></div>
+        <div><span>发现数</span><b>${findings.length}</b></div>
+        ${Object.entries(scores).map(([k, v]) =>
+          `<div><span>${escapeHtml(k)}</span><b>${typeof v === 'number' ? v.toFixed(1) : escapeHtml(String(v))}</b></div>`).join('')}
+      </div>
+      <div style="font-size:12px;font-weight:700;margin:6px 0;">报告正文</div>
+      <div class="sample-report">${escapeHtml(s.report_text || '')}</div>
+      <div style="font-size:12px;font-weight:700;margin:14px 0 6px;">质控发现（${findings.length} 条）</div>
+      ${findings.length ? `<ul class="finding-list" style="display:block">${findings.map(f => {
+        const m = SEV_META[f.severity] || SEV_META.low;
+        return `<li class="finding-item">
+          <span class="severity-dot ${f.severity}"></span>
+          <span class="sev-badge ${m.cls}">${m.icon} ${m.label}</span>
+          <div><div class="finding-text">${escapeHtml(f.message)}</div>
+          <div class="finding-meta">${escapeHtml(f.rule_id || '')} · ${escapeHtml(f.error_type || '')}</div></div>
+        </li>`; }).join('')}</ul>`
+        : '<div style="font-size:13px;color:var(--text-muted);">无发现，报告质量良好</div>'}
+    `;
+    document.getElementById('sampleLoadBtn').onclick = () => { loadSampleToWorkspace(s); };
+    document.getElementById('sampleDelBtn').onclick = () => { closeSampleModal(); deleteSample(s.id); };
+    document.getElementById('sampleModal').style.display = 'flex';
+  } catch (e) { toast('读取样本失败: ' + e.message, 'error'); }
+}
+
+function closeSampleModal() { document.getElementById('sampleModal').style.display = 'none'; }
+
+function loadSampleToWorkspace(s) {
+  const parts = splitReportSections(s.report_text || '');
+  setVal('mPatient', s.patient); setVal('mGender', s.gender); setVal('mAge', s.age);
+  setVal('mModality', s.modality); setVal('mSite', s.applied_site); setVal('mLaterality', s.laterality);
+  document.getElementById('findingsText').value = parts.findings;
+  document.getElementById('impressionText').value = parts.impression;
+  document.getElementById('findingsCount').textContent = parts.findings.length + ' 字';
+  document.getElementById('impressionCount').textContent = parts.impression.length + ' 字';
+  ACTIVE_QUEUE_ID = null;   // 来自样本库，非队列条目
+  closeSampleModal();
+  gotoPage('qc');
+  runQC();
+}
+
+async function deleteSample(sid) {
+  if (!confirm(`确认删除样本 #${sid}？删除后不可恢复。`)) return;
+  try {
+    const res = await fetch('/api/v1/samples/' + sid, { method: 'DELETE' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '删除失败');
+    toast('样本 #' + sid + ' 已删除', 'success');
+    loadSamples();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }
 
 async function exportSamples() {
@@ -366,8 +785,79 @@ async function exportSamples() {
   } catch(e) { toast('导出请求失败', 'error'); }
 }
 
+// ==================== 规则词表维护（R8 错别字 / R9 矛盾对 / 忽略词 / R10 模板） ====================
+async function loadRulesConfig(silent = false) {
+  try {
+    const res = await fetch('/api/v1/qc/rules/config');
+    const data = await res.json();
+    const cfg = (data.data || {});
+    const typos = cfg.typos || {};
+    document.getElementById('cfgTypos').value =
+      Object.entries(typos).map(([k, v]) => `${k}=${v}`).join('\n');
+    const conflicts = cfg.conflicts || [];
+    document.getElementById('cfgConflicts').value =
+      conflicts.map(c => Array.isArray(c) ? c.join('|') : `${c.a || ''}|${c.b || ''}`).join('\n');
+    const ignores = cfg.ignores || [];
+    document.getElementById('cfgIgnores').value = ignores.map(String).join('\n');
+    const tpl = cfg.template || {};
+    document.getElementById('cfgTplFollowup').checked = !!tpl.require_followup;
+    if (!silent) toast('规则配置已载入', 'success');
+  } catch (e) {
+    if (!silent) toast('载入规则配置失败: ' + e.message, 'error');
+  }
+}
+
+async function saveRulesConfig() {
+  const typos = {};
+  document.getElementById('cfgTypos').value.split('\n').forEach(line => {
+    const i = line.indexOf('=');
+    if (i > 0) {
+      const k = line.slice(0, i).trim(), v = line.slice(i + 1).trim();
+      if (k) typos[k] = v;
+    }
+  });
+  const conflicts = document.getElementById('cfgConflicts').value
+    .split('\n').map(s => s.trim()).filter(Boolean).map(s => {
+      const p = s.split('|');
+      return { a: p[0], b: p[1] || p[0] };
+    });
+  const ignores = document.getElementById('cfgIgnores').value
+    .split('\n').map(s => s.trim()).filter(Boolean);
+  const tpl = { require_followup: document.getElementById('cfgTplFollowup').checked };
+  try {
+    const res = await fetch('/api/v1/qc/rules/config', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ typos, conflicts, ignores, template: tpl })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '保存失败');
+    toast('规则配置已保存并生效', 'success');
+  } catch (e) {
+    toast('保存失败: ' + e.message, 'error');
+  }
+}
+
 async function importSamples() {
-  toast('导入功能：请选择文件（开发中）', 'info');
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.csv,.json';
+  inp.onchange = async () => {
+    const f = inp.files && inp.files[0];
+    if (!f) return;
+    const fd = new FormData();
+    fd.append('file', f);
+    try {
+      toast('正在导入样本...', 'info');
+      const res = await fetch('/api/v1/samples/import/upload', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.message || '导入失败');
+      toast(`导入完成：新增 ${data.data.inserted} 条，跳过 ${data.data.skipped} 条`, 'success');
+      loadSamples();
+    } catch (e) {
+      toast('导入失败: ' + e.message, 'error');
+    }
+  };
+  inp.click();
 }
 
 // ==================== RIS 直连 ====================
@@ -408,6 +898,7 @@ async function testRisConnection() {
 }
 
 let risController = null;
+let risItems = [];
 async function fetchRisReports() {
   const prog = document.getElementById('risProgress');
   const cancelBtn = document.getElementById('risCancelBtn');
@@ -433,20 +924,22 @@ async function fetchRisReports() {
     });
     const data = await res.json();
     const items = (data.data||{}).items||[];
+    risItems = items;
     document.getElementById('risResultCount').textContent = items.length + ' 条';
 
     const tbody = document.getElementById('risBody');
     if (!items.length) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:32px;">无数据，请检查 SQL 或连接配置</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px;">无数据，请检查 SQL 或连接配置</td></tr>';
       return;
     }
 
-    tbody.innerHTML = items.map(r => `
+    tbody.innerHTML = items.map((r, i) => `
       <tr>
-        <td>${r.patient||'--'}</td>
-        <td style="font-size:12px;">${r.gender||'--'}/${r.age||'--'}</td>
+        <td style="text-align:center;"><input type="checkbox" class="ris-check" value="${i}"></td>
+        <td>${escapeHtml(r.patient||'--')}</td>
+        <td style="font-size:12px;">${escapeHtml(r.gender||'--')}/${escapeHtml(r.age||'--')}</td>
         <td><span class="tag info">${r.modality||'--'}</span></td>
-        <td>${r.applied_site||'--'}</td>
+        <td>${escapeHtml(r.applied_site||'--')}</td>
         <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;" title="${escapeHtml(r.report_text||'')}">${escapeHtml((r.report_text||'').slice(0,80))}</td>
       </tr>
     `).join('');
@@ -466,8 +959,74 @@ function cancelRis() {
   if (risController) risController.abort();
 }
 
-function sendToQC() { toast('发送到质控（选中行→填入左侧输入框）', 'info'); }
-function batchQC() { toast('批量质控入库（全部拉取结果→引擎→样本库）', 'info'); }
+/** 收集 RIS 表格中勾选的行 */
+function getCheckedRisItems() {
+  const checked = [...document.querySelectorAll('#risBody .ris-check:checked')]
+    .map(cb => risItems[parseInt(cb.value, 10)])
+    .filter(Boolean);
+  return checked;
+}
+
+/** 选中的报告送入左侧工作区并立即跑质控 + 入队 */
+async function sendToQC() {
+  const sel = getCheckedRisItems();
+  if (!sel.length) { toast('请先在表格左侧勾选要质控的报告', 'error'); return; }
+  const r = sel[0];
+  const parts = splitReportSections(r.report_text || '');
+  setVal('mPatient', r.patient);
+  setVal('mGender', r.gender);
+  setVal('mAge', r.age);
+  setVal('mModality', r.modality);
+  setVal('mSite', r.applied_site);
+  document.getElementById('findingsText').value = parts.findings;
+  document.getElementById('impressionText').value = parts.impression;
+  document.getElementById('findingsCount').textContent = parts.findings.length + ' 字';
+  document.getElementById('impressionCount').textContent = parts.impression.length + ' 字';
+  ACTIVE_QUEUE_ID = null;
+  gotoPage('qc');
+  await runQC();
+  if (APP_SETTINGS.auto_enqueue) await enqueueCurrent('RIS', true);
+  toast(`已将选中报告载入工作区${sel.length > 1 ? `（另有 ${sel.length - 1} 份未处理，可点批量质控）` : ''}`, 'success');
+}
+
+/** 全部拉取结果 → 引擎 → 样本库（批量质控入库） */
+async function batchQC() {
+  if (!risItems.length) { toast('没有可质控的报告，请先拉取', 'error'); return; }
+  if (!confirm(`将把 ${risItems.length} 份报告逐份质控并入库，继续？`)) return;
+  let okCount = 0, failCount = 0;
+  for (const r of risItems) {
+    if (!r.report_text) { failCount++; continue; }
+    try {
+      const res = await fetch('/api/v1/samples', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          report: r.report_text,
+          meta: { patient: r.patient, gender: r.gender, age: r.age, modality: r.modality, applied_site: r.applied_site },
+          anonymize: !!APP_SETTINGS.anonymize,
+          user_id: APP_SETTINGS.emp_id,
+        })
+      });
+      const d = await res.json();
+      if (d.ok) okCount++; else failCount++;
+    } catch (e) { failCount++; }
+  }
+  toast(`批量质控完成：入库 ${okCount} 份${failCount ? '，失败 ' + failCount + ' 份' : ''}`, failCount ? 'warning' : 'success');
+}
+
+/** 全部加入待质控队列 */
+async function risEnqueueAll() {
+  if (!risItems.length) { toast('没有可加入队列的报告，请先拉取', 'error'); return; }
+  let n = 0;
+  for (const r of risItems) {
+    if (!r.report_text) continue;
+    const id = await enqueueText(r.report_text, {
+      patient: r.patient, gender: r.gender, age: r.age,
+      modality: r.modality, applied_site: r.applied_site,
+    }, 'RIS', true);
+    if (id) n++;
+  }
+  toast(`已将 ${n} 份报告加入待质控队列`, n ? 'success' : 'info');
+}
 
 // ==================== 规则维护 ====================
 async function loadRules() {
@@ -520,14 +1079,18 @@ function toggleTheme() {
 
 // ==================== 全局快捷键 ====================
 // ==================== 框选 OCR（三段识别） ====================
+// 三区对应 PACS：basic=病人基础信息 / findings=影像描述 / impression=影像诊断
+// 后端 /api/v1/screen/ocr 按 basic/findings/impression 键返回，故框 key 与之对齐。
 const OCR_MODAL = 'ocrModal';
 const ocrState = {
+  mode: 'file',        // 'file'=本地上传/粘贴图；'screen'=截取 PACS 全屏
   img: null, naturalW: 0, naturalH: 0,
-  // 框以图片自然尺寸的比例表示 (0~1)
+  screen: null,        // { b64, width, height, thumb_width, thumb_height }
+  // 框以图片显示尺寸的比例表示 (0~1)
   boxes: [
-    { key: 'patient',  name: '病人基础信息', color: '#3b82f6', x: 0.03, y: 0.02, w: 0.94, h: 0.26 },
-    { key: 'findings', name: '影像描述',   color: '#22c55e', x: 0.03, y: 0.30, w: 0.94, h: 0.32 },
-    { key: 'report',   name: '影像报告',   color: '#f59e0b', x: 0.03, y: 0.64, w: 0.94, h: 0.33 },
+    { key: 'basic',      name: '病人基础信息', color: '#3b82f6', x: 0.03, y: 0.02, w: 0.94, h: 0.26 },
+    { key: 'findings',   name: '影像描述',     color: '#22c55e', x: 0.03, y: 0.30, w: 0.94, h: 0.32 },
+    { key: 'impression', name: '影像诊断',     color: '#f59e0b', x: 0.03, y: 0.64, w: 0.94, h: 0.33 },
   ],
   drag: null,
 };
@@ -535,14 +1098,26 @@ const ocrState = {
 function openOcrModal() {
   if (!document.getElementById('page-qc').classList.contains('active')) switchPage('qc', document.querySelector('.nav-cell[data-page="qc"]'));
   document.getElementById(OCR_MODAL).style.display = 'flex';
+  // 载入上次「记住框位」保存的比例框
+  fetch('/api/v1/screen/regions').then(r => r.json()).then(d => {
+    const wr = (d.data || {}).web_regions;
+    if (wr && typeof wr === 'object') {
+      ocrState.boxes.forEach(b => {
+        if (wr[b.key]) Object.assign(b, {
+          x: +wr[b.key].x, y: +wr[b.key].y, w: +wr[b.key].w, h: +wr[b.key].h
+        });
+      });
+      if (ocrState.img) ocrRender();
+    }
+  }).catch(() => {});
 }
 function closeOcrModal() { document.getElementById(OCR_MODAL).style.display = 'none'; }
 
 function ocrResetBoxes() {
   ocrState.boxes = [
-    { key: 'patient',  name: '病人基础信息', color: '#3b82f6', x: 0.03, y: 0.02, w: 0.94, h: 0.26 },
-    { key: 'findings', name: '影像描述',   color: '#22c55e', x: 0.03, y: 0.30, w: 0.94, h: 0.32 },
-    { key: 'report',   name: '影像报告',   color: '#f59e0b', x: 0.03, y: 0.64, w: 0.94, h: 0.33 },
+    { key: 'basic',      name: '病人基础信息', color: '#3b82f6', x: 0.03, y: 0.02, w: 0.94, h: 0.26 },
+    { key: 'findings',   name: '影像描述',     color: '#22c55e', x: 0.03, y: 0.30, w: 0.94, h: 0.32 },
+    { key: 'impression', name: '影像诊断',     color: '#f59e0b', x: 0.03, y: 0.64, w: 0.94, h: 0.33 },
   ];
   ocrRender();
 }
@@ -552,6 +1127,8 @@ function ocrLoadFile(e) {
   if (f) ocrSetImageFromUrl(URL.createObjectURL(f));
 }
 function ocrSetImageFromUrl(url) {
+  ocrState.mode = 'file';
+  ocrState.screen = null;
   const img = new Image();
   img.onload = () => {
     ocrState.img = img;
@@ -563,6 +1140,62 @@ function ocrSetImageFromUrl(url) {
   };
   img.onerror = () => toast('图片加载失败', 'error');
   img.src = url;
+}
+
+/** 截取 PACS 全屏：调用后端 /api/v1/screen/capture，原图缓存在服务端，前端只拿缩略图 */
+async function ocrGrabScreen() {
+  const hint = document.getElementById('ocrSourceHint');
+  const status = document.getElementById('ocrStatus');
+  if (status) status.textContent = '正在截取全屏...';
+  try {
+    const res = await fetch('/api/v1/screen/capture', { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '截屏失败');
+    const d = data.data;
+    ocrState.mode = 'screen';
+    ocrState.screen = {
+      b64: d.image_base64, width: d.width, height: d.height,
+      thumb_width: d.thumb_width, thumb_height: d.thumb_height,
+    };
+    ocrState.naturalW = d.thumb_width;     // 画布按缩略图尺寸渲染，比例框 0~1 通用
+    ocrState.naturalH = d.thumb_height;
+    const img = new Image();
+    img.onload = () => {
+      ocrState.img = img;
+      document.getElementById('ocrPlaceholder').style.display = 'none';
+      document.getElementById('ocrCanvas').style.display = 'block';
+      ocrRender();
+    };
+    img.src = 'data:image/png;base64,' + d.image_base64;
+    if (hint) hint.textContent = `已截取 ${d.width}×${d.height}（缩略显示），拖动三框分别框选后点识别`;
+    if (status) status.textContent = '';
+    toast('已截取全屏，拖动三框框选区域', 'success');
+  } catch (e) {
+    if (status) status.textContent = '';
+    toast('截屏失败: ' + e.message, 'error');
+  }
+}
+
+/** 持久化当前框位（PUT /api/v1/screen/regions），下次进入自动复原 */
+async function ocrSaveRegions() {
+  try {
+    const regions = {};
+    ocrState.boxes.forEach(b => {
+      regions[b.key] = {
+        x: +b.x.toFixed(4), y: +b.y.toFixed(4),
+        w: +b.w.toFixed(4), h: +b.h.toFixed(4),
+      };
+    });
+    const res = await fetch('/api/v1/screen/regions', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(regions)
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '保存失败');
+    toast('已记住框位，下次自动复原', 'success');
+  } catch (e) {
+    toast('保存框位失败: ' + e.message, 'error');
+  }
 }
 
 // 粘贴截图（仅在模态打开时处理）
@@ -670,6 +1303,27 @@ async function ocrCropAndRecognize(box) {
 }
 
 async function ocrRecognize() {
+  if (ocrState.mode === 'screen') {
+    if (!ocrState.screen) { toast('请先点「🖥 截取 PACS 画面」', 'error'); return; }
+    try {
+      const regions = {};
+      ocrState.boxes.forEach(b => regions[b.key] = {
+        x: +b.x.toFixed(4), y: +b.y.toFixed(4), w: +b.w.toFixed(4), h: +b.h.toFixed(4)
+      });
+      const refresh = document.getElementById('ocrRefresh')?.checked;
+      const res = await fetch('/api/v1/screen/ocr', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ regions, refresh })
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.message || 'OCR 失败');
+      const t = (data.data && data.data.texts) || {};
+      ocrFill({ basic: t.basic, findings: t.findings, impression: t.impression });
+      toast('三段识别完成，已填充到对应区域', 'success');
+    } catch (e) { toast('OCR 出错: ' + e.message, 'error'); }
+    return;
+  }
+  // 文件 / 粘贴图模式：本地裁剪三段后逐张调 /api/v1/ocr/base64
   if (!ocrState.img) { toast('请先粘贴或选择报告截图', 'error'); return; }
   try {
     const results = await Promise.all(ocrState.boxes.map(async (b) => ({ key: b.key, text: await ocrCropAndRecognize(b) })));
@@ -701,26 +1355,43 @@ function setVal(id, v) {
 }
 
 function ocrFill(map) {
-  if (map.patient) {
-    const p = parsePatientInfo(map.patient);
+  if (map.basic) {
+    const p = parsePatientInfo(map.basic);
     setVal('mPatient', p.patient);
     setVal('mGender', p.gender);
     setVal('mAge', p.age);
     setVal('mModality', p.modality);
   }
   if (map.findings) setVal('findingsText', map.findings.trim());
-  if (map.report) setVal('impressionText', map.report.trim());
+  if (map.impression) setVal('impressionText', map.impression.trim());
 }
 
 async function ocrPipeline() {
-  if (!ocrState.img) { toast('请先粘贴或选择报告截图', 'error'); return; }
   try {
-    const results = await Promise.all(ocrState.boxes.map(async (b) => ({ key: b.key, text: await ocrCropAndRecognize(b) })));
-    const map = {}; results.forEach(r => map[r.key] = r.text);
-    ocrFill(map);
+    if (ocrState.mode === 'screen') {
+      if (!ocrState.screen) { toast('请先点「🖥 截取 PACS 画面」', 'error'); return; }
+      const regions = {};
+      ocrState.boxes.forEach(b => regions[b.key] = {
+        x: +b.x.toFixed(4), y: +b.y.toFixed(4), w: +b.w.toFixed(4), h: +b.h.toFixed(4)
+      });
+      const refresh = document.getElementById('ocrRefresh')?.checked;
+      const res = await fetch('/api/v1/screen/ocr', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ regions, refresh })
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.message || 'OCR 失败');
+      const t = (data.data && data.data.texts) || {};
+      ocrFill({ basic: t.basic, findings: t.findings, impression: t.impression });
+    } else {
+      if (!ocrState.img) { toast('请先粘贴或选择报告截图', 'error'); return; }
+      const results = await Promise.all(ocrState.boxes.map(async (b) => ({ key: b.key, text: await ocrCropAndRecognize(b) })));
+      const map = {}; results.forEach(r => map[r.key] = r.text);
+      ocrFill(map);
+    }
     toast('已识别并填充，正在导入并质控...', 'info');
     closeOcrModal();
-    await saveToLibrary(); // 导入（其内部会先运行质控）
+    await saveToLibrary();  // 导入（其内部先运行质控）
     toast('识别 → 导入 → 质控 完成', 'success');
   } catch (e) { toast('流程出错: ' + e.message, 'error'); }
 }

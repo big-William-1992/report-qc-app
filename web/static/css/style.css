@@ -912,3 +912,80 @@ textarea.qc-textarea:focus {
 [data-theme="dark"] .modal { background: #1b2333; }
 [data-theme="dark"] .ocr-canvas-wrap { background: #11182a; }
 [data-theme="dark"] .ocr-placeholder { color: #8a97ad; }
+
+/* ============ P0/P1 功能追平新增样式 ============ */
+/* 侧栏「待质控」数量角标 */
+.nav-cell { position: relative; }
+.nav-badge {
+  position: absolute; top: 6px; right: 8px;
+  min-width: 17px; height: 17px; padding: 0 5px;
+  border-radius: 9px; background: #e5484d; color: #fff;
+  font-size: 10px; font-weight: 700; line-height: 17px; text-align: center;
+  box-shadow: 0 2px 6px rgba(229,72,77,0.45);
+}
+
+/* 模态底部操作条 */
+.modal-footer {
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+  padding: 12px 18px; border-top: 1px solid var(--border-color, #e3e8f0);
+}
+.btn-danger {
+  background: #e5484d; color: #fff; border: 1px solid #e5484d;
+}
+.btn-danger:hover { background: #cf3b40; box-shadow: 0 4px 12px rgba(229,72,77,0.3); }
+
+/* 开关行（复选框 + 文字） */
+.switch-row {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text-secondary, #5b6b85); cursor: pointer;
+}
+.switch-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--primary, #2d6cdf); }
+
+/* 规则词表编辑框 */
+.cfg-textarea {
+  width: 100%; padding: 9px 12px; font-size: 12px; line-height: 1.7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  border: 1.5px solid var(--border-color, #e3e8f0);
+  border-radius: var(--radius-sm, 10px);
+  background: var(--bg-input, #f5f7fb); color: var(--text-primary, #1a2b4a);
+  resize: vertical;
+}
+.cfg-textarea:focus { outline: none; border-color: var(--primary, #2d6cdf); }
+
+/* 待质控队列行 */
+.queue-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 20px; border-bottom: 1px solid var(--border-color, #e3e8f0);
+}
+.queue-row:last-child { border-bottom: none; }
+.queue-row:hover { background: var(--bg-hover, #f5f8fe); }
+.queue-main { flex: 1; min-width: 0; }
+.queue-title { font-size: 14px; font-weight: 700; color: var(--text-primary, #1a2b4a); }
+.queue-sub { font-size: 12px; color: var(--text-muted, #8a97ad); margin-top: 3px; }
+.queue-preview {
+  font-size: 12px; color: var(--text-secondary, #5b6b85); margin-top: 5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.queue-acts { display: flex; gap: 8px; flex-shrink: 0; }
+
+/* 错误类型分布：横向条 */
+.errbar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.errbar-name { width: 96px; font-size: 12px; color: var(--text-secondary, #5b6b85); flex-shrink: 0; text-align: right; }
+.errbar-track { flex: 1; height: 18px; background: var(--bg-input, #eef2f9); border-radius: 9px; overflow: hidden; }
+.errbar-fill { height: 100%; border-radius: 9px; transition: width 0.6s ease; }
+.errbar-val { width: 34px; font-size: 12px; font-weight: 700; color: var(--text-primary, #1a2b4a); }
+
+/* 样本详情：正文块 */
+.sample-report {
+  white-space: pre-wrap; font-size: 13px; line-height: 1.85;
+  padding: 12px 14px; border-radius: var(--radius-sm, 10px);
+  background: var(--bg-input, #f5f7fb); border: 1px solid var(--border-color, #e3e8f0);
+  color: var(--text-primary, #1a2b4a);
+}
+.sample-kv { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 16px; margin-bottom: 14px; }
+.sample-kv div span { display: block; font-size: 11px; color: var(--text-muted, #8a97ad); }
+.sample-kv div b { font-size: 13px; color: var(--text-primary, #1a2b4a); }
+
+[data-theme="dark"] .cfg-textarea { background: #11182a; }
+[data-theme="dark"] .sample-report { background: #11182a; }
+[data-theme="dark"] .errbar-track { background: #11182a; }

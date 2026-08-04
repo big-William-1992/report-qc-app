@@ -24,6 +24,11 @@
         <span class="nav-cell-ico">📋</span>
         <span class="nav-cell-label">报告质控</span>
       </div>
+      <div class="nav-cell" data-page="queue" onclick="switchPage('queue',this)">
+        <span class="nav-cell-ico">📥</span>
+        <span class="nav-cell-label" id="navQueueLabel">待质控队列</span>
+        <span class="nav-badge" id="navQueueBadge" style="display:none">0</span>
+      </div>
       <div class="nav-cell" data-page="dashboard" onclick="switchPage('dashboard',this)">
         <span class="nav-cell-ico">📊</span>
         <span class="nav-cell-label">质控看板</span>
@@ -74,7 +79,7 @@
     <div class="topbar-right">
       <button class="topbar-btn" title="通知">🔔<span class="dot"></span></button>
       <button class="topbar-btn" id="themeToggle" title="切换明暗主题" onclick="toggleTheme()">🌙</button>
-      <button class="topbar-btn" title="设置">⚙️</button>
+      <button class="topbar-btn" title="设置" onclick="openSettings()">⚙️</button>
       <div class="user-dropdown">
         <div class="user-avatar">谢</div>
         <span>Emma ▾</span>
@@ -137,8 +142,9 @@
             <button class="btn btn-outline" onclick="clearInput()">🗑 清空</button>
             <button class="btn btn-outline" onclick="saveToLibrary()">💾 入库</button>
             <button class="btn btn-outline" onclick="openOcrModal()">📷 框选OCR</button>
+            <button class="btn btn-outline" onclick="enqueueCurrent('手动')">📥 加入队列</button>
             <div style="flex:1"></div>
-            <button class="btn btn-outline btn-sm" onclick="toggleSettings()">⚙ 高级设置</button>
+            <button class="btn btn-outline btn-sm" onclick="openSettings()">⚙ 高级设置</button>
           </div>
         </div>
 
@@ -196,6 +202,33 @@
               </div>
               <ul class="finding-list" id="findingList" style="display:none"></ul>
             </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 页面1.5：待质控队列 ========== -->
+    <section class="page" id="page-queue">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <div>
+          <h3 style="font-size:18px;font-weight:700;">📥 待质控队列</h3>
+          <p style="font-size:13px;color:var(--text-secondary);margin-top:2px;">
+            RIS 直连 / 屏幕采集 / 手动加入的报告在此排队，逐份质控并入库后自动出队。与桌面版共用同一队列文件。
+          </p>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-outline" onclick="loadQueue()">🔄 刷新</button>
+          <button class="btn btn-primary" onclick="queueRunAll()">⚡ 批量质控入库</button>
+          <button class="btn btn-outline" onclick="queueClear()">🗑 清空队列</button>
+        </div>
+      </div>
+
+      <div class="ris-progress" id="queueProgress"><div class="ris-progress-fill" id="queueProgressFill"></div></div>
+
+      <div class="card">
+        <div class="card-body" style="padding:0;">
+          <div id="queueList">
+            <div class="empty-state"><div class="empty-icon">📭</div><p>队列为空</p></div>
           </div>
         </div>
       </div>
@@ -270,6 +303,33 @@
           </div>
         </div>
       </div>
+
+      <!-- 第二排：错误类型分布 + 近 30 天趋势 -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px;">
+        <div class="card">
+          <div class="card-header">
+            <h3><span class="icon">🧩</span> 错误类型分布</h3>
+            <span class="card-header-action" id="errTypeTotal">0 项</span>
+          </div>
+          <div class="card-body">
+            <div id="errorTypeChart" style="min-height:240px;">
+              <div class="empty-state"><div class="empty-icon">📭</div><p>暂无数据</p></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3><span class="icon">📈</span> 质控量趋势（近 30 天）</h3>
+            <span class="card-header-action" id="trendTotal">0 天有数据</span>
+          </div>
+          <div class="card-body">
+            <div id="trendChart" style="min-height:240px;">
+              <div class="empty-state"><div class="empty-icon">📭</div><p>暂无数据</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- ========== 页面3：RIS 直连 ========== -->
@@ -334,14 +394,15 @@
           </div>
           <div class="card-body" style="padding:0;overflow:auto;max-height:520px;">
             <table class="data-table" id="risTable">
-              <thead><tr><th>患者</th><th>性别/年龄</th><th>模态</th><th>部位</th><th>报告摘要</th></tr></thead>
+              <thead><tr><th style="width:34px"></th><th>患者</th><th>性别/年龄</th><th>模态</th><th>部位</th><th>报告摘要</th></tr></thead>
               <tbody id="risBody">
-                <tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:32px;">点击「拉取报告」获取数据</td></tr>
+                <tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px;">点击「拉取报告」获取数据</td></tr>
               </tbody>
             </table>
           </div>
           <div style="padding:14px 20px;border-top:1px solid var(--border-color);display:flex;justify-content:flex-end;gap:8px;">
             <button class="btn btn-outline btn-sm" id="risCancelBtn" onclick="cancelRis()" style="display:none;">✕ 取消</button>
+            <button class="btn btn-outline btn-sm" onclick="risEnqueueAll()">📥 全部加入队列</button>
             <button class="btn btn-outline btn-sm" onclick="sendToQC()">▶ 发送到质控</button>
             <button class="btn btn-primary btn-sm" onclick="batchQC()">📦 批量质控入库</button>
           </div>
@@ -368,11 +429,11 @@
             <thead>
               <tr>
                 <th>ID</th><th>时间</th><th>患者</th><th>性别</th><th>年龄</th>
-                <th>模态</th><th>部位</th><th>发现数</th><th>准确性</th><th>完整性</th>
+                <th>模态</th><th>部位</th><th>发现数</th><th>准确性</th><th>完整性</th><th>操作</th>
               </tr>
             </thead>
             <tbody id="samplesBody">
-              <tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:32px;">加载中...</td></tr>
+              <tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:32px;">加载中...</td></tr>
             </tbody>
           </table>
         </div>
@@ -395,33 +456,67 @@
           </table>
         </div>
       </div>
+
+      <!-- 可编辑规则配置：R8 错别字 / R9 矛盾对 / 忽略词 -->
+      <div class="card" style="margin-top:20px;">
+        <div class="card-header">
+          <h3><span class="icon">✏️</span> 规则词表维护（保存后立即生效）</h3>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-outline btn-sm" onclick="loadRulesConfig()">↺ 重新载入</button>
+            <button class="btn btn-primary btn-sm" onclick="saveRulesConfig()">💾 保存配置</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
+            <div class="form-group">
+              <label>R8 错别字表（每行 <code>错词=正词</code>）</label>
+              <textarea id="cfgTypos" rows="12" class="cfg-textarea" placeholder="肋膜=胸膜&#10;园形=圆形"></textarea>
+            </div>
+            <div class="form-group">
+              <label>R9 矛盾对（每行 <code>词A|词B</code>）</label>
+              <textarea id="cfgConflicts" rows="12" class="cfg-textarea" placeholder="未见明显异常|结节&#10;正常|占位"></textarea>
+            </div>
+            <div class="form-group">
+              <label>忽略词/白名单（每行一项，命中即不报）</label>
+              <textarea id="cfgIgnores" rows="12" class="cfg-textarea" placeholder="请结合临床"></textarea>
+            </div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:20px;flex-wrap:wrap;align-items:center;">
+            <label class="switch-row"><input type="checkbox" id="cfgTplFollowup" /> <span>R10 模板要求给出随访/复查建议</span></label>
+            <span style="font-size:12px;color:var(--text-muted);">配置写入 rules_config.json，桌面端与 Web 端共用。</span>
+          </div>
+        </div>
+      </div>
     </section>
 
   </main><!-- /content -->
 </div><!-- /main-area -->
 
-<!-- ========== 框选 OCR 模态（三段识别） ========== -->
+<!-- ========== 框选 OCR 模态（PACS 屏幕三区识别） ========== -->
 <div class="modal-overlay" id="ocrModal" style="display:none">
   <div class="modal ocr-modal">
     <div class="modal-header">
-      <h3>📷 框选 OCR · 三段识别</h3>
+      <h3>📷 框选 OCR · PACS 屏幕三区识别</h3>
       <button class="modal-close" onclick="closeOcrModal()">✕</button>
     </div>
     <div class="modal-body">
       <div class="ocr-toolbar">
-        <button class="btn btn-outline btn-sm" onclick="document.getElementById('ocrFile').click()">📁 选择报告图</button>
+        <button class="btn btn-primary btn-sm" onclick="ocrGrabScreen()">🖥 截取 PACS 画面</button>
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('ocrFile').click()">📁 选图片</button>
         <input type="file" id="ocrFile" accept="image/*" style="display:none" onchange="ocrLoadFile(event)" />
-        <span class="ocr-hint">支持粘贴截图（⌘/Ctrl+V）到下方区域</span>
+        <span class="ocr-hint" id="ocrSourceHint">先把 PACS 报告窗口放到前台，再点「截取 PACS 画面」</span>
         <div style="flex:1"></div>
-        <button class="btn btn-primary btn-sm" onclick="ocrRecognize()">🔍 识别填充</button>
+        <label class="switch-row" style="font-size:12px;"><input type="checkbox" id="ocrRefresh" /> <span>识别前重新抓屏</span></label>
+        <button class="btn btn-outline btn-sm" onclick="ocrSaveRegions()">💾 记住框位</button>
+        <button class="btn btn-outline btn-sm" onclick="ocrRecognize()">🔍 识别填充</button>
         <button class="btn btn-success btn-sm" onclick="ocrPipeline()">⚡ 识别·导入·质控</button>
       </div>
 
       <div class="ocr-canvas-wrap" id="ocrCanvasWrap">
         <div class="ocr-placeholder" id="ocrPlaceholder">
-          在此粘贴或选择一张放射报告截图<br/>
-          然后用三个彩色框分别框选：<b>病人基础信息 / 影像描述 / 影像报告</b><br/>
-          <span style="font-size:12px;color:var(--text-muted)">拖拽框体移动，拖右下角缩放</span>
+          点击「🖥 截取 PACS 画面」抓取整屏，或粘贴/选择一张报告截图<br/>
+          然后用三个彩色框分别框选：<b>病人基础信息 / 影像描述 / 影像诊断</b><br/>
+          <span style="font-size:12px;color:var(--text-muted)">拖拽框体移动，拖右下角缩放；框位可「💾 记住框位」下次自动复原</span>
         </div>
         <canvas id="ocrCanvas" style="display:none"></canvas>
       </div>
@@ -429,9 +524,72 @@
       <div class="ocr-boxes-legend">
         <span class="ocr-legend"><i style="background:#3b82f6"></i>病人基础信息</span>
         <span class="ocr-legend"><i style="background:#22c55e"></i>影像描述</span>
-        <span class="ocr-legend"><i style="background:#f59e0b"></i>影像报告</span>
+        <span class="ocr-legend"><i style="background:#f59e0b"></i>影像诊断</span>
         <span class="ocr-reset" onclick="ocrResetBoxes()">↺ 重置框位置</span>
+        <span class="ocr-hint" id="ocrStatus" style="margin-left:auto"></span>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 设置模态 ========== -->
+<div class="modal-overlay" id="settingsModal" style="display:none">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-header">
+      <h3>⚙️ 系统设置</h3>
+      <button class="modal-close" onclick="closeSettings()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>操作工号（责任到人）</label>
+          <input id="setEmpId" placeholder="demo01" />
+        </div>
+        <div class="form-group">
+          <label>默认成像方式</label>
+          <select id="setModality">
+            <option value="">不预设</option><option value="CT">CT</option><option value="DR">DR</option>
+            <option value="MR">MRI</option><option value="XA">DSA</option><option value="US">超声</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>OCR 置信度阈值（0~1，越高越严）</label>
+          <input id="setOcrScore" type="number" step="0.05" min="0" max="1" placeholder="0.55" />
+        </div>
+        <div class="form-group">
+          <label>界面主题</label>
+          <select id="setTheme"><option value="light">浅色</option><option value="dark">深色</option></select>
+        </div>
+      </div>
+      <div style="margin-top:16px;display:flex;flex-direction:column;gap:10px;">
+        <label class="switch-row"><input type="checkbox" id="setAutoQC" /> <span>OCR 回填后自动运行质控</span></label>
+        <label class="switch-row"><input type="checkbox" id="setAutoEnqueue" /> <span>屏幕采集 / RIS 拉取自动加入待质控队列</span></label>
+        <label class="switch-row"><input type="checkbox" id="setScreenRefresh" /> <span>识别前重新抓屏（画面常变动时开启）</span></label>
+        <label class="switch-row"><input type="checkbox" id="setAnonymize" /> <span>入库时脱敏（姓名等 PHI 不落库）</span></label>
+      </div>
+      <div style="margin-top:12px;font-size:12px;color:var(--text-muted);">
+        配置保存在本机 <code>~/.medical_report_qc/web_settings.json</code>，不上传任何服务器。
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeSettings()">取消</button>
+      <button class="btn btn-primary" onclick="saveSettings()">💾 保存设置</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 样本详情模态 ========== -->
+<div class="modal-overlay" id="sampleModal" style="display:none">
+  <div class="modal" style="max-width:760px">
+    <div class="modal-header">
+      <h3 id="sampleModalTitle">📄 样本详情</h3>
+      <button class="modal-close" onclick="closeSampleModal()">✕</button>
+    </div>
+    <div class="modal-body" id="sampleModalBody" style="max-height:60vh;overflow:auto;"></div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeSampleModal()">关闭</button>
+      <button class="btn btn-outline" id="sampleLoadBtn">↩ 载入工作区</button>
+      <button class="btn btn-danger" id="sampleDelBtn">🗑 删除样本</button>
     </div>
   </div>
 </div>
