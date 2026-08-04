@@ -52,10 +52,10 @@
   <div class="sidebar-footer">
     <div class="sidebar-tips">
       <div class="tips-title">⌨ 快捷键</div>
-      <div class="tips-row"><span>运行质控</span><span class="tips-key">⌘↵</span></div>
-      <div class="tips-row"><span>存入样本库</span><span class="tips-key">⌘S</span></div>
+      <div class="tips-row"><span>运行质控</span><span class="tips-key" data-action="run_qc">Ctrl+Enter</span></div>
+      <div class="tips-row"><span>存入样本库</span><span class="tips-key" data-action="save_sample">Ctrl+S</span></div>
       <div class="tips-row"><span>清空录入</span><span class="tips-key">Esc</span></div>
-      <div class="tips-row"><span>框选OCR·一键</span><span class="tips-key">⌘⇧O</span></div>
+      <div class="tips-row"><span>框选OCR·一键</span><span class="tips-key" data-action="ocr_capture">Ctrl+Shift+O</span></div>
     </div>
     <div class="sidebar-version">v1.0 · 桌面客户端</div>
   </div>
@@ -136,8 +136,8 @@
 
           <!-- 操作按钮条 -->
           <div class="action-bar">
-            <button class="btn btn-primary btn-lg" onclick="runQC()">
-              ▶ 运行质控 ⌘↵
+            <button class="btn btn-primary btn-lg" id="btnRunQc" onclick="runQC()">
+              ▶ 运行质控 Ctrl+Enter
             </button>
             <button class="btn btn-outline" onclick="clearInput()">🗑 清空</button>
             <button class="btn btn-outline" onclick="saveToLibrary()">💾 入库</button>
@@ -567,6 +567,34 @@
         <label class="switch-row"><input type="checkbox" id="setScreenRefresh" /> <span>识别前重新抓屏（画面常变动时开启）</span></label>
         <label class="switch-row"><input type="checkbox" id="setAnonymize" /> <span>入库时脱敏（姓名等 PHI 不落库）</span></label>
       </div>
+
+      <div class="settings-section" style="margin-top:18px;">
+        <div class="settings-section-title">⌨ 快捷键（点“重绑”后按下新组合键，Esc 取消）</div>
+        <div class="shortcut-list">
+          <div class="shortcut-row">
+            <span class="shortcut-label">运行质控</span>
+            <span class="sc-key" data-action="run_qc">Ctrl+Enter</span>
+            <button class="btn btn-outline btn-sm sc-rebind" data-action="run_qc" onclick="_startCapture('run_qc', this)">重绑</button>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-label">存入样本库</span>
+            <span class="sc-key" data-action="save_sample">Ctrl+S</span>
+            <button class="btn btn-outline btn-sm sc-rebind" data-action="save_sample" onclick="_startCapture('save_sample', this)">重绑</button>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-label">识别并质控（框选OCR）</span>
+            <span class="sc-key" data-action="ocr_capture">Ctrl+Shift+O</span>
+            <button class="btn btn-outline btn-sm sc-rebind" data-action="ocr_capture" onclick="_startCapture('ocr_capture', this)">重绑</button>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-label">明暗主题切换</span>
+            <span class="sc-key" data-action="toggle_theme">Ctrl+T</span>
+            <button class="btn btn-outline btn-sm sc-rebind" data-action="toggle_theme" onclick="_startCapture('toggle_theme', this)">重绑</button>
+          </div>
+        </div>
+        <button class="btn btn-outline btn-sm" style="margin-top:8px;" onclick="resetShortcuts()">↺ 恢复默认快捷键</button>
+      </div>
+
       <div style="margin-top:12px;font-size:12px;color:var(--text-muted);">
         配置保存在本机 <code>~/.medical_report_qc/web_settings.json</code>，不上传任何服务器。
       </div>

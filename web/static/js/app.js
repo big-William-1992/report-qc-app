@@ -17,6 +17,13 @@ const PAGE_TITLES = {
 let APP_SETTINGS = {
   emp_id: 'demo01', default_modality: '', auto_qc_on_ocr: true, auto_enqueue: true,
   ocr_min_score: 0.55, screen_refresh_on_ocr: false, anonymize: false, theme: 'light',
+  // 默认 Windows 风 Ctrl+；设置页可逐条重绑（保存后持久化到 web_settings.json）
+  shortcuts: {
+    run_qc:       { mods: ['ctrl'], key: 'Enter' },
+    save_sample:  { mods: ['ctrl'], key: 's' },
+    ocr_capture:  { mods: ['ctrl', 'shift'], key: 'o' },
+    toggle_theme: { mods: ['ctrl'], key: 't' },
+  },
 };
 
 // 严重度元数据：图标 + 文字（色盲可用）
@@ -272,6 +279,7 @@ async function loadSettings(applyUI = true) {
     }
     const rf = document.getElementById('ocrRefresh');
     if (rf) rf.checked = !!APP_SETTINGS.screen_refresh_on_ocr;
+    updateShortcutHints();
   }
   return APP_SETTINGS;
 }
@@ -286,7 +294,34 @@ function openSettings() {
   document.getElementById('setAutoEnqueue').checked   = !!s.auto_enqueue;
   document.getElementById('setScreenRefresh').checked = !!s.screen_refresh_on_ocr;
   document.getElementById('setAnonymize').checked     = !!s.anonymize;
+  renderShortcuts();
   document.getElementById('settingsModal').style.display = 'flex';
+}
+
+// 把当前 APP_SETTINGS.shortcuts 渲染到设置页各行
+function renderShortcuts() {
+  for (const action in SHORTCUT_ACTIONS) _renderShortcutRow(action);
+}
+
+function resetShortcuts() {
+  APP_SETTINGS.shortcuts = {
+    run_qc:       { mods: ['ctrl'], key: 'Enter' },
+    save_sample:  { mods: ['ctrl'], key: 's' },
+    ocr_capture:  { mods: ['ctrl', 'shift'], key: 'o' },
+    toggle_theme: { mods: ['ctrl'], key: 't' },
+  };
+  renderShortcuts();
+  toast('快捷键已恢复默认（保存后生效）', 'info');
+}
+
+// 侧边栏速查卡 + 运行按钮 跟随当前配置刷新
+function updateShortcutHints() {
+  const sc = APP_SETTINGS.shortcuts || {};
+  document.querySelectorAll('.tips-key[data-action]').forEach(el => {
+    el.textContent = fmtShortcut(sc[el.dataset.action]);
+  });
+  const run = document.getElementById('btnRunQc');
+  if (run) run.textContent = '▶ 运行质控 ' + fmtShortcut(sc.run_qc);
 }
 function closeSettings() { document.getElementById('settingsModal').style.display = 'none'; }
 
@@ -300,6 +335,7 @@ async function saveSettings() {
     auto_enqueue:          document.getElementById('setAutoEnqueue').checked,
     screen_refresh_on_ocr: document.getElementById('setScreenRefresh').checked,
     anonymize:             document.getElementById('setAnonymize').checked,
+    shortcuts:            APP_SETTINGS.shortcuts || {},
   };
   try {
     const res = await fetch('/api/v1/settings', {
@@ -316,6 +352,7 @@ async function saveSettings() {
     if (t) t.textContent = payload.theme === 'dark' ? '☀️' : '🌙';
     const u = document.getElementById('mUser'); if (u) u.value = payload.emp_id;
     const rf = document.getElementById('ocrRefresh'); if (rf) rf.checked = payload.screen_refresh_on_ocr;
+    updateShortcutHints();
     closeSettings();
     toast('设置已保存并生效', 'success');
   } catch (e) { toast('保存设置失败: ' + e.message, 'error'); }
@@ -1396,21 +1433,101 @@ async function ocrPipeline() {
   } catch (e) { toast('流程出错: ' + e.message, 'error'); }
 }
 
-document.addEventListener('keydown', function(e) {
-  const meta = e.metaKey || e.ctrlKey;
-  if (meta && e.key === 'Enter')        { e.preventDefault(); runQC(); }
-  else if (meta && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveToLibrary(); }
-  else if (e.key === 'Escape') {
-    const modalOpen = document.getElementById('ocrModal').style.display === 'flex';
-    if (modalOpen) { closeOcrModal(); }
-    else if (document.getElementById('page-qc').classList.contains('active')) { clearInput(); }
-  }
-  else if (meta && e.shiftKey && (e.key === 'O' || e.key === 'o')) {
-    e.preventDefault();
+// ==================== 全局快捷键（可配置，默认 Windows Ctrl+ 风） ====================
+const SHORTCUT_ACTIONS = {
+  run_qc:       { label: '运行质控',     run: () => runQC() },
+  save_sample:  { label: '存入样本库',   run: () => saveToLibrary() },
+  ocr_capture:  { label: '识别并质控',   run: () => {
     if (document.getElementById('ocrModal').style.display === 'flex') ocrPipeline();
     else openOcrModal();
+  } },
+  toggle_theme: { label: '明暗主题切换', run: () => toggleTheme() },
+};
+
+// 把 {mods:[...], key:"..."} 渲染成展示串，如 "Ctrl+Shift+O"
+function fmtShortcut(sc) {
+  if (!sc || !sc.key) return '未设置';
+  const names = { ctrl: 'Ctrl', shift: 'Shift', alt: 'Alt', meta: 'Win' };
+  const mods = (sc.mods || []).map(m => names[m] || m).join('+');
+  const k = sc.key.length === 1 ? sc.key.toUpperCase() : sc.key;
+  return mods ? (mods + '+' + k) : k;
+}
+
+// 从 keydown 事件解析出组合键描述
+function comboFromEvent(e) {
+  const mods = [];
+  if (e.ctrlKey)  mods.push('ctrl');
+  if (e.shiftKey) mods.push('shift');
+  if (e.altKey)   mods.push('alt');
+  if (e.metaKey)  mods.push('meta');
+  let key = e.key;
+  if (key === ' ') key = 'Space';
+  else if (key.length === 1) key = key.toLowerCase();   // 字母统一小写
+  return { mods, key };
+}
+
+// 组合键精确匹配（修饰键集合 + 主键 都要一致）
+function comboEquals(sc, evt) {
+  if (!sc || !sc.key || !evt) return false;
+  const a = (sc.mods || []).slice().sort().join(',');
+  const b = evt.mods.slice().sort().join(',');
+  if (a !== b) return false;
+  const k = sc.key.length === 1 ? sc.key.toLowerCase() : sc.key;
+  return k === evt.key;
+}
+
+let _capturingShortcut = null;   // 设置页“按下新快捷键”捕获中
+
+document.addEventListener('keydown', function(e) {
+  // 设置页正在捕获：记录组合键并写回该动作，不触发业务动作
+  if (_capturingShortcut) {
+    e.preventDefault();
+    if (e.key === 'Escape') { _cancelCapture(); return; }
+    const sc = comboFromEvent(e);
+    APP_SETTINGS.shortcuts = APP_SETTINGS.shortcuts || {};
+    APP_SETTINGS.shortcuts[_capturingShortcut] = sc;
+    _renderShortcutRow(_capturingShortcut);
+    _endCapture();
+    return;
+  }
+  const evt = comboFromEvent(e);
+  const sc = APP_SETTINGS.shortcuts || {};
+  for (const action in SHORTCUT_ACTIONS) {
+    if (comboEquals(sc[action], evt)) {
+      e.preventDefault();
+      SHORTCUT_ACTIONS[action].run();
+      return;
+    }
+  }
+  // Esc 为固定行为：先关 OCR 模态，否则在工作区清空录入
+  if (e.key === 'Escape') {
+    if (document.getElementById('ocrModal').style.display === 'flex') closeOcrModal();
+    else if (document.getElementById('page-qc').classList.contains('active')) clearInput();
   }
 });
+
+function _startCapture(action, btn) {
+  _capturingShortcut = action;
+  document.querySelectorAll('.sc-rebind').forEach(b => b.classList.remove('capturing'));
+  btn.classList.add('capturing');
+  btn.textContent = '按下新快捷键…';
+}
+function _endCapture() {
+  _capturingShortcut = null;
+  document.querySelectorAll('.sc-rebind').forEach(b => {
+    b.classList.remove('capturing');
+    const a = b.dataset.action;
+    b.textContent = '重绑';
+  });
+}
+function _cancelCapture() {
+  const btn = document.querySelector('.sc-rebind.capturing');
+  _endCapture();
+}
+function _renderShortcutRow(action) {
+  const cell = document.querySelector('.sc-key[data-action="' + action + '"]');
+  if (cell) cell.textContent = fmtShortcut((APP_SETTINGS.shortcuts || {})[action]);
+}
 
 // ==================== 初始化 ====================
 console.log('星衍AI放射质控 · Web 版 v1.0 已加载');

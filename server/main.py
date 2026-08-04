@@ -831,6 +831,14 @@ _DEFAULT_SETTINGS = {
     "screen_refresh_on_ocr": False,  # 识别前重新抓屏
     "anonymize": False,            # 入库脱敏
     "theme": "light",
+    # ── 可配置快捷键（Windows 风 Ctrl+ 默认；设置页可逐条重绑，持久化到 web_settings.json）──
+    # mods 取值: "ctrl" / "shift" / "alt" / "meta"；key 为 KeyboardEvent.key（大小写敏感）
+    "shortcuts": {
+        "run_qc":      {"mods": ["ctrl"], "key": "Enter"},   # 运行质控
+        "save_sample": {"mods": ["ctrl"], "key": "s"},       # 存入样本库
+        "ocr_capture": {"mods": ["ctrl", "shift"], "key": "o"},  # 识别并质控（框选OCR）
+        "toggle_theme":{"mods": ["ctrl"], "key": "t"},       # 明暗主题切换
+    },
 }
 
 
@@ -858,8 +866,19 @@ def settings_put(cfg: Dict[str, Any], emp: str = Depends(require_emp_local)):
     except Exception:
         pass
     for k in _DEFAULT_SETTINGS:          # 只接受已知键，避免写入杂项
+        if k == "shortcuts":
+            continue                     # shortcuts 走下方逐条合并，避免整体覆盖
         if k in cfg:
             data[k] = cfg[k]
+    # shortcuts 为嵌套字典：以「默认值+已持久化」为基线，逐条合并已知动作键，
+    # 避免只重绑某一个动作时丢失其它动作（如只改 run_qc 却把 save_sample 清零）
+    if isinstance(cfg.get("shortcuts"), dict):
+        known = set((_DEFAULT_SETTINGS.get("shortcuts") or {}).keys())
+        cur = dict(data.get("shortcuts") or {})
+        for act, sc in cfg["shortcuts"].items():
+            if act in known:
+                cur[act] = sc
+        data["shortcuts"] = cur
     with open(_settings_path(), "w", encoding="utf-8") as fh:
         json.dump(data, fh, ensure_ascii=False, indent=2)
     return _envelope(True, "OK", data, "设置已保存")
