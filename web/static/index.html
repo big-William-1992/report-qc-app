@@ -8,39 +8,50 @@
 </head>
 <body>
 
-<!-- ==================== 左侧导航栏 ==================== -->
+<!-- ==================== 左侧导航栏（宫格化） ==================== -->
 <aside class="sidebar">
-  <div class="sidebar-logo">
-    <div class="logo-icon">⚕</div>
-    <span>星衍质控</span>
+  <!-- 品牌区 -->
+  <div class="sidebar-brand">
+    <div class="brand-name">✚ 星衍</div>
+    <div class="brand-sub">放射质控系统</div>
   </div>
 
+  <!-- 导航宫格：图标在上、文字在下，两列排布 -->
   <nav class="sidebar-nav">
-    <div class="nav-section-label">主功能</div>
-    <div class="nav-item active" data-page="qc" onclick="switchPage('qc',this)">
-      <span class="nav-icon">📋</span> 报告质控
-    </div>
-    <div class="nav-item" data-page="dashboard" onclick="switchPage('dashboard',this)">
-      <span class="nav-icon">📊</span> 质控看板
-    </div>
-    <div class="nav-item" data-page="ris" onclick="switchPage('ris',this)">
-      <span class="nav-icon">🔗</span> RIS 直连
-    </div>
-    <div class="nav-item" data-page="samples" onclick="switchPage('samples',this)">
-      <span class="nav-icon">📦</span> 样本库
-    </div>
-
-    <div class="nav-section-label">工具</div>
-    <div class="nav-item" data-page="rules" onclick="switchPage('rules',this)">
-      <span class="nav-icon">⚙️</span> 规则维护
+    <div class="nav-section-label">工作台</div>
+    <div class="nav-grid">
+      <div class="nav-cell active" data-page="qc" onclick="switchPage('qc',this)">
+        <span class="nav-cell-ico">📋</span>
+        <span class="nav-cell-label">报告质控</span>
+      </div>
+      <div class="nav-cell" data-page="dashboard" onclick="switchPage('dashboard',this)">
+        <span class="nav-cell-ico">📊</span>
+        <span class="nav-cell-label">质控看板</span>
+      </div>
+      <div class="nav-cell" data-page="ris" onclick="switchPage('ris',this)">
+        <span class="nav-cell-ico">🔗</span>
+        <span class="nav-cell-label">RIS 直连</span>
+      </div>
+      <div class="nav-cell" data-page="samples" onclick="switchPage('samples',this)">
+        <span class="nav-cell-ico">📦</span>
+        <span class="nav-cell-label">样本库</span>
+      </div>
+      <div class="nav-cell" data-page="rules" onclick="switchPage('rules',this)">
+        <span class="nav-cell-ico">⚙️</span>
+        <span class="nav-cell-label">规则维护</span>
+      </div>
     </div>
   </nav>
 
+  <!-- 底部：版本 + 快捷键速查卡 -->
   <div class="sidebar-footer">
-    <div class="user-mini">
-      <div class="user-avatar-xs">谢</div>
-      <div class="user-name">演示账号</div>
+    <div class="sidebar-tips">
+      <div class="tips-title">⌨ 快捷键</div>
+      <div class="tips-row"><span>运行质控</span><span class="tips-key">⌘↵</span></div>
+      <div class="tips-row"><span>存入样本库</span><span class="tips-key">⌘S</span></div>
+      <div class="tips-row"><span>清空录入</span><span class="tips-key">Esc</span></div>
     </div>
+    <div class="sidebar-version">v1.0 · 桌面客户端</div>
   </div>
 </aside>
 

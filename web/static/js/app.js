@@ -21,7 +21,7 @@ const SEV_META = {
 
 function switchPage(pageName, navEl) {
   // 切换导航高亮
-  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.nav-cell').forEach(el => el.classList.remove('active'));
   if (navEl) navEl.classList.add('active');
 
   // 切换页面显示
