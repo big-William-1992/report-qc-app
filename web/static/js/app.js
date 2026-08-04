@@ -75,12 +75,12 @@ async function runQC() {
     '<div class="loading-spinner"><div class="spinner"></div>正在运行质控引擎...</div>';
 
   try {
-    const res = await fetch('/api/qc/run', {
+    const report = [findings, impression].filter(Boolean).join('\n');
+    const res = await fetch('/api/v1/qc/check', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        findings,
-        impression,
+        report,
         meta: {
           patient:    document.getElementById('mPatient').value,
           gender:     document.getElementById('mGender').value,
@@ -95,11 +95,17 @@ async function runQC() {
 
     const data = await res.json();
 
-    if (!data.success) {
-      throw new Error(data.error || '引擎执行失败');
+    if (!data.ok) {
+      throw new Error(data.message || '引擎执行失败');
     }
 
-    renderQCResult(data.data);
+    // FastAPI 返回 score 为中文维度键、findings 用 error_type；映射为前端期望结构
+    const scoreMap = { '准确性': 'accuracy', '完整性': 'completeness', '规范性': 'normalization', '及时性': 'timeliness' };
+    const scoreObj = data.data.score || {};
+    const scores = {};
+    for (const [k, v] of Object.entries(scoreObj)) scores[scoreMap[k] || k] = v;
+    const findings = (data.data.findings || []).map(f => ({ ...f, category: f.error_type }));
+    renderQCResult({ findings, scores });
 
   } catch (err) {
     console.error(err);
@@ -200,11 +206,12 @@ async function saveToLibrary() {
   }
 
   try {
-    const res = await fetch('/api/samples/save', {
+    const report = [findings, impression].filter(Boolean).join('\n');
+    const res = await fetch('/api/v1/samples', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        findings, impression,
+        report,
         meta: {
           patient:      document.getElementById('mPatient').value,
           gender:       document.getElementById('mGender').value,
@@ -217,8 +224,8 @@ async function saveToLibrary() {
       })
     });
     const data = await res.json();
-    if (data.success) toast('已存入样本库（ID=' + (data.data.id || '?') + '）', 'success');
-    else toast('入库失败: ' + (data.error || ''), 'error');
+    if (data.ok) toast('已存入样本库（ID=' + (data.data.id || '?') + '）', 'success');
+    else toast('入库失败: ' + (data.message || ''), 'error');
   } catch (e) {
     toast('入库请求失败: ' + e.message, 'error');
   }
@@ -235,8 +242,8 @@ function toggleSettings() {
 async function loadDashboard() {
   try {
     const [statsRes, samplesRes] = await Promise.all([
-      fetch('/api/samples/stats/dashboard'),
-      fetch('/api/samples/list?per_page=10')
+      fetch('/api/v1/samples/stats/dashboard'),
+      fetch('/api/v1/samples?page_size=10')
     ]);
 
     const stats = (await statsRes.json()).data || {};
@@ -320,7 +327,7 @@ function renderRecentTable(items) {
 // ==================== 样本库 ====================
 async function loadSamples() {
   try {
-    const res = await fetch('/api/samples/list?per_page=50');
+    const res = await fetch('/api/v1/samples?page_size=50');
     const data = await res.json();
     const items = (data.data || {}).items || [];
     const tbody = document.getElementById('samplesBody');
@@ -349,13 +356,13 @@ async function loadSamples() {
 
 async function exportSamples() {
   try {
-    const res = await fetch('/api/samples/export', {
+    const res = await fetch('/api/v1/samples/export', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ fmt: 'csv' })
     });
     const data = await res.json();
-    toast(data.success ? '导出成功: ' + (data.data.path||'') : '导出失败: '+data.error, data.success?'success':'error');
+    toast(data.ok ? '导出成功: ' + (data.data.path||'') : '导出失败: '+data.message, data.ok?'success':'error');
   } catch(e) { toast('导出请求失败', 'error'); }
 }
 
@@ -370,7 +377,7 @@ async function testRisConnection() {
   statusEl.innerHTML = '<span class="led"></span> 测试中...';
 
   try {
-    const res = await fetch('/api/ris/test-connection', {
+    const res = await fetch('/api/v1/ris/test-connection', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
@@ -384,14 +391,14 @@ async function testRisConnection() {
       })
     });
     const data = await res.json();
-    if (data.data && data.data.ok) {
+    if (data.ok && data.data && data.data.ok) {
       statusEl.className = 'conn-status connected';
       statusEl.innerHTML = '<span class="led"></span> 已连接';
       toast('连接测试成功！', 'success');
     } else {
       statusEl.className = 'conn-status error';
       statusEl.innerHTML = '<span class="led"></span> 连接失败';
-      toast('连接失败: ' + (data.data?.message||data.error), 'error');
+      toast('连接失败: ' + (data.data?.message||data.message), 'error');
     }
   } catch(e) {
     statusEl.className = 'conn-status error';
@@ -409,7 +416,7 @@ async function fetchRisReports() {
   if (prog) prog.classList.add('show');
   if (cancelBtn) cancelBtn.style.display = 'inline-flex';
   try {
-    const res = await fetch('/api/ris/fetch-reports', {
+    const res = await fetch('/api/v1/ris/fetch-reports', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
@@ -465,7 +472,7 @@ function batchQC() { toast('批量质控入库（全部拉取结果→引擎→�
 // ==================== 规则维护 ====================
 async function loadRules() {
   try {
-    const res = await fetch('/api/qc/rules');
+    const res = await fetch('/api/v1/qc/rules');
     const data = await res.json();
     const rules = (data.data||[]);
 

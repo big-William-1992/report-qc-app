@@ -31,12 +31,13 @@ _SRC = str(Path(__file__).resolve().parent.parent / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Depends, Query
+from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import engine
+import ris
 import accounts
 import samplelib
 
@@ -79,6 +80,23 @@ def _emp_from_auth(authorization: Optional[str]) -> Optional[str]:
 def require_emp(authorization: Optional[str] = Header(None),
                  x_emp_id: Optional[str] = Header(None)) -> str:
     """写操作鉴权：Bearer token 或内网 X-Emp-Id 头，二选一。"""
+    emp = _emp_from_auth(authorization) or (x_emp_id or "").strip()
+    if not emp:
+        raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token> 或 X-Emp-Id 头")
+    return emp
+
+
+def require_emp_local(request: Request,
+                      authorization: Optional[str] = Header(None),
+                      x_emp_id: Optional[str] = Header(None)) -> str:
+    """写操作鉴权（本地优先）：
+
+    - 来自 127.0.0.1/::1 的调用（桌面端 WebView、浏览器同源 localhost）自动放行，
+      避免 SPA 必须携带鉴权头，保持本地"双击即用"体验；
+    - 公网/远程部署仍强制 Bearer token 或 X-Emp-Id，保持责任到人追溯。
+    """
+    if request.client and request.client.host in ("127.0.0.1", "::1", "localhost"):
+        return (x_emp_id or "local").strip() or "local"
     emp = _emp_from_auth(authorization) or (x_emp_id or "").strip()
     if not emp:
         raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token> 或 X-Emp-Id 头")
@@ -146,6 +164,26 @@ class OCRB64(BaseModel):
     image_base64: str
 
 
+# ----------------------------- 请求模型（Phase1 补充） -----------------------------
+class RisConfigReq(BaseModel):
+    db_type: str = "sqlserver"
+    host: str = ""
+    port: int = 0
+    database: str = ""
+    user: str = ""
+    password: str = ""
+    query_sql: str = ""
+
+
+class SampleExportReq(BaseModel):
+    path: str = ""
+    fmt: str = "csv"
+
+
+class SampleImportReq(BaseModel):
+    path: str = ""
+
+
 # ----------------------------- 辅助 -----------------------------
 def _envelope(ok: bool, code: str, data: Any, message: str = ""):
     return {"ok": ok, "code": code, "data": data, "message": message}
@@ -191,11 +229,29 @@ def qc_batch(req: BatchReq):
 
 @app.get("/api/v1/qc/rules")
 def qc_rules_get():
-    return _envelope(True, "OK", engine.load_rules_config())
+    """返回规则元信息列表（供前端规则维护页展示；更新配置走 PUT）。"""
+    rule_meta = [
+        {"rule_id": "R1",  "name": "性别一致性检查",   "category": "完整性", "severity": "warning",   "enabled": True},
+        {"rule_id": "R2",  "name": "侧别标注检查",     "category": "规范性", "severity": "warning",   "enabled": True},
+        {"rule_id": "R3",  "name": "评分单位规范",     "category": "规范性", "severity": "info",      "enabled": True},
+        {"rule_id": "R4",  "name": "单位实体识别",     "category": "准确性", "severity": "warning",   "enabled": True},
+        {"rule_id": "R5",  "name": "描述与结论一致性", "category": "准确性", "severity": "critical",  "enabled": True},
+        {"rule_id": "R6",  "name": "检查部位完整性",   "category": "完整性", "severity": "warning",   "enabled": True},
+        {"rule_id": "R7",  "name": "内部结构完整性",   "category": "完整性", "severity": "info",      "enabled": True},
+        {"rule_id": "R8",  "name": "错别字检测",       "category": "准确性", "severity": "warning",   "enabled": True},
+        {"rule_id": "R9",  "name": "矛盾信息检测",     "category": "准确性", "severity": "critical",  "enabled": True},
+        {"rule_id": "R10", "name": "模板符合度检查",   "category": "规范性", "severity": "warning",   "enabled": True},
+        {"rule_id": "R11", "name": "上下文合理性",     "category": "准确性", "severity": "warning",   "enabled": True},
+        {"rule_id": "R12", "name": "句子级质量评估",   "category": "规范性", "severity": "info",      "enabled": True},
+        {"rule_id": "R14", "name": "跨区域交叉验证",   "category": "准确性", "severity": "warning",   "enabled": True},
+        {"rule_id": "R15", "name": "内部术语规范化",   "category": "规范性", "severity": "info",      "enabled": True},
+        {"rule_id": "R16", "name": "随访时限缺失",     "category": "及时性", "severity": "info",      "enabled": False},
+    ]
+    return _envelope(True, "OK", rule_meta)
 
 
 @app.put("/api/v1/qc/rules")
-def qc_rules_put(cfg: Dict[str, Any], emp: str = Depends(require_emp)):
+def qc_rules_put(cfg: Dict[str, Any], emp: str = Depends(require_emp_local)):
     # 仅持久化已知键，避免客户端写入杂项
     clean = {
         "typos": cfg.get("typos", {}),
@@ -243,6 +299,49 @@ def ocr_base64(req: OCRB64):
     return _envelope(True, "OK", {"text": text})
 
 
+# ----------------------------- RIS / PACS 直连（迁移自 web/api/ris.py） -----------------------------
+@app.get("/api/v1/ris/drivers")
+def ris_drivers(emp: str = Depends(require_emp_local)):
+    """返回支持的数据库驱动列表及可用性。"""
+    drivers = []
+    for dtype in ("sqlserver", "oracle", "mysql", "postgresql"):
+        ok, mod, msg = ris.driver_available(dtype)
+        drivers.append({"type": dtype, "available": ok, "module": mod or "", "message": msg})
+    return _envelope(True, "OK", drivers)
+
+
+@app.post("/api/v1/ris/test-connection")
+def ris_test_connection(req: RisConfigReq, emp: str = Depends(require_emp_local)):
+    config = {
+        "db_type": req.db_type, "host": req.host, "port": req.port,
+        "database": req.database, "user": req.user,
+        "password": req.password, "query_sql": req.query_sql,
+    }
+    ok, msg = ris.test_connection(config)
+    return _envelope(True, "OK", {"ok": ok, "message": msg})
+
+
+@app.post("/api/v1/ris/fetch-reports")
+def ris_fetch_reports(req: RisConfigReq, limit: int = Query(50, ge=1, le=200),
+                      emp: str = Depends(require_emp_local)):
+    config = {
+        "db_type": req.db_type, "host": req.host, "port": req.port,
+        "database": req.database, "user": req.user,
+        "password": req.password, "query_sql": req.query_sql,
+    }
+    reports = ris.fetch_reports(config, limit=limit)
+    items = [{
+        "report_text": (r.get("report_text", "") or "")[:500],
+        "patient": r.get("patient", ""),
+        "gender": r.get("gender", ""),
+        "age": r.get("age", ""),
+        "modality": r.get("modality", ""),
+        "applied_site": r.get("applied_site", ""),
+        "ts": r.get("ts", ""),
+    } for r in (reports or [])]
+    return _envelope(True, "OK", {"items": items, "count": len(items)})
+
+
 # ----------------------------- 账号（责任到人） -----------------------------
 @app.post("/api/v1/accounts")
 def account_create(req: AccountCreate,
@@ -269,17 +368,25 @@ def account_login(req: LoginReq):
 
 
 @app.get("/api/v1/accounts")
-def account_list(emp: str = Depends(require_emp)):
+def account_list(emp: str = Depends(require_emp_local)):
     return _envelope(True, "OK", [{"emp_id": e, "name": n} for e, n in accounts.list_accounts()])
 
 
 # ----------------------------- 样本库（持久化 + 统计） -----------------------------
 @app.post("/api/v1/samples")
-def sample_create(req: SampleCreate, emp: str = Depends(require_emp)):
+def sample_create(req: SampleCreate, emp: str = Depends(require_emp_local)):
     user_id = (req.user_id or emp).strip()
+    raw_findings = list(req.findings) if req.findings else []
+    # 入库即质控：未显式提供 findings 时，自动跑引擎生成发现与评分
+    if not raw_findings and req.report.strip():
+        qc = _run_qc(req.report, req.meta, False)
+        raw_findings = qc.get("findings") or []
+        score = qc.get("score") or {}
+    else:
+        score = req.score or {}
     # findings 由 dict 还原为 Finding 对象（save_sample 会序列化其 __dict__）
     findings = []
-    for f in req.findings:
+    for f in raw_findings:
         try:
             findings.append(engine.Finding(
                 rule_id=f.get("rule_id", ""),
@@ -293,7 +400,7 @@ def sample_create(req: SampleCreate, emp: str = Depends(require_emp)):
         except Exception:
             continue
     sid = samplelib.save_sample(
-        req.report, req.meta, findings, req.score,
+        req.report, req.meta, findings, score,
         anonymize=req.anonymize, user_id=user_id)
     return _envelope(True, "OK", {"id": sid})
 
@@ -303,10 +410,7 @@ def sample_list(page: int = Query(1, ge=1),
                 page_size: int = Query(20, ge=1, le=100),
                 user_id: Optional[str] = None,
                 error_type: Optional[str] = None):
-    if error_type:
-        rows = samplelib.list_samples_full()
-    else:
-        rows = samplelib.list_samples()
+    rows = samplelib.list_samples_full()
     if user_id:
         rows = [r for r in rows if r.get("user_id") == user_id]
     if error_type:
@@ -322,7 +426,28 @@ def sample_list(page: int = Query(1, ge=1),
         rows = kept
     total = len(rows)
     start = (page - 1) * page_size
-    return _envelope(True, "OK", {"total": total, "items": rows[start:start + page_size]})
+    page_rows = rows[start:start + page_size]
+    items = []
+    for r in page_rows:
+        scores = json.loads(r.get("scores_json") or "{}")
+        findings = json.loads(r.get("findings_json") or "[]")
+        items.append({
+            "id": r.get("id"),
+            "ts": r.get("ts"),
+            "patient": r.get("patient", ""),
+            "gender": r.get("gender", ""),
+            "age": r.get("age", ""),
+            "modality": r.get("modality", ""),
+            "applied_site": r.get("applied_site", ""),
+            "laterality": r.get("laterality", ""),
+            "report_text": (r.get("report_text") or "")[:200],
+            "findings_count": len(findings),
+            "scores": scores,
+        })
+    return _envelope(True, "OK", {
+        "total": total, "items": items, "page": page,
+        "page_size": page_size, "pages": (total + page_size - 1) // page_size,
+    })
 
 
 @app.get("/api/v1/samples/{sid}")
@@ -334,7 +459,7 @@ def sample_get(sid: int):
 
 
 @app.delete("/api/v1/samples/{sid}")
-def sample_delete(sid: int, emp: str = Depends(require_emp)):
+def sample_delete(sid: int, emp: str = Depends(require_emp_local)):
     s = samplelib.get_sample(sid)
     if not s:
         raise HTTPException(404, "样本不存在")
@@ -342,6 +467,26 @@ def sample_delete(sid: int, emp: str = Depends(require_emp)):
         raise HTTPException(403, "无权删除他人样本")
     samplelib.delete_sample(sid)
     return _envelope(True, "OK", None, "已删除")
+
+
+@app.post("/api/v1/samples/export")
+def sample_export(req: SampleExportReq, emp: str = Depends(require_emp_local)):
+    """导出样本库为 CSV / JSON（修正 Flask 版把输出路径误传为库路径参数的问题）。"""
+    try:
+        result_path = samplelib.export_samples(out_path=req.path or None, fmt=req.fmt)
+        return _envelope(True, "OK", {"path": result_path})
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+
+@app.post("/api/v1/samples/import")
+def sample_import(req: SampleImportReq, emp: str = Depends(require_emp_local)):
+    """导入样本库文件。"""
+    try:
+        inserted, skipped = samplelib.import_samples(req.path)
+        return _envelope(True, "OK", {"inserted": inserted, "skipped": skipped})
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
 
 
 # ----------------------------- 统计 -----------------------------
@@ -355,9 +500,62 @@ def stats_trend():
     return _envelope(True, "OK", samplelib.stats_by_date())
 
 
+@app.get("/api/v1/samples/stats/dashboard")
+def sample_dashboard(emp: str = Depends(require_emp_local)):
+    """看板页聚合统计（迁移自 web/api/samples.py 的 dashboard_stats）。"""
+    from datetime import datetime, timedelta
+    rows = samplelib.list_samples_full()
+    total = len(rows)
+    by_modality = {}
+    by_severity = {"critical": 0, "warning": 0, "info": 0}
+    today = 0
+    this_week = 0
+    now = datetime.now()
+    week_ago = now - timedelta(days=7)
+    today_str = now.strftime("%Y-%m-%d")
+    for row in rows:
+        mod = row.get("modality", "未知")
+        by_modality[mod] = by_modality.get(mod, 0) + 1
+        scores = json.loads(row.get("scores_json") or "{}")
+        worst = scores.get("worst_severity", "info")
+        if worst not in by_severity:
+            worst = "info"
+        by_severity[worst] = by_severity.get(worst, 0) + 1
+        ts = row.get("ts", "")
+        if ts and ts.startswith(today_str):
+            today += 1
+        if ts and ts > week_ago.strftime("%Y-%m-%d"):
+            this_week += 1
+    return _envelope(True, "OK", {
+        "total": total, "today": today, "this_week": this_week,
+        "by_modality": by_modality, "by_severity": by_severity,
+    })
+
+
 @app.get("/api/v1/health")
 def health():
     return _envelope(True, "OK", {"status": "up", "version": "3.0"})
+
+
+# ----------------------------- 静态前端托管（SPA） -----------------------------
+# 单服务同时提供 REST API 与同一套 SPA 前端，桌面 WebView 壳与浏览器共用。
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os as _os
+
+_STATIC_DIR = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "web", "static"))
+if _os.path.isdir(_STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+    @app.get("/{full_path:path}")
+    async def spa_fallback(full_path: str):
+        # SPA 路由兜底：非 API / static / 文档 的请求一律返回 index.html
+        if full_path.startswith(("api/", "static/", "docs", "openapi", "redoc")):
+            raise HTTPException(404, "Not Found")
+        index = _os.path.join(_STATIC_DIR, "index.html")
+        if _os.path.exists(index):
+            return FileResponse(index)
+        raise HTTPException(404, "前端未找到")
 
 
 if __name__ == "__main__":
