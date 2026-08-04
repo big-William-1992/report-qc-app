@@ -1026,15 +1026,21 @@ class ReportQcApp(tk.Tk):
         def worker():
             try:
                 auto_updater.download(dest, on_progress, timeout=240)
-                self.after(0, lambda: self._finish_update(dest, win))
+                self.after(0, lambda: self._finish_update(dest, win, res))
             except Exception as e:  # noqa: BLE001
-                self.after(0, lambda: (win.destroy(),
-                                       messagebox.showerror("下载失败", str(e))))
+                # 注意：Python 3 在 except 块结束后会清除 e，必须先取出字符串，
+                # 再用默认参数把它绑定进 lambda，否则回调执行时会 NameError。
+                err_msg = str(e) or e.__class__.__name__
+                self.after(0, lambda m=err_msg: (win.destroy(),
+                                                 messagebox.showerror("下载失败", m)))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _finish_update(self, dest, win):
-        """下载完成：切换为「安装并重启」确认界面。"""
+    def _finish_update(self, dest, win, res=None):
+        """下载完成：切换为「安装并重启」确认界面。
+
+        res 为检查更新的结果字典，用于取 published_at 传给安装器；缺省时按 None 处理。
+        """
         for w in list(win.winfo_children()):
             w.destroy()
         win.geometry("420x210")
@@ -1048,7 +1054,12 @@ class ReportQcApp(tk.Tk):
         bf.pack(pady=16)
 
         def do_install():
-            auto_updater.install_and_relaunch(dest, res.get("published_at"))
+            try:
+                auto_updater.install_and_relaunch(
+                    dest, (res or {}).get("published_at"))
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("安装失败", str(exc) or exc.__class__.__name__)
+                return
             win.after(400, lambda: os._exit(0))
 
         ttk.Button(bf, text="安装并重启", command=do_install).pack(
