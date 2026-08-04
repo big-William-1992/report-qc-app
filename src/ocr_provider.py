@@ -64,6 +64,17 @@ CHANGE_TOLERANCE = 0.002   # 0.2%，64×64 下约 8 个像素
 # 预处理时先 2x 放大再增强，见 preprocess_for_ocr。
 SMALL_REGION_H = 96
 
+# ── 检测阶段参数调优（基于 tools/ocr_bench + /tmp/ocrdiag 实测，模拟小字/低对比/
+#    JPEG+噪声的真实感 PACS 截图；rapidocr-onnxruntime 1.2.x 会正确解析 det_ 前缀参数）──
+# 默认分别是 736 / 1.6。调优后整体字符级 recall 从 98.3% → ~99.6%（最难样本提升最大）：
+#   limit_side_len 736→1280：小字12px 95.1%→98.2%，整体 +1.3%；1600 起边际递减，故取 1280
+#     性价比最高（代价：检测输入更大、单帧推理略慢，仍 < 百 ms，屏幕小区域可忽略）。
+#   unclip_ratio 1.6→2.0：文本框外扩更充分、防字边被切，整体 +0.6%，无副作用。
+# 注：预处理（灰度+CLAHE）存在权衡——CLAHE 利好低对比/深色，但放大小字 JPEG 噪声时
+#   反伤精度，故此处只动 det 参数（干净增益），预处理维持现状，待真实截图复核再定。
+DET_LIMIT_SIDE_LEN = 1280
+DET_UNCLIP_RATIO = 2.0
+
 
 def _assets_dir() -> str:
     if getattr(sys, "frozen", False):
@@ -146,9 +157,13 @@ def _get_engine():
             # 除 rec_model_path 外都不会被去前缀，所以 `rec_char_dict_path=xxx`
             # **是静默失效的伪参数**（历史代码曾这样写）。换成未内嵌字典的模型
             # （如部分 PP-OCRv5 导出版）会直接抛断言错误。故先做前置检查。
+            # det_limit_side_len / det_unclip_ratio 为合法 det_ 前缀参数（见文件顶部常量注释），
+            # 显式覆盖 RapidOCR 的 config.yaml 默认 736 / 1.6，实测提升小字/低对比样本召回。
             _check_rec_dict(rec, mdir)
             _engine = RapidOCR(det_model_path=det, rec_model_path=rec,
-                               cls_model_path=cls)
+                               cls_model_path=cls,
+                               det_limit_side_len=DET_LIMIT_SIDE_LEN,
+                               det_unclip_ratio=DET_UNCLIP_RATIO)
         else:
             # 回退到 RapidOCR 自带模型（首次会从官网下载，需联网一次；
             # 若已下载则走本地缓存 ~/.cache/rapidocr_onnxruntime）
