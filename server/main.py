@@ -189,6 +189,20 @@ def _envelope(ok: bool, code: str, data: Any, message: str = ""):
     return {"ok": ok, "code": code, "data": data, "message": message}
 
 
+# 引擎 score_summary 输出中文维度键；前端（app.js）样本列表直接读英文键。
+# 在需要英文键的端点做一层翻译，qc/check 的实时结果由前端自行映射（幂等）。
+_SCORE_EN = {"准确性": "accuracy", "完整性": "completeness",
+             "规范性": "normalization", "及时性": "timeliness"}
+
+
+def _eng_scores(cn: dict) -> dict:
+    """把引擎中文维度键映射为前端期望的英文键；未知键透传。"""
+    out = {}
+    for k, v in (cn or {}).items():
+        out[_SCORE_EN.get(k, k)] = v
+    return out
+
+
 def _run_qc(report: str, meta: dict, auto_fix: bool) -> dict:
     eng = engine.RuleEngine()
     findings = eng.run(report, meta)
@@ -429,7 +443,7 @@ def sample_list(page: int = Query(1, ge=1),
     page_rows = rows[start:start + page_size]
     items = []
     for r in page_rows:
-        scores = json.loads(r.get("scores_json") or "{}")
+        scores = _eng_scores(json.loads(r.get("scores_json") or "{}"))
         findings = json.loads(r.get("findings_json") or "[]")
         items.append({
             "id": r.get("id"),
