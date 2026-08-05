@@ -128,7 +128,13 @@ POSITIVE_STRONG = ["结节", "占位", "肿块", "骨折", "扩张", "增大", "
                    "积液", "缺血", "梗死", "钙化灶",
                    "软化灶", "梗塞灶", "低密度灶", "高密度灶", "低密度影", "高密度影",
                    "萎缩", "脱髓鞘", "变性", "缺如", "膨出", "积气", "闭塞",
-                   "信号异常", "占位效应", "破坏", "充盈缺损", "间盘突出", "盘突出"]
+                   "信号异常", "占位效应", "破坏", "充盈缺损", "间盘突出", "盘突出",
+                   "增生", "炎症", "炎性", "肿胀", "瘘", "畸形", "囊变", "积血", "积脓"]
+# 阳性征否定前缀：其后紧跟的阳性征词视为『否定/未见』，不算异常，避免『未见明显炎症』
+# 『无增生』等被误判为阳性（配合 str.endswith 匹配，覆盖『未见/未见明显/无/不伴…』等）。
+_NEG_PREFIXES = ("未见", "未见明显", "未见明确", "未见确切", "未见可疑",
+                 "无明显", "未发现", "未示", "不伴", "不含", "排除", "否认", "未及", "无")
+
 # 明确的『正常/未见异常』声明（用于矛盾判定；不把『正常』二字单独算，避免误伤『形态正常』等）
 NORMAL_CLAIM = ["未见异常", "未见明显异常", "无明显异常", "无异常", "未见异常征象",
                 "未见明显异常征象", "未见占位", "未见占位性病变", "未见明确异常", "未见异常改变"]
@@ -314,7 +320,7 @@ def _region_assertions_in_section(text: str, spans):
         is_normal = ("正常" in after[:2]) or ("未见异常" in after) \
                     or ("未见明显异常" in after) or ("未见占位" in after) \
                     or ("未见明确异常" in after)
-        is_positive = any(k in near for k in POSITIVE_STRONG)
+        is_positive = _has_positive(near)
         bucket = out.setdefault((_k, _s), set())
         if is_normal:
             bucket.add("normal")
@@ -431,10 +437,18 @@ def _claims_normal(text: str) -> bool:
 def _has_positive(text: str) -> bool:
     """文本是否包含强阳性征（异常表现）。
     注：中文无词边界，采用子串匹配；POSITIVE_STRONG 均为强特异性词（占位/结节/癌…），
-    误命中风险低。如需更严谨可改为句级判定（参考 _r15_internal 的句拆分做法）。"""
+    误命中风险低。『未见/未见明显/无/不伴…』等否定前缀后的阳性征词不算异常，
+    避免『未见明显炎症』『无增生』被误判（参考 _NEG_PREFIXES）。如需更严谨可改为句级判定。"""
     if not text:
         return False
-    return any(k in text for k in POSITIVE_STRONG)
+    for k in POSITIVE_STRONG:
+        idx = text.find(k)
+        while idx != -1:
+            pre = text[max(0, idx - 5): idx]
+            if not any(pre.endswith(neg) for neg in _NEG_PREFIXES):
+                return True
+            idx = text.find(k, idx + 1)
+    return False
 
 
 def _split_sentences(text: str) -> list:
