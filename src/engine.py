@@ -231,6 +231,57 @@ REGION_LEXICON = {
 }
 
 
+# ===== R18 区域 → 器官覆盖映射（检查部位声明了区域，但正文漏写该区域器官）=====
+# key 为规范区域名；value 为该区域 CT/MR 应描述的器官词（取最常见表达）。
+# 与 SITE_NORM 分工不同：SITE_NORM 是『登记部位词 → 粗粒度部位族』，用于 R6 错配检查；
+# 本表是『规范区域 → 器官组』，用于 R18 逐区域覆盖校验（上腹部 → 肝/胆/胰/脾/肾…）。
+# 粒度说明：只校验"该区域是否至少描述了一个器官"（临床报告通常只写异常器官），
+# 不逐器官核对，避免"写了胰脾肾但漏肝"被误报（肝可能正常未描述）。
+REGION_TO_ORGANS = {
+    "胸部": ["肺", "肺野", "肺门", "胸膜", "纵隔", "心脏", "心影", "支气管", "气管",
+             "胸水", "肺纹理", "肺实质"],
+    "上腹部": ["肝", "肝脏", "胆囊", "胰腺", "胰", "脾脏", "脾", "肾", "双肾", "肾上腺",
+               "胃", "十二指肠", "肝内", "肝左叶", "肝右叶"],
+    "中腹部": ["小肠", "结肠", "肠", "肠道", "系膜", "网膜"],
+    "下腹部": ["结肠", "直肠", "肠", "肠道", "阑尾", "盲肠", "回肠", "乙状结肠"],
+    "全腹": ["肝", "胆囊", "胰腺", "脾", "肾", "肾上腺", "胃", "肠", "膀胱", "腹膜"],
+    "盆腔": ["膀胱", "前列腺", "精囊", "子宫", "卵巢", "输卵管", "宫颈", "阴道",
+             "直肠", "盆壁", "盆腔"],
+    "头颅": ["脑实质", "小脑", "脑干", "丘脑", "基底节", "脑室", "垂体", "脑白质",
+             "蛛网膜下腔", "脑沟", "脑回", "脑内", "颅内"],
+    "颈椎": ["颈椎", "椎体", "椎间盘", "脊髓", "椎管"],
+    "胸椎": ["胸椎", "椎体", "椎间盘", "脊髓", "椎管"],
+    "腰椎": ["腰椎", "椎体", "椎间盘", "脊髓", "椎管"],
+    "肩关节": ["肩", "肱骨头", "肩锁", "喙突", "肩峰"],
+    "膝关节": ["股骨远端", "胫骨近端", "髌骨", "半月板", "交叉韧带", "髌上囊"],
+}
+
+# 区域关键词别名 → 规范区域名（用于从登记部位『胸部、上腹部』中逐区域提取，多区域互不牵连）
+_REGION_ALIAS_TO_REGION = {
+    "胸部": "胸部", "双肺": "胸部", "肺部": "胸部", "肺": "胸部",
+    "上腹部": "上腹部", "上腹": "上腹部",
+    "中腹部": "中腹部", "中腹": "中腹部",
+    "下腹部": "下腹部", "下腹": "下腹部",
+    "全腹": "全腹", "腹部": "全腹",
+    "盆腔": "盆腔", "骨盆": "盆腔",
+    "头颅": "头颅", "颅脑": "头颅", "头部": "头颅", "脑": "头颅",
+    "颈椎": "颈椎", "胸椎": "胸椎", "腰椎": "腰椎",
+    "肩关节": "肩关节", "膝关节": "膝关节",
+}
+_REGION_KW_RE = re.compile(
+    "|".join(re.escape(k) for k in sorted(_REGION_ALIAS_TO_REGION, key=len, reverse=True))
+)
+
+
+def _extract_regions(applied_site: str) -> List[str]:
+    """从登记部位串中提取规范区域名列表（支持『胸部、上腹部』逗号/顿号分隔的多区域）。"""
+    if not applied_site:
+        return []
+    return list(dict.fromkeys(
+        _REGION_ALIAS_TO_REGION[m.group(0)] for m in _REGION_KW_RE.finditer(applied_site)
+    ))
+
+
 def _side_of_alias(a: str):
     """根据别名中的方位词判定侧别：双侧 / 左 / 右 / None。"""
     if "双" in a or "两" in a or "两侧" in a:
@@ -307,20 +358,19 @@ def _region_assertions_in_section(text: str, spans):
 
     断言判定要求『紧邻部位词』，避免跨部位误贴：
       - 正常：部位词后紧跟『正常』(≤2字) 或紧跟『未见异常/未见明显异常/未见占位/
-        未见明确异常』(≤5字)。例如『余两肺未见异常』只贴给『两肺』，不会误贴同句的
-        『右肺上叶见结节』。
-      - 异常：部位词附近窗口(前6后16)含阳性征词（如『右肺上叶见结节』→ 结节）。
-    同一部位在同一段既称正常又报病灶 → 两者都记，交由 R12/R15 处理，本函数不报错。"""
+        未见明确异常』（部位词后窗口）。
+      - 异常：部位词后窗口(后16字)含阳性征词（如『右肺上叶见结节』→ 结节）。
+    只向后看（不看部位词之前），避免向前跨句吞掉前一句的『未见异常信号』导致否定
+    前缀被截断失效（如『脑实质内未见异常信号，脑室系统大小正常』误把『异常信号』
+    算进『脑室』区域）。同一部位在同一段既称正常又报病灶 → 两者都记，交由 R12/R15 处理。"""
     out = {}
     for (_k, _s, _st, _en) in spans:
         after = text[_en: _en + 5]
         after_big = text[_en: _en + 16]
-        before = text[max(0, _st - 6): _st]
-        near = before + after_big
-        is_normal = ("正常" in after[:2]) or ("未见异常" in after) \
-                    or ("未见明显异常" in after) or ("未见占位" in after) \
-                    or ("未见明确异常" in after)
-        is_positive = _has_positive(near)
+        is_normal = ("正常" in after[:2]) or ("未见异常" in after_big) \
+                    or ("未见明显异常" in after_big) or ("未见占位" in after_big) \
+                    or ("未见明确异常" in after_big)
+        is_positive = _has_positive(after_big)
         bucket = out.setdefault((_k, _s), set())
         if is_normal:
             bucket.add("normal")
@@ -709,6 +759,7 @@ class RuleEngine:
         # 由 rules_config.enable_r16 控制（默认关闭，避免对常规『定期复查』过度告警）。
         # R13 为预留编号（当前无对应规则），故不调用 _r13_*。
         # R17 为逐部位精确比对（描述段↔结论段按 器官+侧别 精确到同一部位，承接原 R11-2/R14-1 段级逻辑）。
+        # R18 为检查部位器官漏写（登记区域声明 → 描述段应含该区域器官，承接"胸部、上腹部"漏写上腹部器官等场景）。
         ner = ChineseRadiologyNER()
         ents = ner.extract(text)
         secs = self._split_for_r5(text)
@@ -727,6 +778,7 @@ class RuleEngine:
                 + self._r14_cross(text, secs)
                 + self._r15_internal(text)
                 + self._r17_cross_region(text, secs)
+                + self._r18_region_coverage(text, meta)
                 + (self._r16_followup_timeframe(text)
                    if self.rules_config.get("enable_r16") else []))
 
@@ -903,6 +955,37 @@ class RuleEngine:
         if found_families and norm_applied not in found_families:
             out.append(Finding("R6-SITE", "登记部位不符", "high",
                 f"申请部位归一化={norm_applied}，但报告内容涉及{found_families}", "", (-1, -1)))
+        return out
+
+    # R18 检查部位器官漏写（登记区域声明 → 影像描述段应含该区域器官）
+    # 与 R6(登记部位错配) 互补：R6 抓『申请胸部却写腹部』，R18 抓『申请了上腹部但描述段
+    # 对肝/胆/胰/脾/肾等上腹部器官一个都没提』。仅查检查所见段；整段"未见异常"整体声明
+    # （不点名器官）视为已覆盖，避免"上腹部CT未见异常"被误报。多区域分别校验、互不牵连。
+    def _r18_region_coverage(self, text, meta) -> List[Finding]:
+        out = []
+        applied = meta.get("applied_site", "")
+        if not applied:
+            return out
+        regions = _extract_regions(applied)
+        if not regions:
+            return out
+        secs = self._split_for_r5(text)
+        f_txt = secs["findings"]
+        # 防误报：描述段整体为正常声明（含『未见异常』等且不带阳性征）→ 视为各区域已声明
+        # 未见异常，不判漏写（避免『上腹部CT未见异常』因未点名器官被误报）
+        if _claims_normal(f_txt) and not _has_positive(f_txt):
+            return out
+        for region in regions:
+            orgs = REGION_TO_ORGANS.get(region, [])
+            if not orgs:
+                continue
+            hit = any(org in f_txt for org in orgs)
+            if not hit:
+                sample = "、".join(orgs[:4])
+                out.append(Finding("R18-COVERAGE", "检查部位器官漏写", "medium",
+                    f"检查部位含「{region}」，但影像描述段未描述{region}相关器官"
+                    f"（如{sample}等），疑似漏写或检查部位登记有误",
+                    region, (-1, -1)))
         return out
 
     # R7 描述内部矛盾（同一描述段内出现男女专属器官混用 —— 真实自相矛盾）
