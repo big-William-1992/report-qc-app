@@ -1,59 +1,46 @@
 """
 report_qc_app/src/accounts.py
-本地账号管理：用户名即「工号」，密码以 PBKDF2 + 随机盐哈希存储。
-完全离线，账号数据仅存于本机 SQLite，不上传任何网络。
-
-设计要点：
-- 无服务端、无网络依赖，适合单机/科室内部署的合规场景。
-- 密码不以明文存储，使用 hashlib.pbkdf2_hmac（sha256，10 万次迭代），
-  每个账号独立的随机盐，防止彩虹表/相同密码碰撞。
-- 会话（当前登录工号）写入同目录 session.json，便于重启后预填登录框，
-  但仍需重新输入密码以落实「谁做的质控」责任归属。
+多用户账号管理（科室自托管形态）：基于 SQLAlchemy 的 users 表。
+- 密码以 PBKDF2 + 随机盐哈希存储，不以明文。
+- 新增 role（admin / doctor）与 dept_id（所属科室）字段，支撑多用户与科室数据归属。
+- 会话（当前登录工号）仍写 session.json，便于重启后预填登录框（仍需重新输密码落实责任归属）。
+- 抽象层由 server/db.py 提供：默认 SQLite，生产可切 PostgreSQL 不改业务代码。
 """
-
 import os
 import sys
-import sqlite3
 import json
 import hashlib
 import secrets
 import datetime
 
-# 测试用：允许覆盖数据库路径，避免污染真实应用数据
-_DB_OVERRIDE = None
+from db import SessionLocal, init_db
+from models import User, Department
 
 
-def _default_db_path() -> str:
-    if getattr(sys, "frozen", False):
-        # 打包后放在用户可写目录（与样本库同目录）
-        return os.path.join(os.path.expandvars("%APPDATA%"),
-                            "MedicalReportQC", "accounts.db")
+# ---------------- 会话（当前登录工号，文件持久化，前端预填用） ----------------
+def _assets_dir() -> str:
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, "assets", "accounts.db")
-
-
-def _db_path() -> str:
-    return _DB_OVERRIDE or _default_db_path()
+    d = os.path.join(base, "assets")
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 def _session_path() -> str:
-    return os.path.join(os.path.dirname(_db_path()), "session.json")
+    return os.path.join(_assets_dir(), "session.json")
 
 
-def init_db(path: str = None) -> None:
-    path = path or _db_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with sqlite3.connect(path) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS accounts (
-                emp_id     TEXT PRIMARY KEY,
-                name       TEXT,
-                pwd_hash   TEXT NOT NULL,
-                salt       TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-        """)
-        conn.commit()
+def init_db_safe() -> None:
+    """兼容旧调用点：确保表存在（幂等）。"""
+    try:
+        init_db()
+    except Exception:
+        pass
+
+
+# 旧代码直接调用 accounts.init_db()，这里转发到 SQLAlchemy 建表
+def init_db() -> None:  # noqa: F811
+    from db import init_db as _init
+    _init()
 
 
 def _hash_password(pw: str, salt: str) -> str:
@@ -62,87 +49,163 @@ def _hash_password(pw: str, salt: str) -> str:
     ).hex()
 
 
-def create_account(emp_id: str, password: str, name: str = "") -> tuple:
-    """创建账号。返回 (ok: bool, msg: str)。工号为登录用户名，唯一。"""
+def create_account(emp_id: str, password: str, name: str = "",
+                   role: str = "doctor", dept_id=None) -> tuple:
+    """创建账号。返回 (ok, msg)。工号为登录名，唯一。role 默认 doctor。"""
     emp_id = (emp_id or "").strip()
     password = password or ""
     name = (name or "").strip()
+    role = (role or "doctor").strip()
     if not emp_id:
         return False, "工号不能为空"
     if len(password) < 6:
         return False, "密码至少 6 位"
     salt = secrets.token_hex(16)
     pwd_hash = _hash_password(password, salt)
-    created = datetime.datetime.now().isoformat(timespec="seconds")
     init_db()
-    try:
-        with sqlite3.connect(_db_path()) as conn:
-            conn.execute(
-                "INSERT INTO accounts(emp_id, name, pwd_hash, salt, created_at) "
-                "VALUES(?,?,?,?,?)",
-                (emp_id, name, pwd_hash, salt, created))
-    except sqlite3.IntegrityError:
-        return False, f"工号「{emp_id}」已存在"
+    with SessionLocal() as s:
+        if s.query(User).filter(User.emp_id == emp_id).first():
+            return False, f"工号「{emp_id}」已存在"
+        u = User(
+            emp_id=emp_id, name=name, pwd_hash=pwd_hash, salt=salt,
+            role=role, dept_id=dept_id, created_at=datetime.datetime.now(),
+        )
+        s.add(u)
+        s.commit()
     return True, "创建成功"
 
 
 def verify_account(emp_id: str, password: str) -> bool:
-    """校验工号 + 密码，返回是否匹配。"""
     emp_id = (emp_id or "").strip()
     if not emp_id:
         return False
     init_db()
-    with sqlite3.connect(_db_path()) as conn:
-        conn.row_factory = sqlite3.Row
-        r = conn.execute(
-            "SELECT pwd_hash, salt FROM accounts WHERE emp_id=?", (emp_id,)
-        ).fetchone()
-    if not r:
-        return False
-    return _hash_password(password or "", r["salt"]) == r["pwd_hash"]
+    with SessionLocal() as s:
+        u = s.query(User).filter(User.emp_id == emp_id).first()
+        if not u:
+            return False
+        return _hash_password(password or "", u.salt) == u.pwd_hash
 
 
 def account_exists(emp_id: str) -> bool:
     emp_id = (emp_id or "").strip()
+    if not emp_id:
+        return False
     init_db()
-    with sqlite3.connect(_db_path()) as conn:
-        r = conn.execute(
-            "SELECT 1 FROM accounts WHERE emp_id=?", (emp_id,)
-        ).fetchone()
-    return r is not None
+    with SessionLocal() as s:
+        return s.query(User).filter(User.emp_id == emp_id).first() is not None
 
 
 def count_accounts() -> int:
     init_db()
-    with sqlite3.connect(_db_path()) as conn:
-        return conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
+    with SessionLocal() as s:
+        return s.query(User).count()
 
 
 def get_name(emp_id: str) -> str:
-    """返回工号对应的显示姓名（无则空串）。"""
     emp_id = (emp_id or "").strip()
     if not emp_id:
         return ""
     init_db()
-    with sqlite3.connect(_db_path()) as conn:
-        r = conn.execute(
-            "SELECT name FROM accounts WHERE emp_id=?", (emp_id,)
-        ).fetchone()
-    return (r[0] or "") if r else ""
+    with SessionLocal() as s:
+        u = s.query(User).filter(User.emp_id == emp_id).first()
+        return u.name if u else ""
+
+
+def get_role(emp_id: str) -> str:
+    emp_id = (emp_id or "").strip()
+    if not emp_id:
+        return ""
+    init_db()
+    with SessionLocal() as s:
+        u = s.query(User).filter(User.emp_id == emp_id).first()
+        return u.role if u else ""
+
+
+def set_role(emp_id: str, role: str) -> bool:
+    emp_id = (emp_id or "").strip()
+    init_db()
+    with SessionLocal() as s:
+        u = s.query(User).filter(User.emp_id == emp_id).first()
+        if not u:
+            return False
+        u.role = (role or "doctor").strip()
+        s.commit()
+    return True
+
+
+def get_dept_id(emp_id: str):
+    emp_id = (emp_id or "").strip()
+    if not emp_id:
+        return None
+    init_db()
+    with SessionLocal() as s:
+        u = s.query(User).filter(User.emp_id == emp_id).first()
+        return u.dept_id if u else None
+
+
+def set_dept(emp_id: str, dept_id) -> bool:
+    emp_id = (emp_id or "").strip()
+    init_db()
+    with SessionLocal() as s:
+        u = s.query(User).filter(User.emp_id == emp_id).first()
+        if not u:
+            return False
+        u.dept_id = dept_id
+        s.commit()
+    return True
 
 
 def list_accounts() -> list:
-    """返回 [(emp_id, name), ...]，按工号排序，供管理/统计扩展。"""
+    """返回 [(emp_id, name), ...]，兼容旧调用。"""
     init_db()
-    with sqlite3.connect(_db_path()) as conn:
-        rows = conn.execute(
-            "SELECT emp_id, name FROM accounts ORDER BY emp_id"
-        ).fetchall()
-    return [(r[0], r[1] or "") for r in rows]
+    with SessionLocal() as s:
+        return [(u.emp_id, u.name or "") for u in
+                s.query(User).order_by(User.emp_id).all()]
+
+
+def list_accounts_full() -> list:
+    """返回含角色/科室的账号列表，供管理页。"""
+    init_db()
+    with SessionLocal() as s:
+        rows = []
+        for u in s.query(User).order_by(User.emp_id).all():
+            dept = s.query(Department).filter(Department.id == u.dept_id).first()
+            rows.append({
+                "emp_id": u.emp_id,
+                "name": u.name or "",
+                "role": u.role,
+                "dept_id": u.dept_id,
+                "dept_name": dept.name if dept else "",
+                "created_at": u.created_at.isoformat() if u.created_at else "",
+            })
+        return rows
+
+
+def create_department(name: str):
+    """创建科室（唯一）。返回 (ok, dept_id|msg)。"""
+    name = (name or "").strip()
+    if not name:
+        return False, "科室名不能为空"
+    init_db()
+    with SessionLocal() as s:
+        d = s.query(Department).filter(Department.name == name).first()
+        if d:
+            return False, d.id
+        d = Department(name=name, created_at=datetime.datetime.now())
+        s.add(d)
+        s.commit()
+        return True, d.id
+
+
+def list_departments() -> list:
+    init_db()
+    with SessionLocal() as s:
+        return [{"id": d.id, "name": d.name} for d in
+                s.query(Department).order_by(Department.name).all()]
 
 
 # ---------------- 会话（当前登录工号） ----------------
-
 def set_session(emp_id: str) -> None:
     try:
         with open(_session_path(), "w", encoding="utf-8") as fh:

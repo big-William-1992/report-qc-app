@@ -46,6 +46,11 @@ import ris
 import accounts
 import samplelib
 import license_web
+from version import APP_VERSION
+import db  # SQLAlchemy 统一数据层（users/departments/queue/settings）
+
+# 启动时确保表就绪（多用户/科室自托管核心表）
+db.init_db()
 
 # ----------------------------- 鉴权（stdlib HMAC 签名 token） -----------------------------
 SECRET = os.environ.get("QC_API_SECRET", "change-me-in-prod")
