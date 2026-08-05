@@ -153,6 +153,188 @@ _REGION_NORMAL_RE = re.compile(
                key=len, reverse=True)) + ")正常"
 )
 
+# ===== 逐部位精确比对（R17）解剖部位词表 =====
+# 覆盖颅脑 / 胸 / 腹 / 盆 / 骨骼关节等常见放射部位，含左右侧与双侧写法。
+# 用途：把『描述段』与『结论段』按 (器官, 侧别) 精确到同一部位比对正常 / 异常声明，
+# 解决『左小脑正常 + 右小脑软化灶』（不同侧不矛盾）与『左小脑正常 + 左小脑软化灶』
+# （同侧矛盾）的区分——段级规则（R11/R14）无法表达部位级矛盾。
+# 注：anatomy_lexicon 的 RadLex 器官族未覆盖脑区（小脑/基底节等），本表专门补齐，
+# 与 R2/R14 的 SIDE_CHECK_ORGANS 各司其职，不重复告警。
+REGION_LEXICON = {
+    # 颅脑
+    "cerebellum":      {"base": "小脑", "side": True, "extra": ["小脑半球", "小脑蚓部"]},
+    "cerebrum":        {"base": "大脑", "side": True, "extra": ["大脑半球"]},
+    "brainstem":       {"base": "脑干", "side": False},
+    "thalamus":        {"base": "丘脑", "side": True},
+    "basal_ganglia":   {"base": "基底节", "side": True, "extra": ["基底节区"]},
+    "ventricle":       {"base": "脑室", "side": True},
+    "brain_parenchyma":{"base": "脑实质", "side": False, "extra": ["脑内", "颅内"]},
+    "frontal_lobe":    {"base": "额叶", "side": True},
+    "temporal_lobe":   {"base": "颞叶", "side": True},
+    "parietal_lobe":   {"base": "顶叶", "side": True},
+    "occipital_lobe":  {"base": "枕叶", "side": True},
+    "pituitary":       {"base": "垂体", "side": False},
+    "white_matter":    {"base": "脑白质", "side": False},
+    "subarachnoid":    {"base": "蛛网膜下腔", "side": False},
+    "spinal_cord":     {"base": "脊髓", "side": False},
+    # 胸部
+    "lung":            {"base": "肺", "side": True,
+                        "extra": ["左肺上叶", "右肺上叶", "左肺下叶", "右肺下叶",
+                                  "肺上叶", "肺下叶", "上肺", "下肺", "肺尖", "肺野",
+                                  "两肺", "双肺"]},
+    "hilum":           {"base": "肺门", "side": True},
+    "pleura":          {"base": "胸膜", "side": False, "extra": ["胸腔", "胸水"]},
+    "mediastinum":     {"base": "纵隔", "side": False, "extra": ["纵隔影"]},
+    "heart":           {"base": "心脏", "side": False, "extra": ["心", "心影"]},
+    "bronchus":        {"base": "支气管", "side": True},
+    "trachea":         {"base": "气管", "side": False},
+    # 腹部
+    "liver":           {"base": "肝", "side": True, "extra": ["肝脏", "肝左叶", "肝右叶"]},
+    "kidney":          {"base": "肾", "side": True, "extra": ["肾上腺", "肾盂", "双肾"]},
+    "spleen":          {"base": "脾", "side": False, "extra": ["脾脏"]},
+    "pancreas":        {"base": "胰", "side": False, "extra": ["胰腺"]},
+    "gallbladder":     {"base": "胆囊", "side": False},
+    "stomach":         {"base": "胃", "side": False},
+    "intestine":       {"base": "肠", "side": False, "extra": ["小肠", "结肠", "直肠", "肠道"]},
+    "bladder":         {"base": "膀胱", "side": False},
+    # 盆腔
+    "prostate":        {"base": "前列腺", "side": False},
+    "uterus":          {"base": "子宫", "side": False},
+    "ovary":           {"base": "卵巢", "side": True},
+    "tube":            {"base": "输卵管", "side": True},
+    "seminal":         {"base": "精囊", "side": True},
+    # 骨骼关节
+    "femur":           {"base": "股骨", "side": True, "extra": ["股骨头", "左侧股骨头", "右侧股骨头"]},
+    "humerus":         {"base": "肱骨", "side": True},
+    "clavicle":        {"base": "锁骨", "side": True},
+    "rib":             {"base": "肋骨", "side": True, "extra": ["左肋", "右肋"]},
+    "vertebra":        {"base": "椎体", "side": False,
+                        "extra": ["颈椎", "胸椎", "腰椎", "骶椎", "椎间盘", "脊柱"]},
+    "knee":            {"base": "膝关节", "side": True, "extra": ["左膝", "右膝"]},
+    "hip":             {"base": "髋关节", "side": True, "extra": ["左髋", "右髋"]},
+    "shoulder":        {"base": "肩关节", "side": True, "extra": ["左肩", "右肩"]},
+    "meniscus":        {"base": "半月板", "side": True},
+    "ligament":        {"base": "韧带", "side": True},
+    # 其它
+    "thyroid":         {"base": "甲状腺", "side": True},
+    "parotid":         {"base": "腮腺", "side": True},
+    "lymph_node":      {"base": "淋巴结", "side": False},
+    "breast":          {"base": "乳腺", "side": True, "extra": ["乳房", "左乳", "右乳"]},
+    "esophagus":       {"base": "食管", "side": False},
+    "aorta":           {"base": "主动脉", "side": False, "extra": ["主动脉弓"]},
+}
+
+
+def _side_of_alias(a: str):
+    """根据别名中的方位词判定侧别：双侧 / 左 / 右 / None。"""
+    if "双" in a or "两" in a or "两侧" in a:
+        return "bilateral"
+    if "左" in a and "右" not in a:
+        return "left"
+    if "右" in a and "左" not in a:
+        return "right"
+    return None
+
+
+# 扁平别名表：别名 -> (器官key, 侧别)；最长匹配优先，避免短词（『肺』）抢长词（『右肺上叶』）。
+_REGION_ALIAS_LIST = []
+for _key, _meta in REGION_LEXICON.items():
+    _base = _meta["base"]
+    _al = [_base]
+    if _meta.get("side"):
+        _al += ["左" + _base, "右" + _base, "左侧" + _base, "右侧" + _base]
+    _al += _meta.get("extra", [])
+    for _a in _al:
+        _REGION_ALIAS_LIST.append((_a, _key, _side_of_alias(_a)))
+# 去重（同别名取首个），按长度降序便于最长匹配
+_SEEN_A = set()
+_REGION_ALIAS_LIST_SORTED = []
+for _a, _k, _s in sorted(_REGION_ALIAS_LIST, key=lambda x: -len(x[0])):
+    if _a in _SEEN_A:
+        continue
+    _SEEN_A.add(_a)
+    _REGION_ALIAS_LIST_SORTED.append((_a, _k, _s))
+_REGION_ALIAS_RE = re.compile("|".join(re.escape(a) for a, _, _ in _REGION_ALIAS_LIST_SORTED))
+
+
+def _region_spans_in_text(text: str):
+    """返回文本中所有部位提及：list of (器官key, 侧别, start, end)。最长匹配、跳过被覆盖短词。"""
+    if not text:
+        return []
+    spans = []
+    covered = []
+    for _a, _k, _s in _REGION_ALIAS_LIST_SORTED:
+        for m in re.finditer(re.escape(_a), text):
+            s, e = m.start(), m.end()
+            if any((cs <= s < ce) or (cs < e <= ce) or (s < cs and e > ce) for cs, ce in covered):
+                continue
+            spans.append((_k, _s, s, e))
+            covered.append((s, e))
+    return spans
+
+
+_SIDE_NAME_OVERRIDE = {
+    "liver": {"left": "肝左叶", "right": "肝右叶", "bilateral": "肝脏"},
+}
+
+
+def _region_cn_name(key, side) -> str:
+    """(器官key, 侧别) -> 中文部位名（用于精准告警展示）。"""
+    meta = REGION_LEXICON.get(key)
+    if not meta:
+        return str(key)
+    base = meta["base"]
+    ov = _SIDE_NAME_OVERRIDE.get(key, {})
+    if side in ov:
+        return ov[side]
+    if side == "left":
+        return "左" + base
+    if side == "right":
+        return "右" + base
+    if side == "bilateral":
+        return "双侧" + base
+    return base
+
+
+def _region_assertions_in_section(text: str, spans):
+    """按部位聚合该段的正常 / 异常声明：返回 {(key, side): set(['normal'/'positive'])}。
+
+    断言判定要求『紧邻部位词』，避免跨部位误贴：
+      - 正常：部位词后紧跟『正常』(≤2字) 或紧跟『未见异常/未见明显异常/未见占位/
+        未见明确异常』(≤5字)。例如『余两肺未见异常』只贴给『两肺』，不会误贴同句的
+        『右肺上叶见结节』。
+      - 异常：部位词附近窗口(前6后16)含阳性征词（如『右肺上叶见结节』→ 结节）。
+    同一部位在同一段既称正常又报病灶 → 两者都记，交由 R12/R15 处理，本函数不报错。"""
+    out = {}
+    for (_k, _s, _st, _en) in spans:
+        after = text[_en: _en + 5]
+        after_big = text[_en: _en + 16]
+        before = text[max(0, _st - 6): _st]
+        near = before + after_big
+        is_normal = ("正常" in after[:2]) or ("未见异常" in after) \
+                    or ("未见明显异常" in after) or ("未见占位" in after) \
+                    or ("未见明确异常" in after)
+        is_positive = any(k in near for k in POSITIVE_STRONG)
+        bucket = out.setdefault((_k, _s), set())
+        if is_normal:
+            bucket.add("normal")
+        if is_positive:
+            bucket.add("positive")
+    return out
+
+
+def _is_segment_global_normal(text: str, spans):
+    """段级『全局正常』判定：仅当该段无阳性征、含 NORMAL_CLAIM 短语、且【不含任何具体部位提及】
+    时才视为覆盖全段（可扩展至所有部位）。若段内已点名某部位（如『小脑正常』『余两肺未见异常』），
+    则该正常声明是『部位级/局部』的，不得外溢到其它部位，避免『左侧小脑正常』被误判为『右侧小脑也正常』。"""
+    if not text or _has_positive(text):
+        return False
+    if not any(k in text for k in NORMAL_CLAIM):
+        return False
+    if spans:
+        return False
+    return True
+
 # 良恶性定性标记（用于前后文定性矛盾 R14-NATURE）
 MALIGNANT_MARKERS = ["恶性", "癌", "转移", "浸润", "侵犯", "恶变", "ca", "mt"]
 BENIGN_MARKERS = ["良性", "炎性", "炎症", "符合良性", "考虑良性"]
@@ -509,9 +691,10 @@ class RuleEngine:
         self.rules_config = load_rules_config()
 
     def run(self, text: str, meta: dict) -> List[Finding]:
-        # 实际启用规则：R1–R12、R14、R15；R16（随访时限缺失）为可选规则，
+        # 实际启用规则：R1–R12、R14、R15、R17；R16（随访时限缺失）为可选规则，
         # 由 rules_config.enable_r16 控制（默认关闭，避免对常规『定期复查』过度告警）。
         # R13 为预留编号（当前无对应规则），故不调用 _r13_*。
+        # R17 为逐部位精确比对（描述段↔结论段按 器官+侧别 精确到同一部位，承接原 R11-2/R14-1 段级逻辑）。
         ner = ChineseRadiologyNER()
         ents = ner.extract(text)
         secs = self._split_for_r5(text)
@@ -529,6 +712,7 @@ class RuleEngine:
                 + self._r12_sentence(text, ents)
                 + self._r14_cross(text, secs)
                 + self._r15_internal(text)
+                + self._r17_cross_region(text, secs)
                 + (self._r16_followup_timeframe(text)
                    if self.rules_config.get("enable_r16") else []))
 
@@ -807,13 +991,8 @@ class RuleEngine:
                     out.append(Finding("R11-SIDE", "上下文逻辑错误-左右矛盾", "high",
                         f"患者基础信息侧别为『右』，但{label}中仅提及『左侧』（未见右侧），方位不一致",
                         seg[:24], (-1, -1)))
-        # R11-2 描述异常 → 结论正常 矛盾
-        # 结论段须整体为正常声明（不含阳性征），避免『余肺正常+右肺结节』这类
-        # 部分正常报告被误判为『结论正常』（2026-08-05 加固）
-        if _has_positive(f_txt) and _claims_normal(i_txt) and not _has_positive(i_txt):
-            out.append(Finding("R11-ABNORMAL", "上下文逻辑错误-描述结论矛盾", "high",
-                "影像描述提示阳性征（异常表现），但影像结论称『未见异常/正常』，二者矛盾",
-                i_txt[:30], (-1, -1)))
+        # R11-2 描述异常 → 结论正常 矛盾：已下放到 R17 逐部位精确比对
+        # （按器官+侧别精确到同一部位；无法归属具体部位时由 R17 段级兜底保持原语义）。
         # R11-3 信息框性别 vs 正文解析性别 矛盾（上下文不一致）
         rg_meta = _norm_gender(meta.get("gender"))
         rg_text = _parse_gender_from_text(text)
@@ -853,13 +1032,7 @@ class RuleEngine:
         f_txt, i_txt = secs["findings"], secs["impression"]
         if not f_txt or not i_txt:
             return out
-        # R14-1 描述正常 → 结论异常（与 R11-ABNORMAL 方向相反，互补覆盖）
-        # 描述段须整体为正常声明（不含阳性征），避免『余肺正常+右肺结节』这类
-        # 部分正常报告被误判为『描述正常』（2026-08-05 加固）
-        if _claims_normal(f_txt) and not _has_positive(f_txt) and _has_positive(i_txt):
-            out.append(Finding("R14-NORMAL", "前后文逻辑错误-描述正常结论异常", "high",
-                "影像描述称『未见异常/正常』，但影像结论给出阳性诊断，结论与描述不符",
-                i_txt[:30], (-1, -1)))
+        # R14-1 描述正常 → 结论异常：已下放到 R17 逐部位精确比对（同 R11-2 说明）。
         # R14-2 良恶性定性矛盾（描述段与结论段方向相反）
         f_mal = _has_marker_unnegated(f_txt, MALIGNANT_MARKERS)
         f_ben = _has_marker_unnegated(f_txt, BENIGN_MARKERS)
@@ -946,6 +1119,61 @@ class RuleEngine:
                     f"影像描述段内对同一「{lw}」先描述存在、后又称未见/消失，前后矛盾",
                     "", (-1, -1)))
                 break
+        return out
+
+    # R17 逐部位精确比对（描述段 ↔ 结论段，按 器官 + 侧别 精确到同一部位）
+    def _r17_cross_region(self, text, secs) -> List[Finding]:
+        out = []
+        f_txt, i_txt = secs["findings"], secs["impression"]
+        if not f_txt or not i_txt:
+            return out
+        f_spans = _region_spans_in_text(f_txt)
+        i_spans = _region_spans_in_text(i_txt)
+        f_assert = _region_assertions_in_section(f_txt, f_spans)
+        i_assert = _region_assertions_in_section(i_txt, i_spans)
+        # 整段级正常声明（无阳性征、含 NORMAL_CLAIM、且无具体部位提及）作为全局正常，
+        # 覆盖该段所有提及部位；部位级正常（如『小脑正常』）不触发全局扩展。
+        f_global_normal = _is_segment_global_normal(f_txt, f_spans)
+        i_global_normal = _is_segment_global_normal(i_txt, i_spans)
+        found = False
+        for region in sorted(set(f_assert) | set(i_assert),
+                             key=lambda r: (r[0], r[1] or "")):
+            d = f_assert.get(region, set())
+            c = i_assert.get(region, set())
+            d_eff = set(d)
+            c_eff = set(c)
+            if f_global_normal:
+                d_eff.add("normal")
+            if i_global_normal:
+                c_eff.add("normal")
+            # 仅当某一侧声明『明确且唯一』时才报矛盾，避免同侧既正常又异常时的歧义双报
+            d_only_normal = (d_eff == {"normal"})
+            d_only_pos = (d_eff == {"positive"})
+            c_only_normal = (c_eff == {"normal"})
+            c_only_pos = (c_eff == {"positive"})
+            name = _region_cn_name(*region)
+            if d_only_normal and c_only_pos:
+                out.append(Finding("R17-PERREGION", "前后文逻辑错误-描述正常结论异常", "high",
+                    f"影像描述段「{name}」称正常/未见异常，但影像结论段对「{name}」给出阳性诊断，"
+                    f"同一部位描述与结论矛盾（描述正常、结论异常）", name, (-1, -1)))
+                found = True
+            elif d_only_pos and c_only_normal:
+                out.append(Finding("R17-PERREGION", "上下文逻辑错误-描述结论矛盾", "high",
+                    f"影像描述段「{name}」提示阳性征（异常表现），但影像结论段称「{name}」正常/未见异常，"
+                    f"同一部位描述与结论矛盾（描述异常、结论正常）", name, (-1, -1)))
+                found = True
+        # 段级兜底（无法归属到具体部位时，保持原 R11/R14 语义，避免漏检）。
+        # 注意：必须用严格『段级全局正常』（_is_segment_global_normal），不可用 _claims_normal——
+        # 后者会匹配『部位+正常』（如『小脑正常』）而误把局部正常当整段正常外溢。
+        if not found:
+            if _has_positive(f_txt) and i_global_normal:
+                out.append(Finding("R11-ABNORMAL", "上下文逻辑错误-描述结论矛盾", "high",
+                    "影像描述提示阳性征（异常表现），但影像结论称『未见异常/正常』，二者矛盾",
+                    i_txt[:30], (-1, -1)))
+            elif f_global_normal and _has_positive(i_txt):
+                out.append(Finding("R14-NORMAL", "前后文逻辑错误-描述正常结论异常", "high",
+                    "影像描述称『未见异常/正常』，但影像结论给出阳性诊断，结论与描述不符",
+                    i_txt[:30], (-1, -1)))
         return out
 
     # R16 随访时限缺失（中文 NER 驱动；默认关闭，由 rules_config.enable_r16 开启）
