@@ -120,12 +120,38 @@ POSITIVE_MARKERS = ["结节", "占位", "阴影", "肿块", "异常信号", "斑
 NEGATIVE_MARKERS = ["未见", "无", "阴性", "通畅", "清晰", "正常", "未见明显", "未见异常"]
 
 # 强阳性征（用于『描述异常→结论正常』与『同一句话逻辑错误』判定，覆盖面更广）
+# 2026-08-05 扩充：补软化灶/梗塞灶/低密度(高)密度灶(影)/萎缩/脱髓鞘/变性/缺如/膨出/
+#   积气/闭塞/信号异常/占位效应/破坏/充盈缺损/间盘突出等常见阳性病灶词——否则
+#   『描述正常→结论软化灶』『描述软化灶→结论正常』这类前后文逻辑矛盾会漏检。
 POSITIVE_STRONG = ["结节", "占位", "肿块", "骨折", "扩张", "增大", "囊肿", "结石", "出血",
                    "水肿", "癌", "瘤", "病变", "异常信号", "斑片", "渗出", "增厚", "狭窄",
-                   "积液", "缺血", "梗死", "钙化灶"]
+                   "积液", "缺血", "梗死", "钙化灶",
+                   "软化灶", "梗塞灶", "低密度灶", "高密度灶", "低密度影", "高密度影",
+                   "萎缩", "脱髓鞘", "变性", "缺如", "膨出", "积气", "闭塞",
+                   "信号异常", "占位效应", "破坏", "充盈缺损", "间盘突出", "盘突出"]
 # 明确的『正常/未见异常』声明（用于矛盾判定；不把『正常』二字单独算，避免误伤『形态正常』等）
 NORMAL_CLAIM = ["未见异常", "未见明显异常", "无明显异常", "无异常", "未见异常征象",
                 "未见明显异常征象", "未见占位", "未见占位性病变", "未见明确异常", "未见异常改变"]
+
+# 常见解剖部位/区域词（用于精准识别『部位+正常』的正常声明，避免『形态正常』『结构正常』误报）
+# 仅当『正常』紧跟这些部位/区域词时才判为正常声明；与 NORMAL_CLAIM 互补覆盖
+# 『小脑正常』『肝脏正常』『脑实质正常』等"部位声明正常"写法（此前被设计性排除『正常』单字而漏检）。
+REGION_NORMAL_WORDS = [
+    "小脑", "大脑", "脑干", "丘脑", "基底节", "脑室", "脑实质", "脑白质", "脑沟", "脑回",
+    "蛛网膜下腔", "额叶", "颞叶", "顶叶", "枕叶", "垂体", "脊髓", "延髓",
+    "肝脏", "肾脏", "脾脏", "胰腺", "胆囊", "心脏", "肺脏", "胃肠", "膀胱",
+    "前列腺", "精囊", "子宫", "卵巢", "输卵管", "宫颈", "阴道", "乳腺", "甲状腺",
+    "腮腺", "淋巴结", "骨髓", "椎间盘", "椎体", "椎管", "硬膜", "蛛网膜", "颅骨",
+    "肋骨", "锁骨", "肩胛骨", "肱骨", "尺骨", "桡骨", "股骨", "髌骨", "胫骨",
+    "腓骨", "半月板", "韧带", "肌腱", "关节腔", "滑膜", "主动脉", "下腔静脉",
+    "胸膜", "肺门", "支气管", "气管", "食管", "胃", "肠", "胆管", "输尿管",
+]
+# 『部位+正常』正则（部位词后紧跟『正常』；兼容『双侧/左侧』等方位前缀写在部位前）
+_REGION_NORMAL_RE = re.compile(
+    "(?:" + "|".join(re.escape(w) for w in
+        sorted(set(REGION_NORMAL_WORDS) | set(ANATOMY_SYNONYMS.keys()) | set(SITE_NORM.keys()),
+               key=len, reverse=True)) + ")正常"
+)
 
 # 良恶性定性标记（用于前后文定性矛盾 R14-NATURE）
 MALIGNANT_MARKERS = ["恶性", "癌", "转移", "浸润", "侵犯", "恶变", "ca", "mt"]
@@ -209,10 +235,15 @@ def _organ_sides_en(text: str, aliases) -> set:
 
 def _claims_normal(text: str) -> bool:
     """文本是否明确声明『未见异常/正常』（用于描述-结论矛盾）。
-    注：中文无词边界，采用子串匹配；NORMAL_CLAIM 均为强特异性表述，误命中风险低。"""
+    注：中文无词边界，采用子串匹配；NORMAL_CLAIM 均为强特异性表述，误命中风险低。
+    2026-08-05 起补充『部位+正常』精准识别：仅当『正常』紧跟解剖部位/区域词时
+    才判为正常声明，避免『形态正常』『结构正常』『密度正常』『信号正常』等误报
+    （这正是此前『小脑正常→结论小脑软化灶』漏检的根因）。"""
     if not text:
         return False
-    return any(k in text for k in NORMAL_CLAIM)
+    if any(k in text for k in NORMAL_CLAIM):
+        return True
+    return bool(_REGION_NORMAL_RE.search(text))
 
 
 def _has_positive(text: str) -> bool:
@@ -777,7 +808,9 @@ class RuleEngine:
                         f"患者基础信息侧别为『右』，但{label}中仅提及『左侧』（未见右侧），方位不一致",
                         seg[:24], (-1, -1)))
         # R11-2 描述异常 → 结论正常 矛盾
-        if _has_positive(f_txt) and _claims_normal(i_txt):
+        # 结论段须整体为正常声明（不含阳性征），避免『余肺正常+右肺结节』这类
+        # 部分正常报告被误判为『结论正常』（2026-08-05 加固）
+        if _has_positive(f_txt) and _claims_normal(i_txt) and not _has_positive(i_txt):
             out.append(Finding("R11-ABNORMAL", "上下文逻辑错误-描述结论矛盾", "high",
                 "影像描述提示阳性征（异常表现），但影像结论称『未见异常/正常』，二者矛盾",
                 i_txt[:30], (-1, -1)))
@@ -805,8 +838,10 @@ class RuleEngine:
                     f"同一句话内同时出现男女专属器官（自相矛盾）：『{sent[:30]}…』",
                     sent[:30], (-1, -1)))
                 continue
-            # 2) 同一句内既称未见异常又描述阳性征
-            if _claims_normal(sent) and _has_positive(sent):
+            # 2) 同一句内既称某部位正常又描述该部位阳性征（真正的自相矛盾）。
+            #    仅当『正常』是『部位+正常』（region-specific）时才判矛盾，避免
+            #    『右肺上叶见结节，余两肺未见异常』这类标准报告被误报（2026-08-05 加固）
+            if _REGION_NORMAL_RE.search(sent) and _has_positive(sent):
                 out.append(Finding("R12-SENTENCE", "同一句话逻辑错误", "high",
                     f"同一句话内既称『未见异常』又描述阳性征（自相矛盾）：『{sent[:30]}…』",
                     sent[:30], (-1, -1)))
@@ -819,7 +854,9 @@ class RuleEngine:
         if not f_txt or not i_txt:
             return out
         # R14-1 描述正常 → 结论异常（与 R11-ABNORMAL 方向相反，互补覆盖）
-        if _claims_normal(f_txt) and _has_positive(i_txt):
+        # 描述段须整体为正常声明（不含阳性征），避免『余肺正常+右肺结节』这类
+        # 部分正常报告被误判为『描述正常』（2026-08-05 加固）
+        if _claims_normal(f_txt) and not _has_positive(f_txt) and _has_positive(i_txt):
             out.append(Finding("R14-NORMAL", "前后文逻辑错误-描述正常结论异常", "high",
                 "影像描述称『未见异常/正常』，但影像结论给出阳性诊断，结论与描述不符",
                 i_txt[:30], (-1, -1)))
@@ -870,7 +907,9 @@ class RuleEngine:
             return out
         sents = _split_sentences(f_txt)
         # R15-1 段首称未见异常但段内描述阳性征
-        if sents and _claims_normal(sents[0]) and _has_positive(f_txt):
+        # 段首句须为『纯正常声明』（本身不含阳性征），避免『右肺上叶见结节，余两肺未见异常』
+        # 这类标准报告被误报（2026-08-05 加固）
+        if sents and _claims_normal(sents[0]) and not _has_positive(sents[0]) and _has_positive(f_txt):
             out.append(Finding("R15-NORMAL", "上下文逻辑错误-段内自相矛盾", "high",
                 "影像描述段开头称『未见异常/正常』，但段内又描述阳性征，前后矛盾",
                 sents[0][:30], (-1, -1)))
