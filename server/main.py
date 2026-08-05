@@ -466,6 +466,34 @@ def account_reset_password(emp_id: str, req: PwdReq, admin: str = Depends(requir
     return _envelope(True, "OK", {}, "密码已重置")
 
 
+class DeptReq(BaseModel):
+    dept_id: Optional[int] = None   # 传 null/空可清除科室归属
+
+
+@app.post("/api/v1/accounts/{emp_id}/dept")
+def account_set_dept(emp_id: str, req: DeptReq, admin: str = Depends(require_admin)):
+    if not accounts.set_dept(emp_id, req.dept_id):
+        return _envelope(False, "ERR", {}, "账号不存在")
+    return _envelope(True, "OK", {}, "科室已更新")
+
+
+@app.get("/api/v1/departments")
+def department_list(admin: str = Depends(require_admin)):
+    return _envelope(True, "OK", accounts.list_departments())
+
+
+class DeptCreateReq(BaseModel):
+    name: str
+
+
+@app.post("/api/v1/departments")
+def department_create(req: DeptCreateReq, admin: str = Depends(require_admin)):
+    ok, msg = accounts.create_department(req.name)
+    if not ok:
+        return _envelope(False, "ERR", {}, str(msg))
+    return _envelope(True, "OK", {}, "科室已创建")
+
+
 # ----------------------------- 授权（免责声明 / 试用期 / 激活码） -----------------------------
 # 以下端点均为公开（无需登录），因为登录/激活本身就是闸门流程的一部分。
 class ActivateReq(BaseModel):

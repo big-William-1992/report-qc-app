@@ -90,8 +90,20 @@ async function loadUsers() {
     const res = await apiFetch('/api/v1/accounts');
     const d = await res.json();
     const users = d.data || [];
+    // 拉取科室列表填充下拉
+    let depts = [];
+    try {
+      const dr = await apiFetch('/api/v1/departments');
+      const dd = await dr.json();
+      depts = dd.data || [];
+    } catch (e) { console.warn('load departments failed', e); }
     const tbody = document.getElementById('usersBody');
-    tbody.innerHTML = users.map(u => `
+    tbody.innerHTML = users.map(u => {
+      const opts = ['<option value="">-- 未分配 --</option>']
+        .concat(depts.map(dp =>
+          `<option value="${dp.id}" ${u.dept_id === dp.id ? 'selected' : ''}>${escapeHtml(dp.name)}</option>`))
+        .join('');
+      return `
       <tr>
         <td>${escapeHtml(u.emp_id)}</td>
         <td>${escapeHtml(u.name || '--')}</td>
@@ -101,12 +113,16 @@ async function loadUsers() {
             <option value="doctor" ${u.role === 'doctor' ? 'selected' : ''}>医生</option>
           </select>
         </td>
-        <td>${u.dept_name || '--'}</td>
+        <td>
+          <select onchange="changeUserDept('${escapeHtml(u.emp_id)}', this.value ? parseInt(this.value, 10) : null)">
+            ${opts}
+          </select>
+        </td>
         <td style="white-space:nowrap;">
           <button class="btn btn-outline btn-sm" onclick="resetUserPwd('${escapeHtml(u.emp_id)}')">🔑 重置密码</button>
         </td>
-      </tr>
-    `).join('');
+      </tr>`;
+    }).join('');
   } catch (e) { console.error(e); }
 }
 
@@ -120,6 +136,15 @@ async function changeUserRole(empId, role) {
   if (d.ok) loadUsers();
 }
 
+async function changeUserDept(empId, deptId) {
+  const res = await apiFetch('/api/v1/accounts/' + encodeURIComponent(empId) + '/dept', {
+    method: 'POST', body: JSON.stringify({ dept_id: deptId })
+  });
+  const d = await res.json();
+  toast(d.ok ? '科室已更新' : ('失败：' + (d.message || '')), d.ok ? 'success' : 'error');
+  if (d.ok) loadUsers();
+}
+
 async function resetUserPwd(empId) {
   const pw = prompt('输入新密码（至少 6 位）：');
   if (!pw || pw.length < 6) { toast('密码至少 6 位', 'error'); return; }
@@ -128,6 +153,17 @@ async function resetUserPwd(empId) {
   });
   const d = await res.json();
   toast(d.ok ? '密码已重置' : ('失败：' + (d.message || '')), d.ok ? 'success' : 'error');
+}
+
+async function addDepartment() {
+  const name = prompt('输入新科室名称：');
+  if (!name || !name.trim()) return;
+  const res = await apiFetch('/api/v1/departments', {
+    method: 'POST', body: JSON.stringify({ name: name.trim() })
+  });
+  const d = await res.json();
+  toast(d.ok ? '科室已创建' : ('失败：' + (d.message || '')), d.ok ? 'success' : 'error');
+  if (d.ok) loadUsers();
 }
 
 function gotoPage(pageName) {
