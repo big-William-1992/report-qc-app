@@ -395,8 +395,13 @@ def account_create(req: AccountCreate,
     ok, msg = accounts.create_account(req.emp_id, req.password, req.name)
     if not ok:
         return _envelope(False, "ERR", {}, msg)
+    # 首个账号自动成为系统管理员（引导），其余默认 doctor
+    if accounts.count_accounts() == 1:
+        accounts.set_role(req.emp_id, "admin")
     token = make_token(req.emp_id)   # 首个账号创建即登录，免去二次登录
-    return _envelope(True, "OK", {"token": token, "emp_id": req.emp_id, "name": req.name}, msg)
+    return _envelope(True, "OK",
+                     {"token": token, "emp_id": req.emp_id, "name": req.name,
+                      "role": accounts.get_role(req.emp_id)}, msg)
 
 
 @app.post("/api/v1/accounts/login")
@@ -405,12 +410,60 @@ def account_login(req: LoginReq):
         return _envelope(False, "ERR", {}, "工号或密码错误")
     token = make_token(req.emp_id)
     return _envelope(True, "OK",
-                      {"token": token, "emp_id": req.emp_id, "name": accounts.get_name(req.emp_id)})
+                      {"token": token, "emp_id": req.emp_id,
+                       "name": accounts.get_name(req.emp_id),
+                       "role": accounts.get_role(req.emp_id)})
+
+
+def require_admin(authorization: Optional[str] = Header(None)) -> str:
+    """管理员操作依赖：强制 Bearer token（不享受 localhost 放行，防止伪造 X-Emp-Id 提权）。"""
+    emp = _emp_from_auth(authorization)
+    if not emp:
+        raise HTTPException(401, "管理员操作需登录（Bearer token）")
+    if accounts.get_role(emp) != "admin":
+        raise HTTPException(403, "需要管理员权限")
+    return emp
+
+
+@app.get("/api/v1/accounts/me")
+def account_me(emp: str = Depends(require_emp)):
+    return _envelope(True, "OK",
+                     {"emp_id": emp, "name": accounts.get_name(emp), "role": accounts.get_role(emp)})
 
 
 @app.get("/api/v1/accounts")
-def account_list(emp: str = Depends(require_emp_local)):
-    return _envelope(True, "OK", [{"emp_id": e, "name": n} for e, n in accounts.list_accounts()])
+def account_list(emp: str = Depends(require_emp)):
+    # 管理员看全部（含角色/科室），普通用户只看自己
+    if accounts.get_role(emp) == "admin":
+        return _envelope(True, "OK", accounts.list_accounts_full())
+    return _envelope(True, "OK",
+                     [{"emp_id": emp, "name": accounts.get_name(emp), "role": accounts.get_role(emp)}])
+
+
+class RoleReq(BaseModel):
+    role: str
+
+
+@app.post("/api/v1/accounts/{emp_id}/role")
+def account_set_role(emp_id: str, req: RoleReq, admin: str = Depends(require_admin)):
+    if req.role not in ("admin", "doctor"):
+        return _envelope(False, "ERR", {}, "角色只能是 admin 或 doctor")
+    if not accounts.set_role(emp_id, req.role):
+        return _envelope(False, "ERR", {}, "账号不存在")
+    return _envelope(True, "OK", {}, "角色已更新")
+
+
+class PwdReq(BaseModel):
+    password: str
+
+
+@app.post("/api/v1/accounts/{emp_id}/password")
+def account_reset_password(emp_id: str, req: PwdReq, admin: str = Depends(require_admin)):
+    if len(req.password or "") < 6:
+        return _envelope(False, "ERR", {}, "密码至少 6 位")
+    if not accounts.reset_password(emp_id, req.password):
+        return _envelope(False, "ERR", {}, "账号不存在")
+    return _envelope(True, "OK", {}, "密码已重置")
 
 
 # ----------------------------- 授权（免责声明 / 试用期 / 激活码） -----------------------------
@@ -491,9 +544,15 @@ def sample_create(req: SampleCreate, emp: str = Depends(require_emp_local)):
 def sample_list(page: int = Query(1, ge=1),
                 page_size: int = Query(20, ge=1, le=100),
                 user_id: Optional[str] = None,
-                error_type: Optional[str] = None):
+                error_type: Optional[str] = None,
+                emp: str = Depends(require_emp)):
+    role = accounts.get_role(emp)
     rows = samplelib.list_samples_full()
-    if user_id:
+    if role != "admin":
+        # 普通医生仅看自己导入的样本（历史无归属样本归管理员管辖）
+        rows = [r for r in rows if (r.get("user_id") or "") == emp]
+    elif user_id:
+        # 管理员可按工号筛选
         rows = [r for r in rows if r.get("user_id") == user_id]
     if error_type:
         kept = []

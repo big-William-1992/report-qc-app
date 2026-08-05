@@ -32,6 +32,7 @@ let AUTH = {
   token: localStorage.getItem('xy-token') || '',
   empId: localStorage.getItem('xy-emp') || '',
   name:  localStorage.getItem('xy-name') || '',
+  role:  localStorage.getItem('xy-role') || '',
 };
 let LICENSE_STATUS = null;   // 最近一次授权状态聚合
 
@@ -71,6 +72,62 @@ function switchPage(pageName, navEl) {
   if (pageName === 'samples') loadSamples();
   if (pageName === 'rules') { loadRules(); loadRulesConfig(true); }
   if (pageName === 'queue') loadQueue();
+  if (pageName === 'users') loadUsers();
+}
+
+// ==================== 角色 UI 适配 + 用户管理 ====================
+function applyRoleUI() {
+  const isAdmin = AUTH.role === 'admin';
+  document.querySelectorAll('[data-admin-only]').forEach(el => {
+    el.style.display = isAdmin ? '' : 'none';
+  });
+  const sub = document.getElementById('userMenuSub');
+  if (sub) sub.textContent = (isAdmin ? '系统管理员' : '医生') + ' · ' + (AUTH.empId || '');
+}
+
+async function loadUsers() {
+  try {
+    const res = await apiFetch('/api/v1/accounts');
+    const d = await res.json();
+    const users = d.data || [];
+    const tbody = document.getElementById('usersBody');
+    tbody.innerHTML = users.map(u => `
+      <tr>
+        <td>${escapeHtml(u.emp_id)}</td>
+        <td>${escapeHtml(u.name || '--')}</td>
+        <td>
+          <select onchange="changeUserRole('${escapeHtml(u.emp_id)}', this.value)" ${u.emp_id === AUTH.empId ? 'disabled' : ''}>
+            <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>管理员</option>
+            <option value="doctor" ${u.role === 'doctor' ? 'selected' : ''}>医生</option>
+          </select>
+        </td>
+        <td>${u.dept_name || '--'}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-outline btn-sm" onclick="resetUserPwd('${escapeHtml(u.emp_id)}')">🔑 重置密码</button>
+        </td>
+      </tr>
+    `).join('');
+  } catch (e) { console.error(e); }
+}
+
+async function changeUserRole(empId, role) {
+  if (!confirm(`确认将 ${empId} 的角色改为 ${role === 'admin' ? '管理员' : '医生'}？`)) return;
+  const res = await apiFetch('/api/v1/accounts/' + encodeURIComponent(empId) + '/role', {
+    method: 'POST', body: JSON.stringify({ role })
+  });
+  const d = await res.json();
+  toast(d.ok ? '角色已更新' : ('失败：' + (d.message || '')), d.ok ? 'success' : 'error');
+  if (d.ok) loadUsers();
+}
+
+async function resetUserPwd(empId) {
+  const pw = prompt('输入新密码（至少 6 位）：');
+  if (!pw || pw.length < 6) { toast('密码至少 6 位', 'error'); return; }
+  const res = await apiFetch('/api/v1/accounts/' + encodeURIComponent(empId) + '/password', {
+    method: 'POST', body: JSON.stringify({ password: pw })
+  });
+  const d = await res.json();
+  toast(d.ok ? '密码已重置' : ('失败：' + (d.message || '')), d.ok ? 'success' : 'error');
 }
 
 function gotoPage(pageName) {
@@ -728,7 +785,7 @@ function renderRecentTable(items) {
 // ==================== 样本库 ====================
 async function loadSamples() {
   try {
-    const res = await fetch('/api/v1/samples?page_size=50');
+    const res = await apiFetch('/api/v1/samples?page_size=50');
     const data = await res.json();
     const items = (data.data || {}).items || [];
     const tbody = document.getElementById('samplesBody');
@@ -1607,10 +1664,12 @@ async function gateCreate() {
     const d = await res.json();
     if (!d.ok) throw new Error(d.message || '创建失败');
     AUTH.token = d.data.token; AUTH.empId = d.data.emp_id; AUTH.name = d.data.name || '';
+    AUTH.role  = d.data.role || 'doctor';
     localStorage.setItem('xy-token', AUTH.token);
     localStorage.setItem('xy-emp', AUTH.empId);
     localStorage.setItem('xy-name', AUTH.name);
-    enterApp(LICENSE_STATUS);
+    localStorage.setItem('xy-role', AUTH.role);
+    applyRoleUI(); enterApp(LICENSE_STATUS);
   } catch (e) { setGateErr('gaErr', e.message); }
 }
 
@@ -1626,10 +1685,12 @@ async function gateLogin() {
     const d = await res.json();
     if (!d.ok) throw new Error(d.message || '登录失败');
     AUTH.token = d.data.token; AUTH.empId = d.data.emp_id; AUTH.name = d.data.name || '';
+    AUTH.role  = d.data.role || 'doctor';
     localStorage.setItem('xy-token', AUTH.token);
     localStorage.setItem('xy-emp', AUTH.empId);
     localStorage.setItem('xy-name', AUTH.name);
-    enterApp(LICENSE_STATUS);
+    localStorage.setItem('xy-role', AUTH.role);
+    applyRoleUI(); enterApp(LICENSE_STATUS);
   } catch (e) { setGateErr('glErr', e.message); }
 }
 
@@ -1721,12 +1782,12 @@ async function bootstrapGate() {
     status = d.data; LICENSE_STATUS = status;
   } catch (e) {
     // 后端不可达（开发态）：直接放行，避免锁死界面
-    showGate(false); refreshUserUI();
+    showGate(false); refreshUserUI(); applyRoleUI();
     return;
   }
   // 已有登录态：跳过登录步骤直接进入
   if (AUTH.token && status.account_count > 0) {
-    showGate(false); refreshUserUI(); updateTrialBanner(status);
+    showGate(false); refreshUserUI(); applyRoleUI(); updateTrialBanner(status);
     return;
   }
   showGate(true);

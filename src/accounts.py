@@ -134,6 +134,23 @@ def set_role(emp_id: str, role: str) -> bool:
     return True
 
 
+def reset_password(emp_id: str, new_pw: str) -> bool:
+    """管理员重置某账号密码（或本人修改）。"""
+    emp_id = (emp_id or "").strip()
+    if not emp_id or not new_pw:
+        return False
+    init_db()
+    with SessionLocal() as s:
+        u = s.query(User).filter(User.emp_id == emp_id).first()
+        if not u:
+            return False
+        salt = secrets.token_hex(16)
+        u.salt = salt
+        u.pwd_hash = _hash_password(new_pw, salt)
+        s.commit()
+    return True
+
+
 def get_dept_id(emp_id: str):
     emp_id = (emp_id or "").strip()
     if not emp_id:
