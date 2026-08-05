@@ -110,7 +110,7 @@ def require_emp_local(request: Request,
 
 
 # ----------------------------- 应用 -----------------------------
-app = FastAPI(title="星衍放射质控 API", version="3.0")
+app = FastAPI(title="星衍放射质控 API", version=APP_VERSION)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -628,7 +628,7 @@ def sample_dashboard(emp: str = Depends(require_emp_local)):
 
 @app.get("/api/v1/health")
 def health():
-    return _envelope(True, "OK", {"status": "up", "version": "3.0"})
+    return _envelope(True, "OK", {"status": "up", "version": APP_VERSION})
 
 
 # ============================================================================
