@@ -53,7 +53,7 @@ pip install -r requirements.txt      # 仅需 OCR 功能时安装；纯引擎可
 python3 src/app.py
 ```
 
-> **Windows 用户**：`requirements.txt` 已含 `comtypes`，安装后即具备 UIA 读取 PACS 报告文本控件的能力（无需额外驱动 / 管理员提权）。
+> **Windows 用户**：与 macOS / Linux 一致，采用「屏幕区域 OCR + 剪贴板粘贴」采集报告，无需额外驱动 / 管理员提权。
 > **macOS 用户**：当前安装包 / 脚本**未做 Apple 公证**。源码运行（`python3 src/app.py`）不受 Gatekeeper 限制，推荐内测阶段直接源码跑；打包版首次打开若被拦截，见 [docs/INSTALL.md](docs/INSTALL.md) §5.2。
 
 **Windows 打包版**

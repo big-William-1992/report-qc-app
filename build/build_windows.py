@@ -14,7 +14,7 @@
 它替你自动跑完整条流水线：
     [0] 环境预检   —— Python 版本、项目路径是否含非 ASCII 字符
     [1] 创建 .venv 虚拟环境并升级 pip
-    [2] 安装运行依赖 requirements.txt（OCR/UIA 必需）+ PyInstaller
+    [2] 安装运行依赖 requirements.txt（OCR 必需）+ PyInstaller
                         ★ 这是旧脚本缺失的关键步：不装依赖 collect_all 会失败或出损坏 exe
     [3] 引擎冒烟测试  —— 提前暴露逻辑层报错（build/smoke_test.py）
     [4] PyInstaller 按 build/report_qc.spec 出单目录 exe
@@ -84,7 +84,7 @@ def main():
     banner("[2/5] 安装运行依赖(requirements.txt) 与 PyInstaller")
     if run([vpy, "-m", "pip", "install", "-r", "requirements.txt"]) != 0:
         print("[ERROR] 安装 requirements.txt 失败。", flush=True)
-        print("        OCR/UIA 依赖缺失会导致 collect_all 失败或运行期崩溃。", flush=True)
+        print("        OCR 依赖缺失会导致 collect_all 失败或运行期崩溃。", flush=True)
         return 1
     if run([vpy, "-m", "pip", "install", "pyinstaller"]) != 0:
         print("[ERROR] 安装 PyInstaller 失败。", flush=True)

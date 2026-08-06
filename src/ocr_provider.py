@@ -35,7 +35,7 @@ try:
     import cv2
     import numpy as np
 except Exception:
-    # 缺 OpenCV/numpy 时不崩溃：仅 OCR 功能不可用，GUI 其余功能（剪贴板/UIA 质控）照常。
+    # 缺 OpenCV/numpy 时不崩溃：仅 OCR 功能不可用，GUI 其余功能（剪贴板/手工录入质控）照常。
     cv2 = None
     np = None
 

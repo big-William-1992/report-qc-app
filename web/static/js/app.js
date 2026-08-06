@@ -1676,29 +1676,6 @@ function ocrHotkey() {
   else openOcrModal();
 }
 
-// UIA 采集（Windows UI Automation）：读取前景 PACS 窗口报告全文并填充到对应区域
-async function ocrUiaCapture() {
-  const status = document.getElementById('ocrStatus');
-  if (status) status.textContent = '正在通过 UIA 读取前景窗口报告…';
-  try {
-    const res = await fetch('/api/v1/uia/capture', { method: 'POST' });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.message || 'UIA 采集失败');
-    const d = data.data || {};
-    if (d.findings) setVal('findingsText', (d.findings || '').trim());
-    if (d.impression) setVal('impressionText', (d.impression || '').trim());
-    const m = d.meta || {};
-    if (m.patient) setVal('mPatient', m.patient);
-    if (m.gender) setVal('mGender', m.gender);
-    if (m.age) setVal('mAge', m.age);
-    if (m.modality) setVal('mModality', m.modality);
-    toast('UIA 已读取前景窗口报告', 'success');
-  } catch (e) {
-    toast('UIA 采集出错: ' + e.message, 'error');
-  } finally {
-    if (status) status.textContent = '';
-  }
-}
 
 // ==================== 全局快捷键（可配置，默认 Windows Ctrl+ 风） ====================
 const SHORTCUT_ACTIONS = {

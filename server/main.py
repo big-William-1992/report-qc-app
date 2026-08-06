@@ -47,7 +47,6 @@ import accounts
 import samplelib
 import license_web
 import ocr_provider
-import uia_provider
 from version import APP_VERSION
 import db  # SQLAlchemy 统一数据层（users/departments/queue/settings）
 
@@ -1001,52 +1000,6 @@ def screen_regions_put(regions: Dict[str, Any], emp: str = Depends(require_emp_l
     with open(_ocr_config_path(), "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, ensure_ascii=False, indent=2)
     return _envelope(True, "OK", {"web_regions": regions}, "框选区域已保存")
-
-
-# ----------------------------- UIA（Windows UI Automation 采集） -----------------------------
-@app.get("/api/v1/uia/available")
-def uia_available():
-    """探测 UIA 可用性：仅 Windows 且已装 comtypes/pywinauto 时 available=true。"""
-    p = uia_provider.UIAProvider()
-    return _envelope(True, "OK", {"available": p.is_available(), "reason": p.unavailable_reason()})
-
-
-@app.post("/api/v1/uia/capture")
-def uia_capture(emp: str = Depends(require_emp_local)):
-    """读取前景（聚焦）PACS 窗口报告全文，按标题切分 findings/impression 并返回结构化 meta。
-
-    注意：UIA 仅 Windows 生效；非 Windows 或缺少依赖时返回 503 + 原因。
-    """
-    p = uia_provider.UIAProvider()
-    if not p.is_available():
-        return JSONResponse(status_code=503,
-                            content=_envelope(False, "UIA_UNAVAILABLE", None, p.unavailable_reason()))
-    text = p.capture_text()
-    if not text:
-        return _envelope(False, "UIA_EMPTY", None,
-                         "未能从前景窗口读取到报告文本（请确认 PACS 报告窗口处于焦点且为标准控件）")
-    seg: Dict[str, str] = {}
-    try:
-        seg = engine.RuleEngine._split_for_r5(text)
-    except Exception:
-        seg = {"findings": text, "impression": ""}
-    meta: Dict[str, Any] = {}
-    try:
-        # 注意：_split_for_r5 会丢弃报告头的患者信息（姓名/性别/年龄），只保留
-        # 影像描述/诊断印象。因此把整段 UIA 文本作为 basic 传入，确保患者信息头
-        # 能被抽取；findings/impression 仅用于补抽部位/侧别/检查类型。
-        meta = engine.extract_meta_full(text, seg.get("findings", ""), seg.get("impression", ""))
-    except Exception:
-        try:
-            meta = engine.extract_meta(text)
-        except Exception:
-            meta = {}
-    return _envelope(True, "OK", {
-        "text": text,
-        "findings": seg.get("findings", ""),
-        "impression": seg.get("impression", ""),
-        "meta": meta,
-    })
 
 
 # ----------------------------- 应用设置（SPA 设置面板） -----------------------------

@@ -9,7 +9,7 @@
 - 全局快捷键（后台热键）：用 pynput 注册系统级热键，即使焦点在 PACS/RIS 窗口，
   也能触发 runQC / saveToLibrary / toggleTheme / ocrHotkey。未装 pynput 时自动降级为
   仅 SPA 内快捷键（窗口聚焦时可用）。
-- 原生桥 Bridge：暴露 hide_app/show_app/minimize_app 给前端 JS，供 OCR/UIA 采集前台
+- 原生桥 Bridge：暴露 hide_app/show_app/minimize_app 给前端 JS，供 OCR 采集前台
   窗口前让出焦点（避免截到/读到本应用自身）。
 
 依赖：pip install pywebview pynput（macOS 用系统 WKWebView，无需额外浏览器引擎；
@@ -56,7 +56,7 @@ _WEBVIEW = None
 class Bridge:
     """暴露给前端 JS 的原生桥：隐藏/显示/最小化窗口。
 
-    OCR/UIA 采集「前台 PACS 窗口」前需先让出焦点，否则会截到/读到本应用自身。
+    OCR 采集「前台 PACS 窗口」前需先让出焦点，否则会截到/读到本应用自身。
     """
 
     @staticmethod

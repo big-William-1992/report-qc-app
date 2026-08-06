@@ -10,7 +10,7 @@
 | 项 | 要求 |
 | --- | --- |
 | Python | 3.10+（macOS 建议 3.11+，Tk 更稳定） |
-| 操作系统 | macOS 12+ / Windows 11（Linux 可运行引擎与 OCR，UIA 不适用） |
+| 操作系统 | macOS 12+ / Windows 11 / Linux（引擎与 OCR 均可用） |
 | 内存 | ≥ 4 GB（OCR 模型常驻约 200–400 MB） |
 | 磁盘 | 约 1.5 GB（含内置 OCR 模型权重 `assets/ocr_models`） |
 
@@ -40,8 +40,7 @@ pip install -r requirements.txt
 pip install -r requirements.txt
 ```
 
-包含：OCR（`rapidocr-onnxruntime` 等）、**Windows `comtypes`**（UIA 报告采集）、其余运行库。
-`requirements.txt` 中 `comtypes` 已标注「仅 Windows 生效」，跨平台安装无害。
+包含：OCR（`rapidocr-onnxruntime` 等）与其余运行库。
 
 ### 3.2 仅用核心引擎（不要 OCR）
 
@@ -99,10 +98,8 @@ python3 src/app.py
 
 ## 6. Windows 注意事项
 
-- **UIA 报告采集**需 `comtypes`（已含于 `requirements.txt`，安装即具备）。
-  无需管理员提权、无需驱动；但 **PACS 须为前台焦点窗口且报告区为标准文本控件**。
-  自绘 canvas / OpenGL / DirectX 报告区 UIA 读不到，自动退回 OCR / 剪贴板 / DICOM SR。
-  验证方法：PACS 置前台 → 点「🔎 UIA检测」确认能否读出报告文本。
+- **采集方式**：以「屏幕区域 OCR」与「剪贴板粘贴」为主。OCR 框选 PACS 屏幕三区（基础信息 / 影像描述 / 诊断印象），
+  剪贴板可直接把报告文本粘贴进对应输入框；跨平台一致可用，无需 Windows 专属依赖。
 - **打包版**：见 `build/` 目录（`report_qc.spec` / `build_windows.bat` / `setup.iss`），
   在 Windows 11 执行打包脚本生成安装包，安装后在「开始菜单」启动。
   资源与配置位于 `%APPDATA%\MedicalReportQC\`。
@@ -113,13 +110,12 @@ python3 src/app.py
 
 | 能力 | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| UIA 读 PACS 文本控件 | ✅（需 comtypes） | —（不适用） | —（不适用） |
 | 离线 OCR 屏幕区域识别 | ✅ | ✅ | ✅ |
 | 剪贴板监听（复制即质控） | ✅ | ✅（需权限） | ✅（需权限） |
 | 后台全局快捷键 | ✅ | ✅（需 pynput + 权限） | ✅（需 pynput + 权限） |
 | 自动更新 | ✅ | ✅（安装器保留用户配置） | 未提供 |
 
-> 设计原则：跨平台代码统一抽象，缺失能力**优雅降级**而非崩溃；Mac/Linux 不触碰 `comtypes`。
+> 设计原则：跨平台代码统一抽象，采集能力（OCR / 剪贴板）在各平台一致可用。
 
 ---
 
@@ -130,7 +126,6 @@ python3 src/app.py
 | OCR 按钮灰显 / 报错 | 缺 `cv2/numpy` | `pip install -r requirements.txt`；或仅用引擎（OCR 自动降级） |
 | 后台快捷键无效 | 缺 `pynput` 或未授权 | `pip install pynput` + 开辅助功能权限 |
 | macOS 剪贴板读不到 | 未授权自动化 | 系统设置开「自动化」权限 |
-| Windows UIA 读不到报告 | PACS 非标准文本控件 | 点「🔎 UIA检测」验证；退回 OCR / 剪贴板 |
 | 启动即崩（曾） | 顶层硬 import 第三方库 | 已修复（S1/S2 懒加载兜底）；升级到最新版即可 |
 | 激活码无效 | 机器识别码复制不全 / 换机 | 重新从激活框复制完整识别码发卡；换机需重新激活 |
 

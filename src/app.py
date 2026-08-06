@@ -38,7 +38,6 @@ import accounts
 import update_check
 import auto_updater
 import ocr_provider
-import uia_provider
 
 # 反馈通道：GitHub Issues（公开仓库任何人可提），可按需改为飞书/腾讯问卷链接
 FEEDBACK_URL = "https://github.com/big-William-1992/report-qc-app/issues"
@@ -392,8 +391,8 @@ class ReportQcApp(tk.Tk):
         self.ocr_regions_status = tk.StringVar(value="")
         self._ocr_status("off", "● 待触发（按快捷键或点『识别并质控』）")
         self._update_region_status()
-        # Windows UI Automation 采集提供器（读前景 PACS 窗口控件文本，无滚动漂移）
-        self.uia = uia_provider.UIAProvider()
+        # UIA 采集功能已移除；采集统一走 OCR 与剪贴板
+        self.uia = None
 
         # 「识别并质控」采集方式（快捷键触发时按此分派；显式按钮直连各自方法不受影响）
         # auto=UIA 优先否则 OCR；uia=仅 UIA；ocr=仅 OCR 三区；ask=每次弹菜单选择
