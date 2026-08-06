@@ -13,8 +13,10 @@ import hashlib
 import secrets
 import datetime
 
-from db import SessionLocal, init_db
-from models import User, Department
+from server import db, models
+SessionLocal = db.SessionLocal
+User = models.User
+Department = models.Department
 
 
 # ---------------- 会话（当前登录工号，文件持久化，前端预填用） ----------------
@@ -39,7 +41,8 @@ def init_db_safe() -> None:
 
 # 旧代码直接调用 accounts.init_db()，这里转发到 SQLAlchemy 建表
 def init_db() -> None:  # noqa: F811
-    from db import init_db as _init
+    from server import db as _srv
+    _init = _srv.init_db
     _init()
 
 

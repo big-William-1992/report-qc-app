@@ -34,6 +34,46 @@ else:
     ROOT = Path(__file__).resolve().parent
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
+# 冻结（PyInstaller）后：把 exe 所在目录加入 path，确保 `from server import db`
+# 这类「包内绝对导入」在 exe 内能解析（server 随 datas 平铺在 exe 目录）。
+if getattr(sys, "frozen", False) and str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
+# ---------------------- 冻结版崩溃可见化 ----------------------
+# 默认 console=False（无控制台黑窗），任何未捕获异常都会被静默吞掉，
+# 表现为「双击 exe 没反应」。这里把异常写 crash.log 并弹系统错误框。
+def _crash_path() -> str:
+    try:
+        if getattr(sys, "frozen", False):
+            base = os.path.dirname(os.path.abspath(sys.executable))
+        else:
+            base = os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        base = "."
+    return os.path.join(base, "crash.log")
+
+
+def show_fatal(title: str, text: str) -> None:
+    """弹系统错误框（Windows 优先），并把内容追加写入同目录 crash.log。"""
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, str(text), str(title), 0x10)
+    except Exception:
+        pass
+    try:
+        with open(_crash_path(), "a", encoding="utf-8") as f:
+            f.write(f"\n[{title}] @ {__import__('datetime').datetime.now().isoformat()}\n{text}\n")
+    except Exception:
+        pass
+
+
+def _excepthook(et, ev, tb) -> None:
+    import traceback as _tb
+    show_fatal("星衍质控 启动失败", "".join(_tb.format_exception(et, ev, tb)))
+
+
+sys.excepthook = _excepthook
 
 
 def _free_preferred_port(port: int):
@@ -198,15 +238,21 @@ def main():
     try:
         import server.main  # noqa: F401  触发后端全部依赖的导入
     except Exception as e:  # noqa: BLE001
-        print("[错误] 后端依赖缺失或导入失败：", repr(e))
-        print("        请先安装运行依赖：pip install -r requirements.txt")
-        print("        Windows 用户可直接双击「启动星衍质控.bat」自动安装。")
+        import traceback as _tb
+        msg = ("后端依赖缺失或导入失败：\n" + repr(e) +
+               "\n\n请先安装运行依赖：pip install -r requirements.txt\n"
+               "Windows 用户可双击「启动星衍质控.bat」自动安装。\n"
+               "详细错误已写入同目录 crash.log。")
+        show_fatal("启动失败", msg + "\n\n" + _tb.format_exc())
         sys.exit(2)
 
     srv = threading.Thread(target=_start_uvicorn, daemon=True)
     srv.start()
     if not _wait_ready():
-        print("[错误] 后端服务启动失败，请检查依赖：pip install fastapi uvicorn pywebview")
+        show_fatal("启动失败",
+                   "后端服务启动失败（20s 内未就绪）。\n"
+                   "请检查依赖：pip install fastapi uvicorn pywebview\n"
+                   "或查看同目录 crash.log 了解具体原因。")
         sys.exit(1)
 
     url = f"{BASE}/"
@@ -238,4 +284,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:  # noqa: BLE001
+        import traceback as _tb
+        show_fatal("星衍质控 未捕获异常", _tb.format_exc())
+        raise

@@ -45,10 +45,14 @@ _SERVER = os.path.join(_APP_ROOT, "server") if getattr(sys, "frozen", False) \
     else str(Path(__file__).resolve().parent)
 _SRC = os.path.join(_APP_ROOT, "src") if getattr(sys, "frozen", False) \
     else str(Path(__file__).resolve().parent.parent / "src")
+# 项目根（server 的父目录 / 冻结后的 exe 所在目录）：用于 `from server import db`
+# 这类「包内绝对导入」在源码与冻结两种模式下都能无歧义解析。
+if _APP_ROOT not in sys.path:
+    sys.path.insert(0, _APP_ROOT)
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-# 把 server 自身目录加入 path，便于 import license_web / db（授权与数据层模块）
+# 把 server 自身目录加入 path（双保险，便于裸 import 兜底）
 if _SERVER not in sys.path:
     sys.path.insert(0, _SERVER)
 
@@ -61,10 +65,10 @@ import engine
 import ris
 import accounts
 import samplelib
-import license_web
+from server import license_web
 import ocr_provider
 from version import APP_VERSION
-import db  # SQLAlchemy 统一数据层（users/departments/queue/settings）
+from server import db  # SQLAlchemy 统一数据层（users/departments/queue/settings）
 
 # 启动时确保表就绪（多用户/科室自托管核心表）
 db.init_db()

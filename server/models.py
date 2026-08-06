@@ -17,7 +17,7 @@ from sqlalchemy import (
     Column, Integer, String, Text, DateTime, ForeignKey, Index,
 )
 from sqlalchemy.orm import relationship
-from db import Base
+from server.db import Base
 
 
 class Department(Base):
