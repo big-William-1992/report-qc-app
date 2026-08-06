@@ -19,16 +19,67 @@ pynput 用于全局热键，缺失不影响主流程）
 """
 import os
 import sys
+import subprocess
 import threading
 import time
 import urllib.request
+import socket
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-PORT = int(os.environ.get("XY_QC_PORT", "8500"))
+
+def _free_preferred_port(port: int):
+    """尽力释放被占用的端口（通常是上一次未正常退出的本应用实例）。
+    仅 macOS / Linux 生效；失败静默忽略，不影响后续流程。"""
+    try:
+        out = subprocess.run(["lsof", "-ti", f"tcp:{port}"],
+                             capture_output=True, text=True).stdout.strip()
+        if out:
+            for pid in out.split():
+                try:
+                    os.kill(int(pid), 15)
+                except Exception:
+                    pass
+            time.sleep(0.6)
+    except Exception:
+        pass
+
+
+def _resolve_port(preferred: int) -> int:
+    """选一个可用端口：优先 preferred；被占用则尝试释放后复用，仍失败则让系统分配。
+
+    避免「上一个实例没退出 / 测试遗留进程占用 8500」导致新实例 uvicorn 绑定失败、
+    后端起不来、桌面窗口永远弹不出（表现为"软件打不开"）。
+    """
+    def _open(p):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind(("127.0.0.1", p))
+            return s
+        except OSError:
+            s.close()
+            return None
+
+    s = _open(preferred)
+    if s:
+        s.close()
+        return preferred
+    _free_preferred_port(preferred)
+    s = _open(preferred)
+    if s:
+        s.close()
+        return preferred
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+PORT = _resolve_port(int(os.environ.get("XY_QC_PORT", "8500")))
 HOST = "127.0.0.1"
 BASE = f"http://{HOST}:{PORT}"
 

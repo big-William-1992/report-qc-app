@@ -28,6 +28,13 @@ Base = declarative_base()
 def init_db() -> None:
     """建表（幂等）。延迟 import models 以避免循环依赖。"""
     import models  # noqa: F401  确保模型注册到 Base.metadata
+    # 确保库文件所在目录存在：干净克隆 / assets 被误删时，SQLite 无法自动建目录，
+    # create_all 会抛 "unable to open database file"，导致后端导入失败、桌面端打不开。
+    _db_path = getattr(engine.url, "database", None)
+    if _db_path:
+        _dir = os.path.dirname(_db_path)
+        if _dir:
+            os.makedirs(_dir, exist_ok=True)
     Base.metadata.create_all(bind=engine)
 
 
