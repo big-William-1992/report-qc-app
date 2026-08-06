@@ -11,5 +11,9 @@
 # 说明：
 #   - comtypes：Python 调用 Windows UIA/COM 的桥，PyInstaller 打包时会被自动收集进 exe。
 #   - pywinauto：UIA 可用性探测的备用桥（comtypes 优先）；仅源码直跑时用于准确提示。
+#   - pynput：全局快捷键（后台热键）监听库，desktop_app.py 用于注册系统级热键，
+#     即使焦点在 PACS/RIS 窗口也能触发 runQC/saveToLibrary/toggleTheme/ocrHotkey。
+#     跨平台可用（macOS 需辅助功能权限）；缺失时 desktop_app.py 自动降级为仅 SPA 内快捷键。
 comtypes>=1.4.0
 pywinauto>=0.6.8
+pynput>=1.7.6

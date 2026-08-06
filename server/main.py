@@ -46,6 +46,8 @@ import ris
 import accounts
 import samplelib
 import license_web
+import ocr_provider
+import uia_provider
 from version import APP_VERSION
 import db  # SQLAlchemy 统一数据层（users/departments/queue/settings）
 
@@ -828,6 +830,10 @@ def queue_remove(qid: str, emp: str = Depends(require_emp_local)):
 _SHOT: Dict[str, Any] = {"img": None, "w": 0, "h": 0, "ts": 0.0}
 _SHOT_MAX_W = 1600          # 传给前端的缩略图最大宽度（省带宽，不影响识别精度）
 
+# OCR 结果缓存：按「区域 key + 裁剪图指纹」缓存识别文本，画面未变时跳过推理，降低重识别卡顿。
+_OCR_CACHE: Dict[str, Any] = {}     # region_key -> {"sig": tuple, "text": str}
+_OCR_CACHE_MAX = 12
+
 
 class ScreenRegion(BaseModel):
     x: float = 0.0
@@ -908,8 +914,22 @@ def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local)):
         y0 = max(0, min(H - 1, int(r.y * H)))
         x1 = max(x0 + 1, min(W, int((r.x + r.w) * W)))
         y1 = max(y0 + 1, min(H, int((r.y + r.h) * H)))
+        crop = img.crop((x0, y0, x1, y1))
+        # 画面未变则直接复用上次识别结果，跳过 CPU 推理（解决重复识别卡顿）
         try:
-            texts[role] = ocr_provider.ocr_image(img.crop((x0, y0, x1, y1))) or ""
+            sig = ocr_provider.image_signature(crop)
+        except Exception:
+            sig = None
+        cached = _OCR_CACHE.get(role)
+        if cached and cached.get("sig") == sig:
+            texts[role] = cached.get("text") or ""
+            continue
+        try:
+            txt = ocr_provider.ocr_image(crop) or ""
+            texts[role] = txt
+            _OCR_CACHE[role] = {"sig": sig, "text": txt}
+            if len(_OCR_CACHE) > _OCR_CACHE_MAX:
+                _OCR_CACHE.pop(next(iter(_OCR_CACHE)))
         except Exception as exc:
             texts[role] = ""
             errors[role] = str(exc)
@@ -959,6 +979,49 @@ def screen_regions_put(regions: Dict[str, Any], emp: str = Depends(require_emp_l
     with open(_ocr_config_path(), "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, ensure_ascii=False, indent=2)
     return _envelope(True, "OK", {"web_regions": regions}, "框选区域已保存")
+
+
+# ----------------------------- UIA（Windows UI Automation 采集） -----------------------------
+@app.get("/api/v1/uia/available")
+def uia_available():
+    """探测 UIA 可用性：仅 Windows 且已装 comtypes/pywinauto 时 available=true。"""
+    p = uia_provider.UIAProvider()
+    return _envelope(True, "OK", {"available": p.is_available(), "reason": p.unavailable_reason()})
+
+
+@app.post("/api/v1/uia/capture")
+def uia_capture(emp: str = Depends(require_emp_local)):
+    """读取前景（聚焦）PACS 窗口报告全文，按标题切分 findings/impression 并返回结构化 meta。
+
+    注意：UIA 仅 Windows 生效；非 Windows 或缺少依赖时返回 503 + 原因。
+    """
+    p = uia_provider.UIAProvider()
+    if not p.is_available():
+        return JSONResponse(status_code=503,
+                            content=_envelope(False, "UIA_UNAVAILABLE", None, p.unavailable_reason()))
+    text = p.capture_text()
+    if not text:
+        return _envelope(False, "UIA_EMPTY", None,
+                         "未能从前景窗口读取到报告文本（请确认 PACS 报告窗口处于焦点且为标准控件）")
+    seg: Dict[str, str] = {}
+    try:
+        seg = engine.RuleEngine._split_for_r5(text)
+    except Exception:
+        seg = {"findings": text, "impression": ""}
+    meta: Dict[str, Any] = {}
+    try:
+        meta = engine.extract_meta_full("", seg.get("findings", ""), seg.get("impression", ""))
+    except Exception:
+        try:
+            meta = engine.extract_meta(text)
+        except Exception:
+            meta = {}
+    return _envelope(True, "OK", {
+        "text": text,
+        "findings": seg.get("findings", ""),
+        "impression": seg.get("impression", ""),
+        "meta": meta,
+    })
 
 
 # ----------------------------- 应用设置（SPA 设置面板） -----------------------------

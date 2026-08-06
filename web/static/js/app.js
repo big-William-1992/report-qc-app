@@ -1452,8 +1452,15 @@ async function ocrCropAndRecognize(box) {
 }
 
 async function ocrRecognize() {
+  const status = document.getElementById('ocrStatus');
+  const btn = document.getElementById('ocrRecognizeBtn');
+  const setBusy = (on) => {
+    if (status) status.textContent = on ? 'OCR 推理中（画面未变的区域会直接复用，不重复计算）…' : '';
+    if (btn) { btn.disabled = on; btn.textContent = on ? '识别中…' : '识别并填充'; }
+  };
   if (ocrState.mode === 'screen') {
     if (!ocrState.screen) { toast('请先点「🖥 截取 PACS 画面」', 'error'); return; }
+    setBusy(true);
     try {
       const regions = {};
       ocrState.boxes.forEach(b => regions[b.key] = {
@@ -1470,16 +1477,19 @@ async function ocrRecognize() {
       ocrFill({ basic: t.basic, findings: t.findings, impression: t.impression });
       toast('三段识别完成，已填充到对应区域', 'success');
     } catch (e) { toast('OCR 出错: ' + e.message, 'error'); }
+    finally { setBusy(false); }
     return;
   }
   // 文件 / 粘贴图模式：本地裁剪三段后逐张调 /api/v1/ocr/base64
   if (!ocrState.img) { toast('请先粘贴或选择报告截图', 'error'); return; }
+  setBusy(true);
   try {
     const results = await Promise.all(ocrState.boxes.map(async (b) => ({ key: b.key, text: await ocrCropAndRecognize(b) })));
     const map = {}; results.forEach(r => map[r.key] = r.text);
     ocrFill(map);
     toast('三段识别完成，已填充到对应区域', 'success');
   } catch (e) { toast('OCR 出错: ' + e.message, 'error'); }
+  finally { setBusy(false); }
 }
 
 function parsePatientInfo(text) {
@@ -1543,6 +1553,36 @@ async function ocrPipeline() {
     await saveToLibrary();  // 导入（其内部先运行质控）
     toast('识别 → 导入 → 质控 完成', 'success');
   } catch (e) { toast('流程出错: ' + e.message, 'error'); }
+}
+
+// 供全局热键调用：若 OCR 模态已开则执行流程，否则打开模态
+function ocrHotkey() {
+  if (document.getElementById('ocrModal').style.display === 'flex') ocrPipeline();
+  else openOcrModal();
+}
+
+// UIA 采集（Windows UI Automation）：读取前景 PACS 窗口报告全文并填充到对应区域
+async function ocrUiaCapture() {
+  const status = document.getElementById('ocrStatus');
+  if (status) status.textContent = '正在通过 UIA 读取前景窗口报告…';
+  try {
+    const res = await fetch('/api/v1/uia/capture', { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || 'UIA 采集失败');
+    const d = data.data || {};
+    if (d.findings) setVal('findingsText', (d.findings || '').trim());
+    if (d.impression) setVal('impressionText', (d.impression || '').trim());
+    const m = d.meta || {};
+    if (m.patient) setVal('mPatient', m.patient);
+    if (m.gender) setVal('mGender', m.gender);
+    if (m.age) setVal('mAge', m.age);
+    if (m.modality) setVal('mModality', m.modality);
+    toast('UIA 已读取前景窗口报告', 'success');
+  } catch (e) {
+    toast('UIA 采集出错: ' + e.message, 'error');
+  } finally {
+    if (status) status.textContent = '';
+  }
 }
 
 // ==================== 全局快捷键（可配置，默认 Windows Ctrl+ 风） ====================
