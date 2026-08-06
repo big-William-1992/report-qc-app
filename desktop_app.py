@@ -26,7 +26,12 @@ import urllib.request
 import socket
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+# 资源根目录：冻结（PyInstaller）后为 exe 所在目录（或 _MEIPASS），
+# 普通源码运行则用本文件所在目录。冻结后 __file__ 指向 PYZ 合成路径，不能用于回溯。
+if getattr(sys, "frozen", False):
+    ROOT = Path(getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable))))
+else:
+    ROOT = Path(__file__).resolve().parent
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
@@ -178,6 +183,13 @@ def _wait_ready(timeout: int = 20) -> bool:
 
 
 def main():
+    # Windows 冻结（PyInstaller）下需尽早调用，避免子进程/线程相关异常。
+    try:
+        import multiprocessing
+        multiprocessing.freeze_support()
+    except Exception:
+        pass
+
     print("星衍AI放射质控 · 启动中…")
 
     # 依赖预检：后端模块（含 cv2 / uvicorn / fastapi / sqlalchemy 等）必须可导入，

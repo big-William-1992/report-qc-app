@@ -26,13 +26,29 @@ import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
+def _bundle_root() -> str:
+    """资源（server/web/assets/src）在磁盘上的根目录。
+
+    - 普通源码运行：本文件位于 <root>/server/main.py，root = 其上级目录。
+    - PyInstaller 冻结（单目录/单文件）：资源随 exe 平铺在 exe 所在目录（单目录）
+      或解压到 sys._MEIPASS（单文件），而非从 __file__ 回溯（冻结后 __file__ 指向
+      PYZ 归档内的合成路径，回溯会得到不存在的目录，导致静态资源挂载失败）。
+    """
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
+    return str(Path(__file__).resolve().parent.parent)
+
+
 # 把 src 加入 sys.path，便于 import engine / accounts / samplelib
-_SRC = str(Path(__file__).resolve().parent.parent / "src")
+_APP_ROOT = _bundle_root()
+_SERVER = os.path.join(_APP_ROOT, "server") if getattr(sys, "frozen", False) \
+    else str(Path(__file__).resolve().parent)
+_SRC = os.path.join(_APP_ROOT, "src") if getattr(sys, "frozen", False) \
+    else str(Path(__file__).resolve().parent.parent / "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-# 把 server 自身目录加入 path，便于 import license_web（授权模块）
-_SERVER = str(Path(__file__).resolve().parent)
+# 把 server 自身目录加入 path，便于 import license_web / db（授权与数据层模块）
 if _SERVER not in sys.path:
     sys.path.insert(0, _SERVER)
 
@@ -1088,7 +1104,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os as _os
 
-_STATIC_DIR = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "web", "static"))
+# 静态目录：冻结后用 _APP_ROOT（exe 所在目录），否则用 __file__ 回溯。
+_STATIC_DIR = _os.path.join(_APP_ROOT, "web", "static") if getattr(sys, "frozen", False) \
+    else _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "web", "static"))
 if _os.path.isdir(_STATIC_DIR):
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
