@@ -1505,7 +1505,7 @@ async function ocrRecognize() {
 }
 
 // 姓名/性别边界词：识别到这些词即视为「下一个字段」，截断姓名提取，避免吞入性别/年龄
-const NAME_BOUND = /(性别|年龄|岁|年|月|日|检查|部位|科室|门诊|住院|床号|住院号|临床|设备|医院|影像|诊断|申请|病案|[男女])/;
+const NAME_BOUND = /(性别|年龄|岁|年|月|日|检查|部位|科室|门诊|住院|床号|住院号|临床|设备|医院|影像|诊断|申请|病案|[男女]|male|female|\d)/i;
 function parseName(raw) {
   if (!raw) return '';
   if (/[\u4e00-\u9fa5]/.test(raw)) {
@@ -1520,7 +1520,8 @@ function parseName(raw) {
 function parsePatientInfo(text) {
   const out = {}; let m;
   // 姓名：优先按标签（姓名/患者姓名/病人姓名/name）提取；OCR 常把姓名与性别连写或插入空格，需清洗
-  const nameRe = /(?:患者?姓名|病人姓名|姓名|name)[:：\s]*([\u4e00-\u9fa5A-Za-z]+(?:\s+[\u4e00-\u9fa5A-Za-z]+){0,3})/i;
+  // 姓名标签对 OCR 误读容错：姓各/性名/姓 名(插空格)/忠者(患者误读)/就诊人/受检者/Patient 等
+  const nameRe = /(?:姓\s*[名各]|性\s*[名各]|患\s*[者吉]|忠\s*[者吉]|病\s*[人欠]|受\s*检\s*者|就\s*诊\s*人|病\s*人|患\s*者|患者?姓名|病人姓名|就诊人?|受检者?|病员?|name|patient)[:：]?\s*([\u4e00-\u9fa5A-Za-z]+(?:\s+[\u4e00-\u9fa5A-Za-z]+){0,3})/i;
   if ((m = text.match(nameRe))) out.patient = parseName(m[1]);
   // 兜底：无标签的 PACS 列表格式「张三 男 45Y」，按「中文串 + 性别字」启发式提取
   if (!out.patient) {

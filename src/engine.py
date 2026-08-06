@@ -1402,6 +1402,10 @@ def _parse_gender_from_text(text: str) -> Optional[str]:
     m = re.search(r"\b([MFmf])\s*[,，]?\s*\d{1,3}\b", text)
     if m:
         return "male" if m.group(1).lower() == "m" else "female"
+    # 英文整词：Male / Female（无紧邻数字的病史写法，如『Patient：ZHANG SAN  Male 45Y』）
+    m = re.search(r"\b(male|female)\b", text, re.IGNORECASE)
+    if m:
+        return "male" if m.group(1).lower() == "male" else "female"
     return None
 
 
@@ -1533,38 +1537,45 @@ def _lab_re(lab: str) -> str:
     return r"[ \t\u3000]*".join(re.escape(ch) for ch in lab)
 
 
-def _extract_patient(text: str) -> str:
-    """抽取患者姓名（中文）。仅在有显式标签时返回，避免误填。
+# 姓名标签：容忍 OCR 误读（姓名→姓各/性名，患者→忠者，病人→病欠）与字符间空格。
+# 注意：短标签（患者/病人…）后必须跟分隔符，避免误吞其后紧跟的『姓名』二字。
+_PATIENT_LABEL = (
+    r"(?:姓\s*[名各]|性\s*[名各]|"
+    r"患\s*[者吉][:：\s\u3000]+|忠\s*[者吉][:：\s\u3000]+|"
+    r"病\s*[人欠][:：\s\u3000]+|受\s*检\s*者[:：\s\u3000]+|就\s*诊\s*人[:：\s\u3000]+|"
+    r"患者?姓名|病人姓名|就诊人?|受检者?|病员?|name|patient)"
+)
 
-    优先匹配强标签：姓名 / 患者姓名 / 病人姓名 / 受检者姓名 / 就诊人姓名 /
-    病员姓名；其次匹配『患者/病人/受检者/就诊人/病员』后紧跟的姓名（排除
-    『患者诉』『患者因』等语病及性别值 男/女）。无法识别返回空串。
-    标签匹配容忍字符间空格（『姓 名：张三』也能抽取）。
+
+def _extract_patient(text: str) -> str:
+    """抽取患者姓名（中文/英文），容忍 OCR 标签误读与字符间空格。
+
+    覆盖：姓名/患者姓名/病人姓名/受检者姓名/就诊人姓名/病员姓名 及其常见 OCR 误读
+    （姓各、性名、忠者、病欠 等）与英文 Patient/Name；无标签时按『中文串+性别字』
+    启发式兜底（如『张三 男 45Y』）。姓名为空时不误填。
     """
     if not text:
         return ""
-    # 姓名字符：中文与间隔号·，容忍姓名内 OCR 噪声空格；遇到性别/年龄/字段词即停，
-    # 避免把『性别』『年龄』等后续字段吞入姓名（如『张三男』『张三性别：男』误成姓名）。
-    _name_char = (r"(?:(?!男|女|性别|年龄|岁|年|月|日|检查|部位|科室|门诊|住院|"
-                  r"床号|住院号|临床|设备|医院|影像|诊断|申请|病案)"
-                  r"[\u4e00-\u9fa5·\s\u3000])")
-    _clean = lambda s: re.sub(r"[\s\u3000]+", "", s)
-    _strong = ("患者姓名", "病人姓名", "受检者姓名",
-               "就诊人姓名", "病员姓名", "姓名")
-    for lab in _strong:
-        m = re.search(_lab_re(lab) + r"[:：\s\u3000]*(" + _name_char + r"{1,8})", text)
-        if m:
-            return _clean(m.group(1))
-    _weak = ("患者", "病人", "受检者", "就诊人", "病员")
-    _verb = ("诉", "因", "于", "为", "示", "查", "主", "既", "现",
-             "无", "有", "自", "近", "术", "见", "拟")
-    for lab in _weak:
-        m = re.search(re.escape(lab) + r"[:：\s\u3000]+(" + _name_char + r"{1,8})", text)
-        if m:
-            cand = _clean(m.group(1))
-            if cand and cand not in ("男", "女", "不详", "未知") \
-                    and cand[0] not in _verb:
-                return cand
+    # 姓名字符：中文/英文与间隔号·，容忍姓名内 OCR 噪声空格；遇性别/年龄/字段词
+    # （容忍字符间空格，如『性 别』『年 龄』）/英文性别词/数字即停，避免把后续字段
+    # 吞入姓名（如『张三男』『张三性别：男』『孙七性别』）。
+    _name_stop = (r"性\s*别|年\s*龄|检\s*查|部\s*位|科\s*室|门\s*诊|住\s*院|床\s*号|"
+                  r"住\s*院\s*号|临\s*床|设\s*备|医\s*院|影\s*像|诊\s*断|申\s*请|病\s*案|"
+                  r"男|女|male|female|\d")
+    _name_char = r"(?:(?!" + _name_stop + r")[\u4e00-\u9fa5A-Za-z·\s\u3000])"
+    _clean_name = lambda s: re.sub(r"[\s\u3000]+", "", s) if re.search(r"[\u4e00-\u9fa5]", s) \
+        else re.sub(r"\s+", " ", s).strip()
+
+    m = re.search(_PATIENT_LABEL + r"[:：\s\u3000]*(" + _name_char + r"{1,12})", text, re.IGNORECASE)
+    if m:
+        cand = _clean_name(m.group(1))
+        if cand and cand not in ("男", "女", "不详", "未知"):
+            return cand
+    # 无标签兜底：中文姓名紧邻性别字（『张三 男 45Y』）
+    compact = re.sub(r"[\s\u3000]+", "", text)
+    m3 = re.search(r"([\u4e00-\u9fa5]{2,4})[男女]", compact)
+    if m3:
+        return m3.group(1)
     return ""
 
 
