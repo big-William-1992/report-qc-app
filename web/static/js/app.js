@@ -189,6 +189,18 @@ document.getElementById('impressionText').addEventListener('input', function() {
 });
 
 // ==================== 报告质控：运行引擎 ====================
+// 侧别取值：优先取独立下拉框；为空时从「项目/检查部位」自由文本派生，
+// 让后台 R11-SIDE（项目 vs 描述/诊断 左右比对）在常见录入方式下都能启动。
+function effectiveLaterality() {
+  const lat = (document.getElementById('mLaterality') || {}).value || '';
+  if (lat.trim()) return lat.trim();
+  const site = (document.getElementById('mSite') || {}).value || '';
+  if (/双|两|左右/.test(site)) return '双侧';
+  if (/左/.test(site) && !/右/.test(site)) return '左';
+  if (/右/.test(site) && !/左/.test(site)) return '右';
+  return '';
+}
+
 async function runQC() {
   const findings = document.getElementById('findingsText').value.trim();
   const impression = document.getElementById('impressionText').value.trim();
@@ -217,7 +229,7 @@ async function runQC() {
           age:        document.getElementById('mAge').value,
           modality:   document.getElementById('mModality').value,
           applied_site: document.getElementById('mSite').value,
-          laterality: document.getElementById('mLaterality').value,
+          laterality: effectiveLaterality(),
           user_id:    document.getElementById('mUser').value,
         }
       })
@@ -348,7 +360,7 @@ async function saveToLibrary() {
           age:          document.getElementById('mAge').value,
           modality:     document.getElementById('mModality').value,
           applied_site: document.getElementById('mSite').value,
-          laterality:   document.getElementById('mLaterality').value,
+          laterality:   effectiveLaterality(),
           user_id:      document.getElementById('mUser').value,
         },
         anonymize: !!APP_SETTINGS.anonymize,
@@ -530,7 +542,7 @@ async function enqueueCurrent(source = '手动', silent = false) {
     age:          document.getElementById('mAge').value,
     modality:     document.getElementById('mModality').value,
     applied_site: document.getElementById('mSite').value,
-    laterality:   document.getElementById('mLaterality').value,
+    laterality:   effectiveLaterality(),
   }, source, silent);
 }
 

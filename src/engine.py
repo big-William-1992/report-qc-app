@@ -453,6 +453,32 @@ def _detect_side_in_text(text: str) -> set:
     return sides
 
 
+def _project_side(report: str, meta: dict):
+    """派生『项目 / 检查部位』侧别（left/right/bilateral/None）。
+
+    优先级：① 显式 meta.laterality（SPA 侧别下拉）>
+    ② 报告内显式标签字段（如『检查项目：右膝』『检查部位：左肺』）>
+    ③ meta.applied_site（检查部位自由文本，如『右膝关节』）。
+
+    之前 R11-SIDE 只取 ①，用户常把侧别写在 项目 自由文本里而不填独立下拉框，
+    导致 meta.laterality 为空、规则整条跳过，无法核对 项目 vs 描述/诊断 左右。
+    ② ③ 兜底让规则在常见录入方式下都能正确启动。
+    """
+    s = _norm_laterality(meta.get("laterality"))
+    if s:
+        return s
+    for label in ("检查项目", "检查部位", "检查名称", "申请部位", "扫描部位", "检查范围"):
+        m = re.search(label + r"[:：]?\s*([^\n，,。；;：]+)", report or "")
+        if m:
+            ss = _norm_laterality(m.group(1))
+            if ss:
+                return ss
+    ss = _norm_laterality(meta.get("applied_site"))
+    if ss:
+        return ss
+    return None
+
+
 def _organ_sides_en(text: str, aliases) -> set:
     """英文器官左右检测：返回文本中某器官的方位集合（left/right）。
     语序兼容 'left lung' 与 'lung left'，并允许侧别词与器官间有少量修饰词
@@ -1073,8 +1099,10 @@ class RuleEngine:
     def _r11_context(self, text, meta, secs) -> List[Finding]:
         out = []
         f_txt, i_txt = secs["findings"], secs["impression"]
-        # R11-1 左右一致性：信息框侧别 与 描述/结论提及的方位 比对
-        info_side = _norm_laterality(meta.get("laterality"))
+        # R11-1 左右一致性：项目/检查部位侧别 与 描述/结论提及的方位 比对
+        # 侧别来源自动兜底：meta.laterality > 报告内『检查项目/检查部位』标签 > meta.applied_site
+        # （用户常把左右写在 项目 自由文本、不填独立侧别框，此前规则因 laterality 空而整条跳过）
+        info_side = _project_side(text, meta)
         if info_side and info_side != "bilateral":
             for label, seg in (("影像描述", f_txt), ("影像结论", i_txt)):
                 sides = _detect_side_in_text(seg)
