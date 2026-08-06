@@ -1010,7 +1010,10 @@ def uia_capture(emp: str = Depends(require_emp_local)):
         seg = {"findings": text, "impression": ""}
     meta: Dict[str, Any] = {}
     try:
-        meta = engine.extract_meta_full("", seg.get("findings", ""), seg.get("impression", ""))
+        # 注意：_split_for_r5 会丢弃报告头的患者信息（姓名/性别/年龄），只保留
+        # 影像描述/诊断印象。因此把整段 UIA 文本作为 basic 传入，确保患者信息头
+        # 能被抽取；findings/impression 仅用于补抽部位/侧别/检查类型。
+        meta = engine.extract_meta_full(text, seg.get("findings", ""), seg.get("impression", ""))
     except Exception:
         try:
             meta = engine.extract_meta(text)

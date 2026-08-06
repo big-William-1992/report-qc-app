@@ -1543,20 +1543,28 @@ def _extract_patient(text: str) -> str:
     """
     if not text:
         return ""
+    # 姓名字符：中文与间隔号·，容忍姓名内 OCR 噪声空格；遇到性别/年龄/字段词即停，
+    # 避免把『性别』『年龄』等后续字段吞入姓名（如『张三男』『张三性别：男』误成姓名）。
+    _name_char = (r"(?:(?!男|女|性别|年龄|岁|年|月|日|检查|部位|科室|门诊|住院|"
+                  r"床号|住院号|临床|设备|医院|影像|诊断|申请|病案)"
+                  r"[\u4e00-\u9fa5·\s\u3000])")
+    _clean = lambda s: re.sub(r"[\s\u3000]+", "", s)
     _strong = ("患者姓名", "病人姓名", "受检者姓名",
                "就诊人姓名", "病员姓名", "姓名")
     for lab in _strong:
-        m = re.search(_lab_re(lab) + r"[:：\s\u3000]*([\u4e00-\u9fa5·]{1,6})", text)
+        m = re.search(_lab_re(lab) + r"[:：\s\u3000]*(" + _name_char + r"{1,8})", text)
         if m:
-            return m.group(1)
+            return _clean(m.group(1))
     _weak = ("患者", "病人", "受检者", "就诊人", "病员")
     _verb = ("诉", "因", "于", "为", "示", "查", "主", "既", "现",
              "无", "有", "自", "近", "术", "见", "拟")
     for lab in _weak:
-        m = re.search(re.escape(lab) + r"[:：\s\u3000]+([\u4e00-\u9fa5·]{1,6})", text)
-        if m and m.group(1) not in ("男", "女", "不详", "未知") \
-                and m.group(1)[0] not in _verb:
-            return m.group(1)
+        m = re.search(re.escape(lab) + r"[:：\s\u3000]+(" + _name_char + r"{1,8})", text)
+        if m:
+            cand = _clean(m.group(1))
+            if cand and cand not in ("男", "女", "不详", "未知") \
+                    and cand[0] not in _verb:
+                return cand
     return ""
 
 
@@ -1629,7 +1637,8 @@ def extract_meta_full(basic: str, findings: str = "", impression: str = "") -> d
     fi = (findings or "") + "\n" + (impression or "")
     if fi.strip():
         fi_meta = extract_meta(fi)
-        for k in ("applied_site", "laterality", "modality"):
+        for k in ("patient", "exam_no", "gender", "age",
+                  "modality", "applied_site", "laterality"):
             if not (meta.get(k) or "").strip() and (fi_meta.get(k) or "").strip():
                 meta[k] = fi_meta[k]
     return meta
