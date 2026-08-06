@@ -47,18 +47,30 @@ pip install pynput
 
 ### 安装与启动
 
+**macOS（推荐）**
 ```bash
 cd report_qc_app
-pip install -r requirements.txt      # 仅需 OCR 功能时安装；纯引擎可跳过
-python3 src/app.py
+pip install -r requirements.txt
+python3 desktop_app.py          # 或直接双击「启动星衍质控软件.command」
 ```
 
-> **Windows 用户**：与 macOS / Linux 一致，采用「屏幕区域 OCR + 剪贴板粘贴」采集报告，无需额外驱动 / 管理员提权。
-> **macOS 用户**：当前安装包 / 脚本**未做 Apple 公证**。源码运行（`python3 src/app.py`）不受 Gatekeeper 限制，推荐内测阶段直接源码跑；打包版首次打开若被拦截，见 [docs/INSTALL.md](docs/INSTALL.md) §5.2。
+**Windows（推荐双击启动器，自动建环境）**
+1. 安装 Python 3.10+，安装时务必勾选 “Add python.exe to PATH”：https://www.python.org/downloads/windows/
+2. **双击仓库里的 `启动星衍质控.bat`** —— 首次运行会自动创建 `.venv` 并安装依赖，之后直接拉起原生桌面窗口。
+3. 若窗口打不开、反而自动跳到浏览器，多半是缺少 **Edge WebView2 运行时**，去
+   https://developer.microsoft.com/zh-cn/microsoft-edge/webview2/ 装一下即可（装完重开）。
 
-**Windows 打包版**
+> 也可手动在命令行：`cd report_qc_app` → `py -3 -m venv .venv` →
+> `.venv\Scripts\python.exe -m pip install -r requirements.txt` →
+> `.venv\Scripts\python.exe desktop_app.py`
 
-详见 `build/` 目录（`report_qc.spec` / `build_windows.bat` / `setup.iss`），在 Windows 11 上执行打包脚本生成安装包；安装后在「开始菜单」启动。资源与配置位于 `%APPDATA%/MedicalReportQC/`。
+> **Windows / macOS / Linux** 采集方式一致：屏幕区域 OCR + 剪贴板粘贴，无需额外驱动 / 管理员提权。
+
+**Windows 打包成 exe（便于分发）**
+
+详见 `build/` 目录：在 Windows 上双击 `build_windows.bat`（内部调用 `build_windows.py`），
+自动建 `.venv`、装依赖、跑引擎自检、PyInstaller 打单目录 exe（及可选 Inno Setup 安装包）；
+安装后在「开始菜单」启动。资源与配置位于 `%APPDATA%/MedicalReportQC/`。
 
 > ⚠️ **macOS 权限**：首次使用「监听剪贴板」或「后台快捷键」时，若系统弹出「Terminal / Python 请求访问剪贴板 / 辅助功能」，请允许。否则监听读不到复制内容、后台快捷键无法在 PACS 聚焦时触发。权限可在「系统设置 → 隐私与安全性 → 辅助功能 / 自动化」中补开。
 

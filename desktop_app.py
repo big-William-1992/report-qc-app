@@ -179,6 +179,18 @@ def _wait_ready(timeout: int = 20) -> bool:
 
 def main():
     print("星衍AI放射质控 · 启动中…")
+
+    # 依赖预检：后端模块（含 cv2 / uvicorn / fastapi / sqlalchemy 等）必须可导入，
+    # 否则后端起不来、health 永远不通、_wait_ready 超时后整个进程静默退出，
+    # 表现为“软件打不开”。提前 import 一次，缺依赖时给出明确指引而不是干等。
+    try:
+        import server.main  # noqa: F401  触发后端全部依赖的导入
+    except Exception as e:  # noqa: BLE001
+        print("[错误] 后端依赖缺失或导入失败：", repr(e))
+        print("        请先安装运行依赖：pip install -r requirements.txt")
+        print("        Windows 用户可直接双击「启动星衍质控.bat」自动安装。")
+        sys.exit(2)
+
     srv = threading.Thread(target=_start_uvicorn, daemon=True)
     srv.start()
     if not _wait_ready():
@@ -192,9 +204,19 @@ def main():
         _WEBVIEW = _wv
         # 启动全局热键监听（后台线程，不阻塞 WebView 主事件循环）
         threading.Thread(target=_start_hotkeys, daemon=True).start()
-        _wv.create_window("星衍AI放射质控", url, width=1280, height=860,
-                          min_size=(1024, 700), js_api=Bridge())
-        _wv.start()
+        try:
+            _wv.create_window("星衍AI放射质控", url, width=1280, height=860,
+                              min_size=(1024, 700), js_api=Bridge())
+            _wv.start()
+        except Exception as e:  # noqa: BLE001
+            # WebView2 / Edge 运行时缺失等导致原生窗口创建失败：降级到系统浏览器，
+            # 而不是让进程崩溃（否则用户只看到“闪一下打不开”）。
+            import webbrowser
+            print(f"[警告] 原生窗口创建失败（{e}），改用系统浏览器打开：{url}")
+            print("        若提示缺少 WebView2，请安装 Edge WebView2 运行时：")
+            print("        https://developer.microsoft.com/zh-cn/microsoft-edge/webview2/")
+            webbrowser.open(url)
+            input("按 Enter 退出…")
     except ImportError:
         # 未安装 pywebview 时回退到系统浏览器
         import webbrowser
