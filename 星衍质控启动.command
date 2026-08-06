@@ -1,21 +1,34 @@
-#!/bin/bash
-# 星衍AI放射质控系统 - 桌面端双击启动器
-# 双击本文件即可在 macOS 上打开应用（会弹出原生 Tk 窗口，关闭窗口即退出）。
+#!/bin/zsh
+# 星衍AI放射质控软件 · 旧启动器（兼容重定向）
+# 原 Tkinter 桌面端(src/app.py)已退役，主交付为 WebView 桌面端 desktop_app.py。
+# 本启动器改为直接拉起 WebView 版，双击任意旧图标均可打开正确的软件。
 
-# 切到启动器所在目录（脚本相对路径，迁移到任意机器/目录均可双击）
 cd "$(dirname "$0")" || {
     echo "✗ 找不到启动器所在目录。"
-    read -p "按回车关闭"
+    read -k 1 "按任意键关闭…"
     exit 1
 }
 
-# 优先用 Homebrew Python（已验证 tkinter 可用），否则回退 python3
-PYTHON="/opt/homebrew/bin/python3"
-if [ ! -x "$PYTHON" ]; then PYTHON="python3"; fi
+# 与「启动星衍质控软件.command」保持一致：优先托管 venv，再回退基础/Homebrew/系统 Python
+VENV="/Users/xiejun/.workbuddy/binaries/python/envs/default/bin/python3"
+BASE="/Users/xiejun/.workbuddy/binaries/python/versions/3.13.12/bin/python3"
+HB="/opt/homebrew/bin/python3"
+if [ -x "$VENV" ]; then
+  PY="$VENV"
+elif [ -x "$BASE" ]; then
+  PY="$BASE"
+elif [ -x "$HB" ]; then
+  PY="$HB"
+else
+  PY="python3"
+fi
 
-echo "▶ 正在启动星衍AI放射质控..."
-"$PYTHON" src/app.py
+echo "▶ 正在启动星衍AI放射质控（WebView 桌面版）…"
+"$PY" desktop_app.py
+EC=$?
 
-echo ""
-echo "程序已退出（返回码 $?）。"
-read -p "按回车关闭此窗口"
+if [ $EC -ne 0 ]; then
+  echo "❌ 程序异常退出（退出码 $EC）。请确认依赖已安装："
+  echo "  $PY -m pip install fastapi uvicorn pywebview"
+  read -k 1 "按任意键关闭…"
+fi

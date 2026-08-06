@@ -27,6 +27,15 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# 【退役守卫】Tkinter 桌面端(src/app.py)已退役，非交付目标。
+# 主交付为 WebView 桌面端 desktop_app.py（请改用「启动星衍质控软件.command」）。
+# 直接运行本文件时给出清晰提示后退出，避免触发 accounts→db 的「找不到db模块」报错。
+if __name__ == "__main__":
+    print("⚠️ Tkinter 桌面端(src/app.py)已退役，非交付目标。")
+    print("   请运行「启动星衍质控软件.command」启动 WebView 桌面版。")
+    raise SystemExit(0)
+
 from engine import RuleEngine, score, error_type_counts
 import engine
 import samplelib
