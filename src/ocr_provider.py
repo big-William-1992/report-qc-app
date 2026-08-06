@@ -64,15 +64,15 @@ CHANGE_TOLERANCE = 0.002   # 0.2%，64×64 下约 8 个像素
 # 预处理时先 2x 放大再增强，见 preprocess_for_ocr。
 SMALL_REGION_H = 96
 
-# ── 检测阶段参数调优（基于 tools/ocr_bench + /tmp/ocrdiag 实测，模拟小字/低对比/
-#    JPEG+噪声的真实感 PACS 截图；rapidocr-onnxruntime 1.2.x 会正确解析 det_ 前缀参数）──
-# 默认分别是 736 / 1.6。调优后整体字符级 recall 从 98.3% → ~99.6%（最难样本提升最大）：
-#   limit_side_len 736→1280：小字12px 95.1%→98.2%，整体 +1.3%；1600 起边际递减，故取 1280
-#     性价比最高（代价：检测输入更大、单帧推理略慢，仍 < 百 ms，屏幕小区域可忽略）。
-#   unclip_ratio 1.6→2.0：文本框外扩更充分、防字边被切，整体 +0.6%，无副作用。
-# 注：预处理（灰度+CLAHE）存在权衡——CLAHE 利好低对比/深色，但放大小字 JPEG 噪声时
-#   反伤精度，故此处只动 det 参数（干净增益），预处理维持现状，待真实截图复核再定。
-DET_LIMIT_SIDE_LEN = 1280
+# ── 检测阶段参数（rapidocr-onnxruntime 1.2.x 正确解析 det_ 前缀参数）──
+# 默认分别是 736 / 1.6。曾为抬升 12px 小字召回调到 1280（整体 +1.3%），但检测输入变大、
+# OCR 峰值内存显著上升（实测 ~935MB，det 中间激活张量面积随 (边长)² 膨胀，是峰值主因）。
+# 按「压低内存峰值」需求改回 736（PP-OCRv3 官方默认）：
+#   - 检测激活面积降为 (736/1280)²≈0.33 倍 → 峰值约降 35%（实测 935→610MB）；
+#   - 配合 preprocess_for_ocr 对 <96px 矮条区域 2x 放大（把过小字抬进检测有效区间），
+#     PACS 患者信息栏常见字号召回基本不受影响（合成小字条(15px)实测姓名仍正确识别）；
+#   - 极端 12px 小字召回略降，若真实截图复核不合格可回调至 1280。
+DET_LIMIT_SIDE_LEN = 736
 DET_UNCLIP_RATIO = 2.0
 
 
@@ -163,11 +163,12 @@ def _get_engine():
             _engine = RapidOCR(det_model_path=det, rec_model_path=rec,
                                cls_model_path=cls,
                                det_limit_side_len=DET_LIMIT_SIDE_LEN,
-                               det_unclip_ratio=DET_UNCLIP_RATIO)
+                               det_unclip_ratio=DET_UNCLIP_RATIO,
+                               use_angle_cls=False)
         else:
             # 回退到 RapidOCR 自带模型（首次会从官网下载，需联网一次；
             # 若已下载则走本地缓存 ~/.cache/rapidocr_onnxruntime）
-            _engine = RapidOCR()
+            _engine = RapidOCR(use_angle_cls=False)
     except Exception as e:
         _engine_err = f"RapidOCR 初始化失败：{e}"
         return None
