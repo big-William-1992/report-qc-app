@@ -1486,7 +1486,8 @@ async function ocrRecognize() {
       const data = await res.json();
       if (!data.ok) throw new Error(data.message || 'OCR 失败');
       const t = (data.data && data.data.texts) || {};
-      ocrFill({ basic: t.basic, findings: t.findings, impression: t.impression });
+      ocrFill({ basic: t.basic, findings: t.findings, impression: t.impression },
+               (data.data && data.data.meta) || null);
       toast('三段识别完成，已填充到对应区域', 'success');
     } catch (e) { toast('OCR 出错: ' + e.message, 'error'); }
     finally { setBusy(false); }
@@ -1519,16 +1520,49 @@ function parseName(raw) {
 }
 function parsePatientInfo(text) {
   const out = {}; let m;
+  // 噪声词（字段词/科室词）：无标签兜底时排除，避免把科室/字段误填成姓名
+  const NOISE = /(性别|年龄|检查|部位|科室|门诊|住院|床号|影像|诊断|申请|病案|临床|设备|医院|报告|记录|呼吸|心血管|神经|骨科|普外|泌尿|妇科|产科|儿科|急诊|超声|放射|肿瘤|消化|内分泌|免疫|血液|皮肤|眼科|耳鼻喉|口腔|中医|康复|病理|心电|核医学|受理|登记|来源|类型|方法|所见|印象|建议|征象|结论|提示|说明|病床|住院号|门诊号|检查号|影像号)/;
+  const COMPOUND = /^(欧阳|司马|诸葛|东方|上官|令狐|皇甫|宇文|慕容|司徒|夏侯|长孙|赫连|万俟|闻人|澹台|尉迟|公孙)/;
   // 姓名：优先按标签（姓名/患者姓名/病人姓名/name）提取；OCR 常把姓名与性别连写或插入空格，需清洗
   // 姓名标签对 OCR 误读容错：姓各/性名/姓 名(插空格)/忠者(患者误读)/就诊人/受检者/Patient 等
-  const nameRe = /(?:姓\s*[名各]|性\s*[名各]|患\s*[者吉]|忠\s*[者吉]|病\s*[人欠]|受\s*检\s*者|就\s*诊\s*人|病\s*人|患\s*者|患者?姓名|病人姓名|就诊人?|受检者?|病员?|name|patient)[:：]?\s*([\u4e00-\u9fa5A-Za-z]+(?:\s+[\u4e00-\u9fa5A-Za-z]+){0,3})/i;
-  if ((m = text.match(nameRe))) out.patient = parseName(m[1]);
-  // 兜底：无标签的 PACS 列表格式「张三 男 45Y」，按「中文串 + 性别字」启发式提取
+  const nameRe = /(?:姓\s*[名各]|性\s*[名各]|名\s*[:：]|患\s*[者吉][:：\s\u3000]+|忠\s*[者吉][:：\s\u3000]+|病\s*[人欠员][:：\s\u3000]+|受\s*检\s*者[:：\s\u3000]+|就\s*诊\s*人[:：\s\u3000]+|患者?姓名|病人姓名|name|patient)[:：]?\s*([\u4e00-\u9fa5A-Za-z]+(?:\s+[\u4e00-\u9fa5A-Za-z]+){0,3})/i;
+  if ((m = text.match(nameRe))) {
+    let cand = parseName(m[1]);
+    // 姓名后若紧跟性别/年龄/字段词（『赵六性别』『王五男』），从中截断只留姓名，
+    // 与后端 _name_char 行为对齐（遇性别/年龄/字段词即停）。
+    cand = cand.replace(/^(.*?)(性别|年龄|男|女|检查|部位|科室|影像|诊断|申请|病案|门诊|住院|床号|sex|male|female).*$/i, '$1');
+    out.patient = cand.trim();
+  }
+  // 兜底1：无标签的 PACS 列表格式「张三 男 45Y」，按「中文串 + 性别字」启发式提取。
+  // 优先 2-3 字，候选含科室首字则从左剥离（呼吸内科→张三），避免把科室吞入姓名。
   if (!out.patient) {
     const compact = text.replace(/\s+/g, '');
-    const m3 = compact.match(/([\u4e00-\u9fa5]{2,4})[男女]/);
-    if (m3) out.patient = m3[1];
+    const DEPT = '呼吸内科外科科室门诊住院急诊放射超声影像神经骨科泌尿妇科产科儿科肿瘤消化内分泌免疫血液皮肤眼科耳鼻喉口腔中医康复病理心电核医学';
+    const stripDept = (s) => { while (s.length > 2 && DEPT.includes(s[0])) s = s.slice(1); return s; };
+    let m3 = compact.match(/([\u4e00-\u9fa5]{2,3})[男女]/);
+    if (m3) { const c = stripDept(m3[1]); if (c.length >= 2 && !NOISE.test(c)) out.patient = c; }
+    if (!out.patient) {
+      m3 = compact.match(/([\u4e00-\u9fa5]{4})[男女]/);
+      if (m3) { const c = stripDept(m3[1]); if (c.length >= 2 && COMPOUND.test(c) && !NOISE.test(c)) out.patient = c; }
+    }
   }
+  // 兜底2：完全无标签/无性别字时，仅在「整行无字段词」且行内含『人称/性别/年龄』标识的行中，
+  // 取行首像人名的 2-3 字中文串，排除字段词/科室词/部位词，避免把部位/正文误填成姓名。
+  if (!out.patient) {
+    const BODYPART = /^(头部|颈部|胸部|腹部|盆腔|腰部|骶部|尾部|颅脑|头颅|鼻窦|眼眶|涎腺|鼻咽|口咽|喉部|甲状腺|上腹部|中腹部|下腹部|肾上腺|肝脏|胆囊|胰腺|脾脏|肾脏|胃肠|膀胱|前列腺|子宫|卵巢|四肢|关节|肩关节|肘关节|腕关节|髋关节|膝关节|踝关节|腰椎|颈椎|胸椎|骶骨|尾骨|股骨|胫骨|腓骨|肱骨|尺骨|桡骨|骨盆|肋骨|锁骨|脑|颈|胸|腹|盆|腰|骶|颅|颌|面|眼|耳|鼻|咽|喉|肺|肝|胆|胰|脾|肾|胃|肠|膀|乳|肩|肘|腕|髋|膝|踝|指|趾|脊|椎|骨|肋|锁|股|胫|腓|肱|桡)/;
+    const PERSON = /(患者?|就\s*诊|受\s*检|病\s*员|病\s*人|name|patient|性\s*别|年\s*龄|男|女|\d)/i;
+    for (const line of text.split(/\n+/)) {
+      if (NOISE.test(line)) continue;
+      if (!PERSON.test(line)) continue;
+      const mm = line.match(/^\s*(?:[A-Za-z0-9\-]+)?\s*([\u4e00-\u9fa5]{2,3}(?:\s*[\u4e00-\u9fa5])?)/);
+      if (!mm) continue;
+      const c = mm[1].replace(/\s+/g, '');
+      if (c.length < 2) continue;
+      if (NOISE.test(c) || BODYPART.test(c)) continue;
+      if (c.length <= 3 || COMPOUND.test(c)) { out.patient = c; break; }
+    }
+  }
+  if (!out.patient) out.patient = '';
   // 性别：归一化（男/M/male → 男；女/F/female → 女）
   if ((m = text.match(/(?:性别|gender|sex)[:：]?\s*(男|女|M|F|male|female)/i))) {
     const g = m[1].toLowerCase();
@@ -1555,14 +1589,21 @@ function setVal(id, v) {
   el.dispatchEvent(new Event('input'));
 }
 
-function ocrFill(map) {
-  if (map.basic) {
-    const p = parsePatientInfo(map.basic);
-    setVal('mPatient', p.patient);
-    setVal('mGender', p.gender);
-    setVal('mAge', p.age);
-    setVal('mModality', p.modality);
+function ocrFill(map, meta) {
+  // 前端兜底：拼接三区文本解析（姓名可能落在非 basic 区，如侧边栏/标题栏被划进 findings）
+  const combined = [map.basic, map.findings, map.impression].filter(Boolean).join('\n');
+  const p = parsePatientInfo(combined);
+  // 后端结构化 meta 更鲁棒（extract_meta_full 已跨区补抽），优先覆盖非空字段
+  if (meta) {
+    if (meta.patient)   p.patient   = meta.patient;
+    if (meta.gender)    p.gender    = meta.gender;
+    if (meta.age)       p.age       = meta.age;
+    if (meta.modality)  p.modality  = meta.modality;
   }
+  setVal('mPatient', p.patient);
+  setVal('mGender', p.gender);
+  setVal('mAge', p.age);
+  setVal('mModality', p.modality);
   if (map.findings) setVal('findingsText', map.findings.trim());
   if (map.impression) setVal('impressionText', map.impression.trim());
 }
@@ -1583,12 +1624,13 @@ async function ocrPipeline() {
       const data = await res.json();
       if (!data.ok) throw new Error(data.message || 'OCR 失败');
       const t = (data.data && data.data.texts) || {};
-      ocrFill({ basic: t.basic, findings: t.findings, impression: t.impression });
+      ocrFill({ basic: t.basic, findings: t.findings, impression: t.impression },
+               (data.data && data.data.meta) || null);
     } else {
       if (!ocrState.img) { toast('请先粘贴或选择报告截图', 'error'); return; }
       const results = await Promise.all(ocrState.boxes.map(async (b) => ({ key: b.key, text: await ocrCropAndRecognize(b) })));
       const map = {}; results.forEach(r => map[r.key] = r.text);
-      ocrFill(map);
+      ocrFill(map, null);
     }
     toast('已识别并填充，正在导入并质控...', 'info');
     closeOcrModal();

@@ -1540,10 +1540,10 @@ def _lab_re(lab: str) -> str:
 # 姓名标签：容忍 OCR 误读（姓名→姓各/性名，患者→忠者，病人→病欠）与字符间空格。
 # 注意：短标签（患者/病人…）后必须跟分隔符，避免误吞其后紧跟的『姓名』二字。
 _PATIENT_LABEL = (
-    r"(?:姓\s*[名各]|性\s*[名各]|"
+    r"(?:姓\s*[名各]|性\s*[名各]|名\s*[:：]|"
     r"患\s*[者吉][:：\s\u3000]+|忠\s*[者吉][:：\s\u3000]+|"
-    r"病\s*[人欠][:：\s\u3000]+|受\s*检\s*者[:：\s\u3000]+|就\s*诊\s*人[:：\s\u3000]+|"
-    r"患者?姓名|病人姓名|就诊人?|受检者?|病员?|name|patient)"
+    r"病\s*[人欠员][:：\s\u3000]+|受\s*检\s*者[:：\s\u3000]+|就\s*诊\s*人[:：\s\u3000]+|"
+    r"患者?姓名|病人姓名|name|patient)"
 )
 
 
@@ -1556,12 +1556,29 @@ def _extract_patient(text: str) -> str:
     """
     if not text:
         return ""
+    # 噪声词（字段词/科室词）：无标签兜底时排除，避免把科室/字段误填成姓名
+    _noise = ("性别|年龄|检查|部位|科室|门诊|住院|床号|影像|诊断|申请|病案|临床|设备|"
+              "医院|报告|记录|呼吸|心血管|神经|骨科|普外|泌尿|妇科|产科|儿科|急诊|超声|"
+              "放射|肿瘤|消化|内分泌|免疫|血液|皮肤|眼科|耳鼻喉|口腔|中医|康复|病理|"
+              "心电|核医学|受理|登记|来源|类型|方法|所见|印象|建议|征象|结论|提示|说明|病床")
+    # 复姓前缀：4 字姓名仅当以复姓开头才接受（欧阳娜娜…）
+    _compound = ("欧阳|司马|诸葛|东方|上官|令狐|皇甫|宇文|慕容|司徒|夏侯|长孙|"
+                 "赫连|万俟|闻人|澹台|尉迟|公孙")
+    # 部位词：无标签兜底时排除，避免把『胸部/腹部/腰椎』等检查部位误填成姓名
+    # （单字仅取明确非姓氏者，关/子/前/四/口/甲/尺等真实姓氏不纳入）。
+    _bodypart = ("头部|颈部|胸部|腹部|盆腔|腰部|骶部|尾部|颅脑|头颅|鼻窦|眼眶|涎腺|"
+                 "鼻咽|口咽|喉部|甲状腺|上腹部|中腹部|下腹部|肾上腺|肝脏|胆囊|胰腺|"
+                 "脾脏|肾脏|胃肠|膀胱|前列腺|子宫|卵巢|四肢|关节|肩关节|肘关节|腕关节|"
+                 "髋关节|膝关节|踝关节|腰椎|颈椎|胸椎|骶骨|尾骨|股骨|胫骨|腓骨|肱骨|"
+                 "尺骨|桡骨|骨盆|肋骨|锁骨|脑|颈|胸|腹|盆|腰|骶|颅|颌|面|眼|耳|鼻|"
+                 "咽|喉|肺|肝|胆|胰|脾|肾|胃|肠|膀|乳|肩|肘|腕|髋|膝|踝|指|趾|脊|"
+                 "椎|骨|肋|锁|股|胫|腓|肱|桡")
     # 姓名字符：中文/英文与间隔号·，容忍姓名内 OCR 噪声空格；遇性别/年龄/字段词
     # （容忍字符间空格，如『性 别』『年 龄』）/英文性别词/数字即停，避免把后续字段
     # 吞入姓名（如『张三男』『张三性别：男』『孙七性别』）。
     _name_stop = (r"性\s*别|年\s*龄|检\s*查|部\s*位|科\s*室|门\s*诊|住\s*院|床\s*号|"
                   r"住\s*院\s*号|临\s*床|设\s*备|医\s*院|影\s*像|诊\s*断|申\s*请|病\s*案|"
-                  r"男|女|male|female|\d")
+                  r"男|女|male|female|sex|\d")
     _name_char = r"(?:(?!" + _name_stop + r")[\u4e00-\u9fa5A-Za-z·\s\u3000])"
     _clean_name = lambda s: re.sub(r"[\s\u3000]+", "", s) if re.search(r"[\u4e00-\u9fa5]", s) \
         else re.sub(r"\s+", " ", s).strip()
@@ -1571,11 +1588,49 @@ def _extract_patient(text: str) -> str:
         cand = _clean_name(m.group(1))
         if cand and cand not in ("男", "女", "不详", "未知"):
             return cand
-    # 无标签兜底：中文姓名紧邻性别字（『张三 男 45Y』）
+    # 无标签兜底1：中文姓名紧邻性别字（『张三 男 45Y』）。先用 2-3 字匹配，避免把
+    # 前面的科室词（如『呼吸内科』）吞入姓名；候选含噪声词/科室首字则从左剥离后重试。
     compact = re.sub(r"[\s\u3000]+", "", text)
-    m3 = re.search(r"([\u4e00-\u9fa5]{2,4})[男女]", compact)
+    _dept_char = set("呼吸内科外科科室门诊住院急诊放射超声影像神经骨科泌尿"
+                     "妇科产科儿科肿瘤消化内分泌免疫血液皮肤眼科耳鼻喉口腔"
+                     "中医康复病理心电核医学")
+    def _strip_dept(s: str) -> str:
+        while len(s) > 2 and s[0] in _dept_char:
+            s = s[1:]
+        return s
+    m3 = re.search(r"([\u4e00-\u9fa5]{2,3})[男女]", compact)
     if m3:
-        return m3.group(1)
+        cand = _strip_dept(m3.group(1))
+        if len(cand) >= 2 and not re.search(_noise, cand) and not re.search(_bodypart, cand):
+            return cand
+    # 4 字且为复姓（欧阳娜娜…）才接受
+    m4 = re.search(r"([\u4e00-\u9fa5]{4})[男女]", compact)
+    if m4:
+        cand = _strip_dept(m4.group(1))
+        if len(cand) >= 2 and cand.startswith(_compound) and not re.search(_noise, cand):
+            return cand
+    # 无标签兜底2：完全无标签/无性别字时，仅在「整行不含字段词（检查/部位/科室…）」
+    # 的行中取行首像人名的 2-3 字中文串（如『张三 男 45岁』类无标签行），排除字段词/
+    # 科室词/部位词，降低把科室/字段/检查部位（如『胸部』）误填成姓名的概率。
+    # 含字段词的行（检查部位：胸部…）一律跳过，避免取到部位名。
+    # 仅取「整行无字段词」且行内存在『人称/性别/年龄』标识的中文串作为姓名候选，
+    # 避免把正文里没有字段词的人名形态串（如『未见实质性病灶』的『灶』）误填成姓名。
+    _person_mark = r"患者?|就诊|受检|病员|病\s*人|name|patient|性\s*别|年\s*龄|男|女|\d"
+    for line in text.splitlines():
+        if re.search(_noise, line):
+            continue
+        if not re.search(_person_mark, line, re.IGNORECASE):
+            continue
+        m = re.match(r"\s*(?:[A-Za-z0-9\-]+)?\s*([\u4e00-\u9fa5]{2,3}(?:\s*[\u4e00-\u9fa5])?)", line)
+        if not m:
+            continue
+        cand = re.sub(r"\s+", "", m.group(1))
+        if len(cand) < 2:
+            continue
+        if re.search(_noise, cand) or re.search(_bodypart, cand):
+            continue
+        if len(cand) <= 3 or cand.startswith(_compound):
+            return cand
     return ""
 
 
