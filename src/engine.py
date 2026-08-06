@@ -1561,9 +1561,11 @@ def _extract_patient(text: str) -> str:
               "医院|报告|记录|呼吸|心血管|神经|骨科|普外|泌尿|妇科|产科|儿科|急诊|超声|"
               "放射|肿瘤|消化|内分泌|免疫|血液|皮肤|眼科|耳鼻喉|口腔|中医|康复|病理|"
               "心电|核医学|受理|登记|来源|类型|方法|所见|印象|建议|征象|结论|提示|说明|病床")
-    # 复姓前缀：4 字姓名仅当以复姓开头才接受（欧阳娜娜…）
-    _compound = ("欧阳|司马|诸葛|东方|上官|令狐|皇甫|宇文|慕容|司徒|夏侯|长孙|"
-                 "赫连|万俟|闻人|澹台|尉迟|公孙")
+    # 复姓前缀：4 字姓名仅当以复姓开头才接受（欧阳娜娜…）。
+    # 注意：必须用编译正则 + re.match（前缀匹配），不能用 str.startswith(_compound)，
+    # 因为 startswith 不会把 '|' 当作「或」，原写法导致复姓检测始终失效。
+    _compound = re.compile(r"^(欧阳|司马|诸葛|东方|上官|令狐|皇甫|宇文|慕容|司徒|夏侯|长孙|"
+                            r"赫连|万俟|闻人|澹台|尉迟|公孙)")
     # 部位词：无标签兜底时排除，避免把『胸部/腹部/腰椎』等检查部位误填成姓名
     # （单字仅取明确非姓氏者，关/子/前/四/口/甲/尺等真实姓氏不纳入）。
     _bodypart = ("头部|颈部|胸部|腹部|盆腔|腰部|骶部|尾部|颅脑|头颅|鼻窦|眼眶|涎腺|"
@@ -1598,16 +1600,16 @@ def _extract_patient(text: str) -> str:
         while len(s) > 2 and s[0] in _dept_char:
             s = s[1:]
         return s
+    # 4 字且为复姓（欧阳娜娜…）优先：避免 2-3 字匹配把复姓 4 字名从中段截走（如『阳娜娜』）
+    m4 = re.search(r"([\u4e00-\u9fa5]{4})[男女]", compact)
+    if m4:
+        cand = _strip_dept(m4.group(1))
+        if len(cand) >= 2 and re.match(_compound, cand) and not re.search(_noise, cand):
+            return cand
     m3 = re.search(r"([\u4e00-\u9fa5]{2,3})[男女]", compact)
     if m3:
         cand = _strip_dept(m3.group(1))
         if len(cand) >= 2 and not re.search(_noise, cand) and not re.search(_bodypart, cand):
-            return cand
-    # 4 字且为复姓（欧阳娜娜…）才接受
-    m4 = re.search(r"([\u4e00-\u9fa5]{4})[男女]", compact)
-    if m4:
-        cand = _strip_dept(m4.group(1))
-        if len(cand) >= 2 and cand.startswith(_compound) and not re.search(_noise, cand):
             return cand
     # 无标签兜底2：完全无标签/无性别字时，仅在「整行不含字段词（检查/部位/科室…）」
     # 的行中取行首像人名的 2-3 字中文串（如『张三 男 45岁』类无标签行），排除字段词/
@@ -1629,8 +1631,19 @@ def _extract_patient(text: str) -> str:
             continue
         if re.search(_noise, cand) or re.search(_bodypart, cand):
             continue
-        if len(cand) <= 3 or cand.startswith(_compound):
+        if len(cand) <= 3 or re.match(_compound, cand):
             return cand
+    # 兜底3：整行恰好就是 2-3 字中文串（如『姓名独占一行』的 PACS 大字段：张三 / 王小明），
+    # 既无标签也无性别字，兜底1/2 都会漏。用 fullmatch 限定「整行即姓名」，排除
+    # 『未见实质性病灶』这类长句（其首 token 不会误中）；部位词(_bodypart)仍排除，
+    # 故『胸部』『腰椎』等不会误填。仅作最后兜底，优先级最低。
+    for line in text.splitlines():
+        s = line.strip()
+        if not re.fullmatch(r"[\u4e00-\u9fa5]{2,3}", s):
+            continue
+        if re.search(_noise, s) or re.search(_bodypart, s):
+            continue
+        return s
     return ""
 
 

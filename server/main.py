@@ -946,6 +946,28 @@ def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local)):
     return _envelope(True, "OK", {"texts": texts, "meta": meta, "errors": errors})
 
 
+class OCRMetaReq(BaseModel):
+    """图片模式下，前端已对三区分别 OCR，把三区文本送来后端做结构化抽取。"""
+    basic: str = ""
+    findings: str = ""
+    impression: str = ""
+
+
+@app.post("/api/v1/ocr/meta")
+def ocr_meta(req: OCRMetaReq, emp: str = Depends(require_emp_local)):
+    """对三段 OCR 文本做结构化抽取（姓名/性别/年龄/部位/侧别/检查类型）。
+
+    与 ``/screen/ocr`` 共用 ``engine.extract_meta_full``，保证「屏幕模式」与「图片模式」
+    姓名回填行为一致、都走后端最稳健的跨区补抽逻辑。前端在图片模式下拿到本结果后
+    优先用于回填，避免只依赖前端解析在『独立姓名行』等边缘布局下漏抽。
+    """
+    try:
+        meta = engine.extract_meta_full(req.basic or "", req.findings or "", req.impression or "")
+    except Exception as exc:
+        return _envelope(False, "META_ERR", None, str(exc))
+    return _envelope(True, "OK", {"meta": meta})
+
+
 def _ocr_config_path() -> str:
     """与 src/app.py 的 _ocr_config_path 同路径，实现桌面/Web 区域配置互通。"""
     ap = os.path.expandvars("%APPDATA%")

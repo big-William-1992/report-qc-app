@@ -1499,7 +1499,17 @@ async function ocrRecognize() {
   try {
     const results = await Promise.all(ocrState.boxes.map(async (b) => ({ key: b.key, text: await ocrCropAndRecognize(b) })));
     const map = {}; results.forEach(r => map[r.key] = r.text);
-    ocrFill(map);
+    // 图片模式也走后端 extract_meta_full（与屏幕模式一致），姓名回填更稳健；失败则回退前端解析
+    let meta = null;
+    try {
+      const mr = await fetch('/api/v1/ocr/meta', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ basic: map.basic || '', findings: map.findings || '', impression: map.impression || '' })
+      });
+      const md = await mr.json();
+      if (md.ok && md.data && md.data.meta) meta = md.data.meta;
+    } catch (e) { /* 忽略，走前端兜底 */ }
+    ocrFill(map, meta);
     toast('三段识别完成，已填充到对应区域', 'success');
   } catch (e) { toast('OCR 出错: ' + e.message, 'error'); }
   finally { setBusy(false); }
@@ -1560,6 +1570,17 @@ function parsePatientInfo(text) {
       if (c.length < 2) continue;
       if (NOISE.test(c) || BODYPART.test(c)) continue;
       if (c.length <= 3 || COMPOUND.test(c)) { out.patient = c; break; }
+    }
+  }
+  // 兜底3：整行恰好就是 2-3 字中文串（如姓名独占一行的 PACS 大字段：张三 / 王小明），
+  // 无标签也无性别字，兜底1/2 都会漏。用 fullmatch 限定「整行即姓名」，排除「未见实质性病灶」
+  // 这类长句；部位词(BODYPART)仍排除，故『胸部』『腰椎』不会误填。仅作最后兜底。
+  if (!out.patient) {
+    for (const line of text.split(/\n+/)) {
+      const s = line.trim();
+      if (!/^[\u4e00-\u9fa5]{2,3}$/.test(s)) continue;
+      if (NOISE.test(s) || BODYPART.test(s)) continue;
+      out.patient = s; break;
     }
   }
   if (!out.patient) out.patient = '';
@@ -1630,7 +1651,17 @@ async function ocrPipeline() {
       if (!ocrState.img) { toast('请先粘贴或选择报告截图', 'error'); return; }
       const results = await Promise.all(ocrState.boxes.map(async (b) => ({ key: b.key, text: await ocrCropAndRecognize(b) })));
       const map = {}; results.forEach(r => map[r.key] = r.text);
-      ocrFill(map, null);
+      // 图片模式同样走后端结构化抽取，保证与屏幕模式一致的稳健回填
+      let meta = null;
+      try {
+        const mr = await fetch('/api/v1/ocr/meta', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ basic: map.basic || '', findings: map.findings || '', impression: map.impression || '' })
+        });
+        const md = await mr.json();
+        if (md.ok && md.data && md.data.meta) meta = md.data.meta;
+      } catch (e) { /* 忽略，走前端兜底 */ }
+      ocrFill(map, meta);
     }
     toast('已识别并填充，正在导入并质控...', 'info');
     closeOcrModal();
