@@ -9,6 +9,7 @@
 fastapi>=0.110                # REST 后端框架
 uvicorn>=0.27                 # ASGI 服务器（desktop_app.py 以后台线程拉起）
 python-multipart>=0.0.9       # UploadFile 表单解析：/ocr/upload、/samples/import/upload 必需
+sqlalchemy>=1.4,<3.0          # ORM 数据层（users/departments/samples/queue/settings 持久化，运行必需；漏列会导致冻结 exe 启动即 ModuleNotFoundError）
 pywebview>=4.4                # 桌面壳（macOS 用系统 WKWebView，Windows 用 WebView2）
 
 # ── 屏幕区域 OCR（框选 PACS 报告 → 离线识别）──────────────────────
