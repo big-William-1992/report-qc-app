@@ -140,6 +140,17 @@ jobs:
       - name: Package portable zip
         run: Compress-Archive -Path "dist/报告质控软件/*" -DestinationPath "report-qc-portable.zip" -Force
 
+      # ---- 阻断闸：sqlalchemy 必须进 bundle，否则 exe 启动即 ModuleNotFoundError ----
+      # 不放行到「删除旧 latest / 发布」：坏包一旦发布，用户下载即崩。
+      - name: Block release if SQLAlchemy missing in bundle
+        shell: bash
+        run: |
+          if [ -z "$(find dist -type d -name sqlalchemy 2>/dev/null | head -1)" ]; then
+            echo "::error::SQLAlchemy 未打进 bundle，阻断发布（exe 启动会 ModuleNotFoundError: sqlalchemy）"
+            exit 1
+          fi
+          echo "SQLAlchemy 已打进 bundle，放行发布"
+
       # ---- 生成 Inno Setup 安装包（用户选择要安装向导，必选）----
       - name: Install Inno Setup (with diagnostics)
         continue-on-error: true

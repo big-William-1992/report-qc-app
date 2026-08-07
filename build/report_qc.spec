@@ -54,6 +54,20 @@ try:
 except Exception as _e:
     print("WARNING: collect_all('webview') failed:", _e)
 
+# ---- 后端核心依赖 SQLAlchemy 全量收集 ----
+# SQLAlchemy 含按需加载的 C 扩展(cprocessors/cresultprocessor)与方言(dialects.*)，
+# 仅靠 `from sqlalchemy import create_engine` 的静态分析在冻结时常漏整包，
+# 导致 exe 启动报 ModuleNotFoundError: No module named 'sqlalchemy'。
+# 用 collect_all 把「包 + C 扩展 + 全部方言」一并打进 exe，确保导入链完整。
+try:
+    from PyInstaller.utils.hooks import collect_all as _ca
+    _sb_, _sd_, _sh_ = _ca("sqlalchemy")
+    _extra_binaries += _sb_
+    _extra_datas += _sd_
+    _extra_hiddenimports += _sh_
+except Exception as _e:
+    print("WARNING: collect_all('sqlalchemy') failed:", _e)
+
 # OCR 离线模型（assets/ocr_models 三个 onnx）单独显式列为 datas，双保险
 _ocr_models_dir = os.path.join(assets_dir, "ocr_models")
 if os.path.isdir(_ocr_models_dir):
@@ -79,6 +93,8 @@ _uvicorn_hidden = [
 # 属于运行时导入；同时它又通过「无 __init__ 的 server 包」被引用，必须显式 hiddenimport。
 _server_hidden = [
     "server.main", "server.db", "server.models", "server.license_web",
+    # 双保险：即使上面 collect_all 因环境差异未生效，也显式让 sqlalchemy 进入冻结包
+    "sqlalchemy",
 ]
 
 a = Analysis(
