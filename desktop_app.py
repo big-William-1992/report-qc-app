@@ -201,11 +201,21 @@ def _start_hotkeys():
         print(f"[警告] 全局热键启动失败（可能缺少辅助功能/输入监控权限）：{e}")
 
 
+# 后台 uvicorn 线程的启动异常。daemon 线程内的异常不会冒泡到主线程，
+# 且 console=False（冻结版无控制台）时 stderr 无处可去，异常会被静默吞掉——
+# 结果是用户只看到「20s 内未就绪」，crash.log 里却没有任何根因。这里显式留存。
+_UVICORN_ERROR: dict = {}
+
+
 def _start_uvicorn():
     """在后台线程运行 FastAPI（复用当前解释器的 uvicorn）。"""
-    import uvicorn
-    config = uvicorn.Config("server.main:app", host=HOST, port=PORT, log_level="warning")
-    uvicorn.Server(config).run()
+    try:
+        import uvicorn
+        config = uvicorn.Config("server.main:app", host=HOST, port=PORT, log_level="warning")
+        uvicorn.Server(config).run()
+    except BaseException:  # noqa: BLE001  含 SystemExit：端口绑定失败时 uvicorn 会直接退出
+        import traceback as _tb
+        _UVICORN_ERROR["tb"] = _tb.format_exc()
 
 
 def _wait_ready(timeout: int = 20) -> bool:
@@ -249,10 +259,18 @@ def main():
     srv = threading.Thread(target=_start_uvicorn, daemon=True)
     srv.start()
     if not _wait_ready():
+        # 带上后端线程的真实堆栈：否则 crash.log 里只有「未就绪」这句话本身，
+        # 用户按提示去看日志却仍然定位不到根因（端口占用 / 运行期异常等）。
+        detail = _UVICORN_ERROR.get("tb") or (
+            "后台线程未抛出异常，后端可能仍在初始化或 health 未正常响应。\n"
+            "请确认端口未被占用：Windows `netstat -ano | findstr :%d`，"
+            "macOS/Linux `lsof -i :%d`。" % (PORT, PORT))
         show_fatal("启动失败",
                    "后端服务启动失败（20s 内未就绪）。\n"
+                   f"监听地址：{BASE}\n"
                    "请检查依赖：pip install fastapi uvicorn pywebview\n"
-                   "或查看同目录 crash.log 了解具体原因。")
+                   "或查看同目录 crash.log 了解具体原因。\n\n"
+                   "-- 后端线程详情 --\n" + detail)
         sys.exit(1)
 
     url = f"{BASE}/"
