@@ -21,6 +21,7 @@ let APP_SETTINGS = {
   shortcuts: {
     run_qc:       { mods: ['ctrl'], key: 'Enter' },
     save_sample:  { mods: ['ctrl'], key: 's' },
+    paste_split:  { mods: ['ctrl', 'shift'], key: 'v' },
     ocr_capture:  { mods: ['ctrl', 'shift'], key: 'o' },
     toggle_theme: { mods: ['ctrl'], key: 't' },
   },
@@ -188,6 +189,41 @@ document.getElementById('impressionText').addEventListener('input', function() {
   document.getElementById('impressionCount').textContent = this.value.length + ' 字';
 });
 
+// ==================== 粘贴即分栏 ====================
+// 在描述/诊断输入框粘贴时，若剪贴板是"含诊断标题的整段报告"，自动分栏填入两框并质控。
+// 只在满足以下条件时接管：内容包含诊断标题关键词且该标题不在行首（说明是整段全文）。
+function _pasteAutoSplit(target, pasted) {
+  const t = (pasted || '').trim();
+  if (!t) return false;
+  // 仅当明显是"描述+诊断"整段报告时才接管，避免打断普通粘贴
+  const impTitle = /(?:^|\n)\s*(?:[（(]?\d+[)）]?[.、．]?\s*)?(影像诊断|诊断印象|影像结论|诊断意见|诊断结论|结论|印象|impression|conclusion)\s*[:：]?\s*(?=[\s\S]*)/i;
+  const m = t.match(impTitle);
+  if (!m || m.index <= 0) return false;
+  const { findings, impression } = splitReportSections(t);
+  const other = target.id === 'findingsText' ? 'impressionText' : 'findingsText';
+  target.value = target.id === 'findingsText' ? findings : impression;
+  document.getElementById(other).value = target.id === 'findingsText' ? impression : findings;
+  // 刷新字数
+  const fc = document.getElementById('findingsCount');
+  const ic = document.getElementById('impressionCount');
+  if (fc) fc.textContent = document.getElementById('findingsText').value.length + ' 字';
+  if (ic) ic.textContent = document.getElementById('impressionText').value.length + ' 字';
+  toast('检测到整段报告，已自动分栏填位', 'success');
+  setTimeout(() => { if (typeof runQC === 'function') runQC(); }, 60);
+  return true;
+}
+
+['findingsText', 'impressionText'].forEach(function(id) {
+  const el = document.getElementById(id);
+  el.addEventListener('paste', function(e) {
+    // 浏览器默认 paste 前拦截：取剪贴板文本判断是否整段报告
+    const raw = (e.clipboardData || {}).getData ? e.clipboardData.getData('text') : '';
+    if (raw && _pasteAutoSplit(el, raw)) {
+      e.preventDefault();   // 已接管分栏，阻止默认粘贴
+    }
+  });
+});
+
 // ==================== 报告质控：运行引擎 ====================
 // 侧别取值：优先取独立下拉框；为空时从「项目/检查部位」自由文本派生，
 // 让后台 R11-SIDE（项目 vs 描述/诊断 左右比对）在常见录入方式下都能启动。
@@ -251,14 +287,47 @@ async function runQC() {
 
   } catch (err) {
     console.error(err);
-    document.getElementById('findingListContainer').innerHTML =
-      `<div class="empty-state"><div class="empty-icon">⚠️</div><p>错误：${err.message}</p></div>`;
-    toast('质控运行出错: ' + err.message, 'error');
+    _showQcError(err);
   }
 }
 
+// 可操作的错误提示：区分网络/后端/引擎错误，给出排查建议
+function _showQcError(err) {
+  const msg = (err && err.message) || String(err);
+  let hint = '';
+  let icon = '⚠️';
+  if (/fetch|Failed to fetch|NetworkError|网络|connect/i.test(msg)) {
+    icon = '🌐';
+    hint = '无法连接质控服务。请确认：<br>① 后端服务已启动（桌面版双击启动器）<br>② 网络正常，端口未被占用';
+  } else if (/500|500 Internal|service error/i.test(msg)) {
+    icon = '🔧';
+    hint = '后端处理出错（500）。请查看同目录 crash.log 获取详细堆栈，或重启服务后重试。';
+  } else if (/401|403|未授权|无权限/i.test(msg)) {
+    icon = '🔐';
+    hint = '鉴权失败。请重新登录后重试；若持续出现请联系管理员检查账号权限。';
+  } else if (/timeout|超时|timed out/i.test(msg)) {
+    icon = '⏱';
+    hint = '请求超时。可能是报告过长或引擎繁忙，请稍后重试或精简报告内容。';
+  } else if (/empty|为空|无文本/i.test(msg)) {
+    icon = '📝';
+    hint = '未识别到有效文本，请在「影像描述 / 影像诊断」输入框填写内容。';
+  } else {
+    hint = '发生未知错误，请截图反馈给管理员，并附上操作步骤。';
+  }
+  document.getElementById('findingListContainer').innerHTML =
+    `<div class="empty-state"><div class="empty-icon">${icon}</div>` +
+    `<p><b>质控运行出错</b></p><p style="font-size:12px;color:var(--text-muted)">${hint}</p>` +
+    `<p style="font-size:11px;color:var(--text-muted);opacity:.7">${escapeHtml(msg)}</p></div>`;
+  toast('质控运行出错: ' + msg, 'error');
+}
+
+let _qcAllFindings = [];        // 最近一次质控全部发现（供严重度筛选）
+let _qcSevFilter = 'all';       // 当前严重度筛选
+
 function renderQCResult(data) {
   const { findings, scores } = data;
+  _qcAllFindings = findings || [];
+  _qcSevFilter = 'all';
 
   // 渲染评分
   renderScore('scoreAcc', 'accuracy', scores.accuracy || 0);
@@ -266,19 +335,32 @@ function renderQCResult(data) {
   renderScore('scoreNorm', 'normalization', scores.normalization || 0);
   renderScore('scoreTime', 'timeliness', scores.timeliness || 0);
 
-  // 渲染发现列表
+  // 渲染发现列表（按严重度筛选后）
+  _renderFindingList();
+}
+
+function _renderFindingList() {
   const listEl = document.getElementById('findingList');
   const countEl = document.getElementById('findingCount');
+  const filterBar = document.getElementById('findingFilterBar');
+  const listContainer = document.getElementById('findingListContainer');
 
+  const findings = _qcAllFindings;
   if (!findings || findings.length === 0) {
-    document.getElementById('findingListContainer').innerHTML =
+    listContainer.innerHTML =
       '<div class="empty-state"><div class="empty-icon">✅</div><p>未发现问题，报告质量良好</p></div>';
     countEl.textContent = '0 条';
+    if (filterBar) filterBar.style.display = 'none';
     return;
   }
 
-  countEl.textContent = findings.length + ' 条';
-  listEl.innerHTML = findings.map(f => {
+  const filtered = _qcSevFilter === 'all'
+    ? findings
+    : findings.filter(f => (f.severity || 'low') === _qcSevFilter);
+
+  if (filterBar) filterBar.style.display = 'flex';
+  countEl.textContent = filtered.length + ' / ' + findings.length + ' 条';
+  listEl.innerHTML = filtered.map(f => {
     const m = SEV_META[f.severity] || SEV_META.low;
     return `
     <li class="finding-item">
@@ -292,6 +374,14 @@ function renderQCResult(data) {
   }).join('');
 
   listEl.style.display = 'block';
+}
+
+// 严重度筛选：high / medium / low / all
+function setSevFilter(sev) {
+  _qcSevFilter = sev;
+  document.querySelectorAll('.sev-filter').forEach(b =>
+    b.classList.toggle('active', b.dataset.sev === sev));
+  _renderFindingList();
 }
 
 function renderScore(elId, key, value) {
@@ -1741,6 +1831,7 @@ function ocrHotkey() {
 const SHORTCUT_ACTIONS = {
   run_qc:       { label: '运行质控',     run: () => runQC() },
   save_sample:  { label: '存入样本库',   run: () => saveToLibrary() },
+  paste_split:  { label: '粘贴全文并分栏', run: () => pasteAndSplit() },
   ocr_capture:  { label: '识别并质控',   run: () => {
     if (document.getElementById('ocrModal').style.display === 'flex') ocrPipeline();
     else openOcrModal();
@@ -2011,11 +2102,13 @@ async function bootstrapGate() {
   } catch (e) {
     // 后端不可达（开发态）：直接放行，避免锁死界面
     showGate(false); refreshUserUI(); applyRoleUI();
+    maybeShowOnboarding();
     return;
   }
   // 已有登录态：跳过登录步骤直接进入
   if (AUTH.token && status.account_count > 0) {
     showGate(false); refreshUserUI(); applyRoleUI(); updateTrialBanner(status);
+    maybeShowOnboarding();
     return;
   }
   showGate(true);
@@ -2023,6 +2116,83 @@ async function bootstrapGate() {
   if (status.trial_state === 'expired' && !status.activated) { gateShow('activation'); fillMachineCode(); return; }
   gateShow(status.account_count === 0 ? 'account' : 'login');
 }
+
+// ==================== 首次使用引导 Onboarding ====================
+const ONBOARDING_KEY = 'xy-onboarding-done';
+
+function maybeShowOnboarding() {
+  if (localStorage.getItem(ONBOARDING_KEY) === '1') return;
+  // 延迟到主界面渲染完成
+  setTimeout(() => {
+    const ov = document.getElementById('onboardingOverlay');
+    if (ov) { showOnboarding(); }
+  }, 350);
+}
+
+function showOnboarding() {
+  const ov = document.getElementById('onboardingOverlay');
+  if (!ov) return;
+  _onbStep = 1;
+  ov.style.display = 'flex';
+  _renderOnboarding();
+}
+
+function closeOnboarding() {
+  localStorage.setItem(ONBOARDING_KEY, '1');
+  const ov = document.getElementById('onboardingOverlay');
+  if (ov) ov.style.display = 'none';
+}
+
+// 从设置页重新打开引导
+function openOnboardingFromSettings() {
+  showOnboarding();
+}
+
+let _onbStep = 1;
+
+function _renderOnboarding() {
+  document.querySelectorAll('.onboarding-step').forEach(el =>
+    el.classList.toggle('active', parseInt(el.dataset.step, 10) === _onbStep));
+  document.querySelectorAll('.onb-dot').forEach(el =>
+    el.classList.toggle('active', parseInt(el.dataset.dot, 10) === _onbStep));
+  const next = document.getElementById('onbNext');
+  if (next) {
+    if (_onbStep === 3) { next.textContent = '完成'; }
+    else { next.textContent = '下一步'; }
+  }
+}
+
+// 示例报告：加载一份含典型问题的演示报告并直接质控
+function _loadOnbDemo() {
+  const findings =
+    '检查所见：胸廓对称，双肺纹理清晰。右肺上叶见一磨玻离影，大小约8mm，边界清。\n' +
+    '左肺下叶见一小结结，直径约4mm。纵隔居中，未见肿大淋巴結。心脏大小正常。\n' +
+    '双侧胸腔未见积液。';
+  const impression = '右肺上叶磨玻璃影，建议随访。左肺下叶小结节，建议定期复查。';
+  const fEl = document.getElementById('findingsText');
+  const iEl = document.getElementById('impressionText');
+  if (fEl) fEl.value = findings;
+  if (iEl) iEl.value = impression;
+  const fc = document.getElementById('findingsCount');
+  const ic = document.getElementById('impressionCount');
+  if (fc) fc.textContent = findings.length + ' 字';
+  if (ic) ic.textContent = impression.length + ' 字';
+  closeOnboarding();
+  setTimeout(() => { if (typeof runQC === 'function') runQC(); }, 120);
+}
+
+// app.js 在 body 末尾加载，DOM 已就绪，直接绑定（勿用 DOMContentLoaded——此时早已触发）
+(function _bindOnboarding() {
+  const next = document.getElementById('onbNext');
+  const skip = document.getElementById('onbSkip');
+  const demo = document.getElementById('onbTryDemo');
+  if (next) next.addEventListener('click', function() {
+    if (_onbStep >= 3) { closeOnboarding(); }
+    else { _onbStep++; _renderOnboarding(); }
+  });
+  if (skip) skip.addEventListener('click', closeOnboarding);
+  if (demo) demo.addEventListener('click', _loadOnbDemo);
+})();
 
 function toggleUserMenu(e) {
   e.stopPropagation();

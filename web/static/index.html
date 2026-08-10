@@ -8,6 +8,53 @@
 </head>
 <body>
 
+<!-- ========== 首次使用引导（Onboarding，localStorage 记忆） ========== -->
+<div class="onboarding-overlay" id="onboardingOverlay" style="display:none">
+  <div class="onboarding-card">
+    <div class="onboarding-steps">
+      <div class="onboarding-step" data-step="1">
+        <div class="onboarding-icon">🎉</div>
+        <h2>欢迎使用 星衍 · 放射质控系统</h2>
+        <p class="onboarding-desc">AI 辅助质控，给每一份影像报告加一道质量关卡。<br>30 秒快速上手，开始第一份报告质控。</p>
+        <div class="onboarding-points">
+          <div class="onb-point"><span>📋</span><div><b>粘贴即质控</b><p>一次复制报告全文，自动分栏描述与诊断，立即质控</p></div></div>
+          <div class="onb-point"><span>📷</span><div><b>屏幕识别</b><p>框选 PACS 报告区域，OCR 离线识别自动填写</p></div></div>
+          <div class="onb-point"><span>🔍</span><div><b>19 项规则</b><p>错别字、左右混淆、描述结论矛盾、缺失随访建议等</p></div></div>
+        </div>
+      </div>
+      <div class="onboarding-step" data-step="2">
+        <div class="onboarding-icon">⚡</div>
+        <h2>三步完成一次质控</h2>
+        <div class="onb-flow">
+          <div class="onb-flow-item"><span>1</span>录入报告<div class="onb-flow-sub">粘贴全文 / 屏幕框选 / 手工输入</div></div>
+          <div class="onb-flow-item"><span>2</span>点击质控<div class="onb-flow-sub">Ctrl+Enter 立即运行</div></div>
+          <div class="onb-flow-item"><span>3</span>查看发现<div class="onb-flow-sub">按严重度筛选，逐条核对修正</div></div>
+        </div>
+        <div class="onb-tip"><span>💡</span>提示：描述和结论一起粘贴会自动分栏；结果可按「严重/警告/提示」筛选查看</div>
+      </div>
+      <div class="onboarding-step" data-step="3">
+        <div class="onboarding-icon">🚀</div>
+        <h2>准备好了</h2>
+        <p class="onboarding-desc">点击「试试示例报告」加载一份演示报告立即体验，或直接开始你的第一份质控。</p>
+        <div class="onboarding-actions">
+          <button class="btn btn-primary" id="onbTryDemo">🎯 试试示例报告</button>
+        </div>
+      </div>
+    </div>
+    <div class="onboarding-footer">
+      <div class="onboarding-dots">
+        <span class="onb-dot active" data-dot="1"></span>
+        <span class="onb-dot" data-dot="2"></span>
+        <span class="onb-dot" data-dot="3"></span>
+      </div>
+      <div class="onboarding-nav">
+        <button class="btn btn-ghost" id="onbSkip">跳过</button>
+        <button class="btn btn-primary" id="onbNext">下一步</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ========== 授权闸门（免责 / 创建账号 / 登录 / 激活） ========== -->
 <div class="gate" id="gate" style="display:none">
   <div class="gate-card">
@@ -270,6 +317,12 @@
           <div class="card" style="flex:1">
             <div class="card-header">
               <h3><span class="icon">🔍</span> 质控发现</h3>
+              <div class="card-header-actions" id="findingFilterBar" style="display:none">
+                <button class="sev-filter active" data-sev="all" onclick="setSevFilter('all')">全部</button>
+                <button class="sev-filter" data-sev="high" onclick="setSevFilter('high')">⛔ 严重</button>
+                <button class="sev-filter" data-sev="medium" onclick="setSevFilter('medium')">⚠ 警告</button>
+                <button class="sev-filter" data-sev="low" onclick="setSevFilter('low')">ℹ 提示</button>
+              </div>
               <span class="card-header-action" id="findingCount">0 条</span>
             </div>
             <div class="card-body" style="max-height:360px;overflow-y:auto;" id="findingListContainer">
@@ -718,6 +771,7 @@
       </div>
     </div>
     <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="openOnboardingFromSettings()" title="重新查看首次使用引导">❓ 重新引导</button>
       <button class="btn btn-outline" onclick="closeSettings()">取消</button>
       <button class="btn btn-primary" onclick="saveSettings()">💾 保存设置</button>
     </div>

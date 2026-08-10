@@ -412,6 +412,20 @@ input, select, textarea {
 .card-header h3 .icon { font-size: 16px; }
 .card-body { padding: 18px 20px; }
 
+.card-header-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; margin-right: 8px; }
+.sev-filter {
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.sev-filter:hover { background: var(--body-bg); color: var(--text-secondary); }
+.sev-filter.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
 .card-header-action {
   font-size: 12px;
   color: var(--text-muted);
@@ -826,6 +840,46 @@ textarea.qc-textarea:focus {
 .sev-badge.danger { background: var(--danger-light); color: var(--danger); }
 .sev-badge.warning { background: var(--warning-light); color: var(--warning); }
 .sev-badge.info { background: #f4f6f8; color: var(--text-secondary); }
+
+/* ============ 首次使用引导 Onboarding ============ */
+.onboarding-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+}
+.onboarding-card {
+  width: 560px; max-width: 92vw; max-height: 88vh; overflow-y: auto;
+  background: var(--card-bg, #fff);
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+  padding: 32px 36px 20px;
+}
+.onboarding-steps { min-height: 320px; }
+.onboarding-step { display: none; text-align: center; }
+.onboarding-step.active { display: block; animation: onbFade .3s ease; }
+@keyframes onbFade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.onboarding-icon { font-size: 52px; margin-bottom: 12px; }
+.onboarding-step h2 { font-size: 22px; margin: 0 0 8px; color: var(--text-primary); }
+.onboarding-desc { font-size: 14px; color: var(--text-secondary); line-height: 1.6; margin: 0 0 20px; }
+.onboarding-points { display: flex; flex-direction: column; gap: 12px; text-align: left; }
+.onb-point { display: flex; gap: 12px; align-items: flex-start; background: var(--body-bg); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px 14px; }
+.onb-point > span { font-size: 24px; line-height: 1.2; }
+.onb-point b { font-size: 14px; }
+.onb-point p { font-size: 12px; color: var(--text-muted); margin: 2px 0 0; }
+.onb-flow { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
+.onb-flow-item { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; padding: 10px 14px; background: var(--body-bg); border: 1px solid var(--border-color); border-radius: 10px; }
+.onb-flow-item > span { width: 24px; height: 24px; border-radius: 50%; background: var(--primary); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0; }
+.onb-flow-sub { font-size: 12px; color: var(--text-muted); font-weight: 400; margin-left: 4px; }
+.onb-tip { font-size: 12px; color: var(--text-secondary); background: var(--warning-light, #fff8e1); border: 1px solid #f0e0b0; border-radius: 8px; padding: 10px 12px; text-align: left; }
+.onboarding-actions { margin-top: 16px; }
+.onboarding-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border-color); }
+.onboarding-dots { display: flex; gap: 6px; }
+.onb-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border-color); transition: all .2s; }
+.onb-dot.active { background: var(--primary); width: 22px; border-radius: 4px; }
+.onboarding-nav { display: flex; gap: 8px; }
+.btn-ghost { background: transparent; border: 1px solid var(--border-color); color: var(--text-muted); }
+.btn-ghost:hover { background: var(--body-bg); color: var(--text-secondary); }
 
 /* 合规标识（PHI 本地处理） */
 .phi-badge {
