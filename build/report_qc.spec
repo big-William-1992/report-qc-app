@@ -110,6 +110,10 @@ a = Analysis(
     hiddenimports=[
         "engine", "samplelib", "ris", "accounts", "license_utils",
         "version", "log_utils", "update_check", "auto_updater", "webbrowser",
+        # R19 读音相似错字（高频词库锚定 + pypinyin 自动推导）；pypinyin 若未安装
+        # 会由引擎 try/except 降级，不影响构建
+        "highfreq_lexicon", "pypinyin", "pypinyin.constants", "pypinyin.standard",
+        "pypinyin.style", "pypinyin.seg",
         "logging.handlers", "cryptography",
         "sqlite3",
         # 屏幕区域 OCR 监控（本地离线 RapidOCR）—— 依赖由 collect_all 兜底收集

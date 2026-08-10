@@ -15,7 +15,7 @@ import sys
 import json
 import shutil
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Set, Tuple
 
 # 解剖部位知识图谱（RadLex 器官族 + PadChest 104 部位→UMLS）：驱动左右侧比对表
 from anatomy_lexicon import SIDE_CHECK_ORGANS, R2_COVERED, EN_SIDE_ORGANS
@@ -31,6 +31,18 @@ try:
     _ZH_NLP_OK = True
 except Exception:  # pragma: no cover - 仅防御性降级
     _ZH_NLP_OK = False
+
+# 高频正确词组库 + 读音相似推导（R19）：白名单锚定 → 读音相似标记疑似错字。
+# 依赖 pypinyin（运行时可选），未安装时 R19 自动降级为空（不影响既有 R8 词典）。
+try:
+    from highfreq_lexicon import (
+        segment_candidates as _hf_segment_candidates,
+        highfreq_words as _hf_highfreq_words,
+        is_pinyin_available as _hf_pinyin_available,
+    )
+    _HF_OK = True
+except Exception:  # pragma: no cover - 仅防御性降级
+    _HF_OK = False
 
 # zh_ner 中文标签 → 引擎内部英文标签（与 anatomy / laterality 等保持一致）
 _ZH_ENT_LABEL_MAP = {"征象": "sign", "随访": "followup", "程度": "degree"}
@@ -87,8 +99,10 @@ SITE_NORM = {
     # 胸部
     "胸部": "chest", "双肺": "chest", "心肺": "chest", "肺": "chest", "纵隔": "chest",
     "心脏": "chest", "冠脉": "chest", "冠状动脉": "chest",
-    # 腹部
-    "腹部": "abdomen", "全腹": "abdomen", "上腹": "abdomen", "下腹": "abdomen",
+    # 腹部（含带"部"字的常见登记写法：全腹部/上腹部/下腹部/中腹部）
+    "腹部": "abdomen", "全腹": "abdomen", "全腹部": "abdomen",
+    "上腹": "abdomen", "上腹部": "abdomen", "下腹": "abdomen", "下腹部": "abdomen",
+    "中腹": "abdomen", "中腹部": "abdomen",
     "肝胆": "abdomen", "胰": "abdomen", "脾": "abdomen", "肾上腺": "abdomen",
     "肾": "abdomen", "双肾": "abdomen", "腹膜": "abdomen", "胃肠": "abdomen",
     # 盆腔
@@ -262,7 +276,7 @@ _REGION_ALIAS_TO_REGION = {
     "上腹部": "上腹部", "上腹": "上腹部",
     "中腹部": "中腹部", "中腹": "中腹部",
     "下腹部": "下腹部", "下腹": "下腹部",
-    "全腹": "全腹", "腹部": "全腹",
+    "全腹": "全腹", "全腹部": "全腹", "腹部": "全腹",
     "盆腔": "盆腔", "骨盆": "盆腔",
     "头颅": "头颅", "颅脑": "头颅", "头部": "头颅", "脑": "头颅",
     "颈椎": "颈椎", "胸椎": "胸椎", "腰椎": "腰椎",
@@ -675,7 +689,8 @@ DEFAULT_TEMPLATE = {
 def load_rules_config(path: str = RULES_CONFIG_PATH) -> dict:
     """读取用户维护的规则配置。失败回退内置默认值，保证引擎始终可用。"""
     defaults = {"typos": dict(TYPO_MAP_DEFAULT), "conflicts": [],
-                "ignores": [], "template": dict(DEFAULT_TEMPLATE)}
+                "ignores": [], "template": dict(DEFAULT_TEMPLATE),
+                "enable_r19": True}
     try:
         with open(path, encoding="utf-8") as fh:
             cfg = json.load(fh)
@@ -683,6 +698,7 @@ def load_rules_config(path: str = RULES_CONFIG_PATH) -> dict:
         cfg.setdefault("conflicts", [])
         cfg.setdefault("ignores", [])
         cfg.setdefault("template", dict(DEFAULT_TEMPLATE))
+        cfg.setdefault("enable_r19", True)
         return cfg
     except Exception:
         return defaults
@@ -805,6 +821,8 @@ class RuleEngine:
                 + self._r15_internal(text)
                 + self._r17_cross_region(text, secs)
                 + self._r18_region_coverage(text, meta)
+                + (self._r19_homophone(text)
+                   if self.rules_config.get("enable_r19", True) else [])
                 + (self._r16_followup_timeframe(text)
                    if self.rules_config.get("enable_r16") else []))
 
@@ -1048,6 +1066,65 @@ class RuleEngine:
                 out.append(Finding("R8-TYPO", "同音错别字", "medium",
                     f"检出疑似错别字「{wrong}」，疑为「{correct}」（常见语音录入误写）",
                     wrong, (s, e), correct))
+        return out
+
+    # R19 读音相似错字（高频词组锚定 + pypinyin 自动推导）
+    # 思路：放射科高频正确词组作为「白名单锚定」。对文本中每个中文词组片段，
+    # 若其读音与某高频正确词完全相同（同音异字，语音录入最典型）或高度相似，
+    # 且该片段本身不是已知正确词，则标记为「可能错误」，给出最可能的正确词。
+    # 与 R8 的区别：R8 靠人工维护的错词表；R19 靠「高频词库 + 读音」自动推导，
+    # 能发现词表外的、读音相近但写法错误的词组。pypinyin 不可用时本规则静默关闭。
+    def _r19_homophone(self, text) -> List[Finding]:
+        out = []
+        if not _HF_OK or not _hf_pinyin_available():
+            return out
+        if not text:
+            return out
+        # R8 已标记区间：R19 不重复报（同音异字由 R19 补漏）
+        r8_spans = set()
+        typo_map = self.rules_config.get("typos", {}) or {}
+        for wrong in typo_map:
+            for m in re.finditer(re.escape(wrong), text):
+                r8_spans.add((m.start(), m.end()))
+        seen_spans: Set[Tuple[int, int]] = set(r8_spans)
+        # 切词：先按高频白名单最长匹配切出已知正确词（跳过不查），
+        # 剩余中文串用 2~4 字滑窗做读音比对。
+        hf = sorted(_hf_highfreq_words(), key=lambda t: len(t[0]), reverse=True)
+        # 标记白名单覆盖区间
+        covered = []
+        for w, _c in hf:
+            for m in re.finditer(re.escape(w), text):
+                covered.append((m.start(), m.end()))
+        covered.sort()
+        def _in_covered(s, e):
+            return any(ms <= s and e <= me for ms, me in covered)
+        def _in_seen(s, e):
+            return any(ms <= s < me or ms < e <= me for ms, me in seen_spans)
+        cjk = re.compile(r"[\u4e00-\u9fff]+")
+        for m in cjk.finditer(text):
+            s0 = m.start()
+            run = m.group()
+            # 对 run 内每个可能起点做滑窗
+            for i in range(len(run)):
+                for ln in (4, 3, 2):
+                    if i + ln > len(run):
+                        continue
+                    s, e = s0 + i, s0 + i + ln
+                    if _in_seen(s, e):
+                        continue
+                    seg = run[i:i + ln]
+                    hit, cand = _hf_segment_candidates(seg)
+                    if hit and cand:
+                        best, cat, sim = cand[0]
+                        if sim >= 0.98 and not _in_covered(s, e):
+                            reason = ("同音" if sim == 1.0 else "近音")
+                            out.append(Finding(
+                                "R19-HOMOPHONE", "读音相似错字", "low",
+                                f"「{seg}」读音与高频词「{best}」（{cat}）{reason}，"
+                                f"疑为语音录入误写，请核对",
+                                seg, (s, e), best))
+                            seen_spans.add((s, e))
+                            break
         return out
 
     # R9 用户自定义互斥冲突（由 rules_config.json 维护：词A 与 词B 不应在同一范围内共存）
@@ -1324,7 +1401,19 @@ class _KG:
         return MODALITY_SCORE.get(modality)
 
     def norm_site(self, site: str) -> Optional[str]:
-        return SITE_NORM.get(site.strip())
+        """登记部位 → 部位族。先整串精确匹配；匹配不到则按子串最长匹配，
+        以兼容『全腹部CT』『上腹部平扫』『胸部正侧位』等带检查类型后缀的登记写法。"""
+        site = site.strip()
+        if not site:
+            return None
+        exact = SITE_NORM.get(site)
+        if exact:
+            return exact
+        # 按词长降序找包含的子串（长词优先，避免『肺』抢『双肺』等）
+        for k in sorted(SITE_NORM, key=len, reverse=True):
+            if k in site:
+                return SITE_NORM[k]
+        return None
 
 
 # ----------------------------- 评分与统计 -----------------------------

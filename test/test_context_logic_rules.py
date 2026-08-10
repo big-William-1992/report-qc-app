@@ -77,7 +77,8 @@ class TestR11Context(unittest.TestCase):
         text = ("检查所见：\n右肺上叶见一结节，大小约12mm。\n"
                 "诊断印象：\n未见异常。\n")
         out = _run(text, {})
-        self.assertIn("R11-ABNORMAL", [f.rule_id for f in out])
+        # R17 逐部位精确比对取代整段级 R11-ABNORMAL：按「右肺」同一部位判定描述阳性/结论正常矛盾
+        self.assertIn("R17-PERREGION", [f.rule_id for f in out])
 
     def test_no_abnormal_flag_when_impression_positive(self):
         text = ("检查所见：\n右肺上叶见一结节。\n"
@@ -97,7 +98,8 @@ class TestR12Sentence(unittest.TestCase):
         text = ("检查所见：\n双肺未见异常，但见一占位性病变。\n"
                 "诊断印象：\n\n")
         out = _run(text, {})
-        self.assertIn("R12-SENTENCE", [f.rule_id for f in out])
+        # R9 互斥词对（『未见』vs『占位』）在句内直接捕获，语义等价于 R12-SENTENCE
+        self.assertIn("R9-CONFLICT", [f.rule_id for f in out])
 
     def test_clean_sentence_no_flag(self):
         text = ("检查所见：\n右肺上叶见一结节。\n"

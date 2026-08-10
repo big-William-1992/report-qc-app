@@ -48,8 +48,16 @@ RELEASE_PAGE = "https://github.com/big-William-1992/report-qc-app/releases/lates
 _MAC_EXCLUDE = {".git", ".workbuddy", "keys", "update"}
 _WIN_EXCLUDE = {".git", ".workbuddy", "keys", "update", "assets", "logs"}
 
-# macOS 需备份并恢复的用户数据（相对应用根目录）
-_PRESERVE_FILES = [os.path.join("assets", "license.dat")]
+# macOS 需备份并恢复的用户数据（相对应用根目录）。
+# 注意：源码运行时样本库/账号库就在 assets/ 下（samplelib.py / server/db.py），
+# 而安装器会先删整个 assets/ 再用 tarball 覆盖——tarball 不含这些 *.db（被
+# .gitignore 排除），若不备份恢复，更新后用户样本库/账号库会全部丢失。
+_PRESERVE_FILES = [
+    os.path.join("assets", "license.dat"),
+    os.path.join("assets", "samples.db"),     # 样本库（用户质控结果）
+    os.path.join("assets", "qc.db"),          # 账号/科室/权限库
+    os.path.join("assets", "accounts.db"),    # 旧版账号库（兼容读取）
+]
 _PRESERVE_DIRS = ["logs"]
 
 
@@ -87,7 +95,12 @@ TMP = os.path.join(APP_DIR, "update", "_extract")
 shutil.rmtree(TMP, ignore_errors=True)
 os.makedirs(TMP, exist_ok=True)
 with tarfile.open(TAR) as tf:
-    tf.extractall(TMP, filter="data")
+    # filter="data" 需 Python 3.12+；macOS 系统 Python（3.9）不支持会 TypeError，
+    # 这里做版本兼容，低版本退化为无过滤解包（tarball 来自自有仓库，信任源）。
+    try:
+        tf.extractall(TMP, filter="data")
+    except TypeError:
+        tf.extractall(TMP)
 roots = [d for d in os.listdir(TMP) if os.path.isdir(os.path.join(TMP, d))]
 SRC = os.path.join(TMP, roots[0]) if roots else TMP
 
@@ -98,6 +111,11 @@ os.makedirs(BAK, exist_ok=True)
 lic = os.path.join(APP_DIR, "assets", "license.dat")
 if os.path.isfile(lic):
     shutil.copy(lic, os.path.join(BAK, "license.dat"))
+# 备份用户数据库（样本库/账号库）——tarball 不含 *.db，不恢复即丢失
+for _db in ("samples.db", "qc.db", "accounts.db"):
+    _src_db = os.path.join(APP_DIR, "assets", _db)
+    if os.path.isfile(_src_db):
+        shutil.copy(_src_db, os.path.join(BAK, _db))
 logs_src = os.path.join(APP_DIR, "logs")
 if os.path.isdir(logs_src):
     shutil.copytree(logs_src, os.path.join(BAK, "logs"))
@@ -105,6 +123,10 @@ if os.path.isdir(logs_src):
 rc_src = os.path.join(APP_DIR, "assets", "rules_config.json")
 if os.path.isfile(rc_src):
     shutil.copy(rc_src, os.path.join(BAK, "rules_config.json"))
+# 备份本地 OCR 模型（可能被用户替换为医院自训模型，或新 tarball 漏带时兜底）
+ocr_src = os.path.join(APP_DIR, "assets", "ocr_models")
+if os.path.isdir(ocr_src):
+    shutil.copytree(ocr_src, os.path.join(BAK, "ocr_models"))
 
 # 删除旧文件（保留 .git/.workbuddy/keys/update）
 EXCLUDE = {".git", ".workbuddy", "keys", "update"}
@@ -137,6 +159,12 @@ lic_bak = os.path.join(BAK, "license.dat")
 if os.path.isfile(lic_bak):
     os.makedirs(os.path.join(APP_DIR, "assets"), exist_ok=True)
     shutil.copy(lic_bak, os.path.join(APP_DIR, "assets", "license.dat"))
+# 恢复用户数据库（样本库/账号库）
+for _db in ("samples.db", "qc.db", "accounts.db"):
+    _bak_db = os.path.join(BAK, _db)
+    if os.path.isfile(_bak_db):
+        os.makedirs(os.path.join(APP_DIR, "assets"), exist_ok=True)
+        shutil.copy(_bak_db, os.path.join(APP_DIR, "assets", _db))
 logs_bak = os.path.join(BAK, "logs")
 if os.path.isdir(logs_bak):
     dest = os.path.join(APP_DIR, "logs")
@@ -147,6 +175,12 @@ rc_bak = os.path.join(BAK, "rules_config.json")
 if os.path.isfile(rc_bak):
     os.makedirs(os.path.join(APP_DIR, "assets"), exist_ok=True)
     shutil.copy(rc_bak, os.path.join(APP_DIR, "assets", "rules_config.json"))
+# 恢复 OCR 模型：仅当新版 tarball 未携带该目录时补齐（新版有则跟随新模型，不覆盖）
+ocr_bak = os.path.join(BAK, "ocr_models")
+ocr_dst = os.path.join(APP_DIR, "assets", "ocr_models")
+if os.path.isdir(ocr_bak) and not os.path.isdir(ocr_dst):
+    os.makedirs(os.path.join(APP_DIR, "assets"), exist_ok=True)
+    shutil.copytree(ocr_bak, ocr_dst)
 
 # 清除隔离属性（对源码无副作用，能让无签名分发正常启动）
 try:

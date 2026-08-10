@@ -21,10 +21,22 @@ RIS 数据库直连模块
 """
 
 import os
+import sys
 import json
 
-CONFIG_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "assets", "ris_config.json")
+def _config_path() -> str:
+    """RIS 连接配置持久化路径（写盘，需真实可写目录）。
+
+    冻结后 __file__ 指向 PYZ 合成路径，os.path.abspath 回溯会得到不存在的位置，
+    导致配置永远写不进去。此时改用 exe 所在目录下的 assets/。
+    """
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
+        return os.path.join(base, "assets", "ris_config.json")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "ris_config.json")
+
+
+CONFIG_PATH = _config_path()
 
 # 各数据库类型 -> 驱动模块名
 DRIVERS = {

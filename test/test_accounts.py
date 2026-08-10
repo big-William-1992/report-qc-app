@@ -53,7 +53,7 @@ class TestAccounts(unittest.TestCase):
         import sqlite3
         with sqlite3.connect(self._db) as conn:
             row = conn.execute(
-                "SELECT pwd_hash, salt FROM accounts WHERE emp_id='1004'").fetchone()
+                "SELECT pwd_hash, salt FROM users WHERE emp_id='1004'").fetchone()
         self.assertNotEqual(row[0], "secret123")
         self.assertTrue(len(row[1]) > 0)  # 盐非空
 
@@ -64,7 +64,7 @@ class TestAccounts(unittest.TestCase):
         import sqlite3
         with sqlite3.connect(self._db) as conn:
             h = conn.execute(
-                "SELECT pwd_hash FROM accounts WHERE emp_id IN ('A','B')").fetchall()
+                "SELECT pwd_hash FROM users WHERE emp_id IN ('A','B')").fetchall()
         self.assertNotEqual(h[0][0], h[1][0])
 
     def test_count_and_list(self):

@@ -72,6 +72,10 @@ class FakeApp:
     def _run(self):
         self._ran = True
 
+    def _enqueue_current(self, source="手动"):
+        # _capture_and_qc 会调用入队；测试桩为空实现（不依赖队列文件）
+        pass
+
     def _similar(self, a, b):
         if not a or not b:
             return 0.0

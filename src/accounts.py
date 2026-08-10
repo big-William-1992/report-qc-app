@@ -18,6 +18,20 @@ SessionLocal = db.SessionLocal
 User = models.User
 Department = models.Department
 
+# 测试隔离：设为临时库路径后，init_db/create_account 等全部落在此库，避免污染真实数据。
+# 兼容旧测试引用 accounts._DB_OVERRIDE；由 _ensure_db_override 在每次建表前消费。
+_DB_OVERRIDE: str = ""
+
+
+def _ensure_db_override() -> None:
+    """若设置了 _DB_OVERRIDE，则把 engine 切换到该库（仅切换一次）。"""
+    global _DB_OVERRIDE, SessionLocal
+    if _DB_OVERRIDE:
+        from server import db as _srv
+        _srv.set_database_override("sqlite:///" + _DB_OVERRIDE)
+        SessionLocal = _srv.SessionLocal   # 模块级绑定需同步更新
+        _DB_OVERRIDE = ""
+
 
 # ---------------- 会话（当前登录工号，文件持久化，前端预填用） ----------------
 def _assets_dir() -> str:
@@ -41,6 +55,7 @@ def init_db_safe() -> None:
 
 # 旧代码直接调用 accounts.init_db()，这里转发到 SQLAlchemy 建表
 def init_db() -> None:  # noqa: F811
+    _ensure_db_override()
     from server import db as _srv
     _init = _srv.init_db
     _init()
@@ -66,9 +81,14 @@ def create_account(emp_id: str, password: str, name: str = "",
     salt = secrets.token_hex(16)
     pwd_hash = _hash_password(password, salt)
     init_db()
+    # 首个账号自动成为管理员（引导）。判定在 INSERT 的同一事务内完成，
+    # SQLite 已启用 BEGIN IMMEDIATE（写锁），并发创建第二个账号时会等待并
+    # 在第一个提交后重新计数，避免「两个账号都成 admin」的竞态。
     with SessionLocal() as s:
         if s.query(User).filter(User.emp_id == emp_id).first():
             return False, f"工号「{emp_id}」已存在"
+        if s.query(User).count() == 0:
+            role = "admin"
         u = User(
             emp_id=emp_id, name=name, pwd_hash=pwd_hash, salt=salt,
             role=role, dept_id=dept_id, created_at=datetime.datetime.now(),

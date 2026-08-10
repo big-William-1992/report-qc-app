@@ -137,9 +137,17 @@ def require_emp_local(request: Request,
 
 # ----------------------------- 应用 -----------------------------
 app = FastAPI(title="星衍放射质控 API", version=APP_VERSION)
+
+# CORS 白名单：默认只放行桌面端 WebView 的本地源（127.0.0.1 / localhost，任意端口）。
+# 禁止通配 "*"：否则任何网页（含恶意站点）都能向本机特权端点发请求（CSRF 面，见
+# require_emp_local 的本地放行）。内网/远程部署需要放行其它源时，用环境变量追加：
+#   QC_CORS_ORIGINS=http://192.168.1.10:8000,http://qc.example.com
+_cors_origins = [o.strip() for o in os.environ.get("QC_CORS_ORIGINS", "").split(",") if o.strip()]
+_LOCAL_ORIGIN_RE = r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
+    allow_origin_regex=_LOCAL_ORIGIN_RE,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -325,15 +333,22 @@ def qc_rules_put(cfg: Dict[str, Any], emp: str = Depends(require_emp_local)):
 
 
 # ----------------------------- OCR（可选） -----------------------------
+# OCR 是计算密集型且无速率限制：限制上传大小，并要求本地放行/远程凭证，
+# 避免内网暴露时被无凭证调用消耗内存与 OCR 算力（拒绝服务面）。
+_OCR_MAX_BYTES = int(os.environ.get("QC_OCR_MAX_BYTES", str(20 * 1024 * 1024)))
+
+
 @app.post("/api/v1/ocr")
-async def ocr_upload(file: UploadFile = File(...)):
+async def ocr_upload(file: UploadFile = File(...), emp: str = Depends(require_emp_local)):
     from PIL import Image
     import ocr_provider
     ok, why = ocr_provider.availability()
     if not ok:
         return JSONResponse(status_code=503,
                             content=_envelope(False, "OCR_UNAVAILABLE", None, why))
-    data = await file.read()
+    data = await file.read(_OCR_MAX_BYTES + 1)
+    if len(data) > _OCR_MAX_BYTES:
+        raise HTTPException(413, f"图片过大（上限 {_OCR_MAX_BYTES // (1024*1024)}MB）")
     try:
         img = Image.open(io.BytesIO(data))
     except Exception as e:
@@ -343,7 +358,7 @@ async def ocr_upload(file: UploadFile = File(...)):
 
 
 @app.post("/api/v1/ocr/base64")
-def ocr_base64(req: OCRB64):
+def ocr_base64(req: OCRB64, emp: str = Depends(require_emp_local)):
     from PIL import Image
     import ocr_provider
     import base64 as _b64
@@ -351,6 +366,8 @@ def ocr_base64(req: OCRB64):
     if not ok:
         return JSONResponse(status_code=503,
                             content=_envelope(False, "OCR_UNAVAILABLE", None, why))
+    if len(req.image_base64) > _OCR_MAX_BYTES * 4 // 3:
+        raise HTTPException(413, f"图片过大（上限 {_OCR_MAX_BYTES // (1024*1024)}MB）")
     try:
         raw = _b64.b64decode(req.image_base64)
         img = Image.open(io.BytesIO(raw))
@@ -416,9 +433,8 @@ def account_create(req: AccountCreate,
     ok, msg = accounts.create_account(req.emp_id, req.password, req.name)
     if not ok:
         return _envelope(False, "ERR", {}, msg)
-    # 首个账号自动成为系统管理员（引导），其余默认 doctor
-    if accounts.count_accounts() == 1:
-        accounts.set_role(req.emp_id, "admin")
+    # 首账号自动 admin 已在 create_account 的 INSERT 事务内原子判定（BEGIN IMMEDIATE），
+    # 无需在此二次 count+set_role（旧实现有并发竞态，两个并发首账号可都成 admin）
     token = make_token(req.emp_id)   # 首个账号创建即登录，免去二次登录
     return _envelope(True, "OK",
                      {"token": token, "emp_id": req.emp_id, "name": req.name,
@@ -641,7 +657,9 @@ def sample_list(page: int = Query(1, ge=1),
 
 
 @app.get("/api/v1/samples/{sid}")
-def sample_get(sid: int):
+def sample_get(sid: int, emp: str = Depends(require_emp_local)):
+    """样本详情（含患者信息与报告全文）：本地 WebView 放行；
+    远程（如内网 --host 0.0.0.0）强制凭证，避免无鉴权读取患者隐私。"""
     s = samplelib.get_sample(sid)
     if not s:
         raise HTTPException(404, "样本不存在")
@@ -653,7 +671,9 @@ def sample_delete(sid: int, emp: str = Depends(require_emp_local)):
     s = samplelib.get_sample(sid)
     if not s:
         raise HTTPException(404, "样本不存在")
-    if s.get("user_id") and s.get("user_id") != emp:
+    # 归属校验：本地（require_emp_local 返回 "local"）是桌面单机唯一使用者，
+    # 允许删除；远程访问则强制责任到人（只能删自己导入的样本）。
+    if s.get("user_id") and emp != "local" and s.get("user_id") != emp:
         raise HTTPException(403, "无权删除他人样本")
     samplelib.delete_sample(sid)
     return _envelope(True, "OK", None, "已删除")
@@ -1126,5 +1146,12 @@ if _os.path.isdir(_STATIC_DIR):
 
 
 if __name__ == "__main__":
+    import argparse
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # 默认只绑定本机回环，与桌面壳(127.0.0.1)一致，避免源码启动即暴露到局域网。
+    # 内网多机访问请显式：python server/main.py --host 0.0.0.0
+    _p = argparse.ArgumentParser(description="星衍放射质控 API 服务")
+    _p.add_argument("--host", default=os.environ.get("QC_HOST", "127.0.0.1"))
+    _p.add_argument("--port", type=int, default=int(os.environ.get("QC_PORT", "8000")))
+    _args = _p.parse_args()
+    uvicorn.run(app, host=_args.host, port=_args.port)

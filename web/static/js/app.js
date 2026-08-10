@@ -663,9 +663,10 @@ async function queueRunAll() {
 // ==================== 看板页：加载数据 ====================
 async function loadDashboard() {
   try {
+    // 统一走 apiFetch：/api/v1/samples 用 require_emp（需鉴权），裸 fetch 会 401
     const [statsRes, samplesRes] = await Promise.all([
-      fetch('/api/v1/samples/stats/dashboard'),
-      fetch('/api/v1/samples?page_size=10')
+      apiFetch('/api/v1/samples/stats/dashboard'),
+      apiFetch('/api/v1/samples?page_size=10')
     ]);
 
     const stats = (await statsRes.json()).data || {};
@@ -926,7 +927,8 @@ function loadSampleToWorkspace(s) {
 async function deleteSample(sid) {
   if (!confirm(`确认删除样本 #${sid}？删除后不可恢复。`)) return;
   try {
-    const res = await fetch('/api/v1/samples/' + sid, { method: 'DELETE' });
+    // 必须用 apiFetch 携带 X-Emp-Id：后端按归属校验，裸 fetch 不带身份会被拒
+    const res = await apiFetch('/api/v1/samples/' + sid, { method: 'DELETE' });
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '删除失败');
     toast('样本 #' + sid + ' 已删除', 'success');
@@ -962,6 +964,9 @@ async function loadRulesConfig(silent = false) {
     document.getElementById('cfgIgnores').value = ignores.map(String).join('\n');
     const tpl = cfg.template || {};
     document.getElementById('cfgTplFollowup').checked = !!tpl.require_followup;
+    // R19 读音相似错字（高频词组锚定）；默认开启
+    const r19El = document.getElementById('cfgR19');
+    if (r19El) r19El.checked = cfg.enable_r19 !== false;
     if (!silent) toast('规则配置已载入', 'success');
   } catch (e) {
     if (!silent) toast('载入规则配置失败: ' + e.message, 'error');
@@ -985,10 +990,12 @@ async function saveRulesConfig() {
   const ignores = document.getElementById('cfgIgnores').value
     .split('\n').map(s => s.trim()).filter(Boolean);
   const tpl = { require_followup: document.getElementById('cfgTplFollowup').checked };
+  const r19El = document.getElementById('cfgR19');
+  const enable_r19 = r19El ? r19El.checked : true;
   try {
     const res = await fetch('/api/v1/qc/rules/config', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ typos, conflicts, ignores, template: tpl })
+      body: JSON.stringify({ typos, conflicts, ignores, template: tpl, enable_r19 })
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '保存失败');

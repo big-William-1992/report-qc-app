@@ -9,7 +9,7 @@ server/db.py — SQLAlchemy 统一数据层
 import os
 import sys
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # 项目根：默认库落在 <root>/assets/qc.db。
@@ -22,12 +22,40 @@ _DEFAULT_DB = "sqlite:///" + os.path.join(_PROJECT_ROOT, "assets", "qc.db")
 
 DATABASE_URL = os.environ.get("DATABASE_URL", _DEFAULT_DB)
 
-_connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 
-# future=True 使用 2.0 风格；echo 可在调试期开
-engine = create_engine(DATABASE_URL, connect_args=_connect_args, future=True, pool_pre_ping=True)
+def _make_engine(url: str):
+    """按 URL 创建 engine。SQLite 额外：
+    - BEGIN IMMEDIATE：所有事务以写锁启动，把「判空→插入」等复合操作串行化，
+      避免并发首账号引导时两个账号都成为 admin（见 accounts.create_account）。
+    - busy_timeout：写锁等待 5s 而非立刻抛 "database is locked"。
+    """
+    _args = {"check_same_thread": False} if url.startswith("sqlite") else {}
+    eng = create_engine(url, connect_args=_args, future=True, pool_pre_ping=True)
+    if url.startswith("sqlite"):
+        @event.listens_for(eng, "connect")
+        def _sqlite_pragmas(dbapi_conn, _record):
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA busy_timeout=5000")
+            cur.close()
+
+        @event.listens_for(eng, "begin")
+        def _sqlite_begin_immediate(conn):
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+    return eng
+
+
+engine = _make_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 Base = declarative_base()
+
+
+def set_database_override(url: str) -> None:
+    """测试专用：把 engine/SessionLocal 切到指定库（如临时 sqlite 文件），
+    避免测试污染真实数据。调用方在完成后可传 DATABASE_URL 恢复。"""
+    global engine, SessionLocal, DATABASE_URL
+    DATABASE_URL = url
+    engine = _make_engine(url)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
 
 def init_db() -> None:

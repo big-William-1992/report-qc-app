@@ -13,9 +13,16 @@ import shutil
 
 
 def _appdata_db() -> str:
-    d = os.path.join(os.path.expandvars("%APPDATA%"),
-                     "MedicalReportQC", "samples.db")
-    return d
+    # %APPDATA% 仅 Windows 存在；macOS/Linux 上 expandvars 不展开会得到字面相对路径，
+    # 冻结打包后会把样本库写到奇怪位置。此处按平台取用户可写目录。
+    import platform as _plt
+    if _plt.system() == "Windows":
+        base = os.path.expandvars("%APPDATA%")
+    elif _plt.system() == "Darwin":
+        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        base = os.path.expanduser("~")
+    return os.path.join(base, "MedicalReportQC", "samples.db")
 
 
 def db_path() -> str:

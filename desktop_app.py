@@ -77,13 +77,28 @@ sys.excepthook = _excepthook
 
 
 def _free_preferred_port(port: int):
-    """尽力释放被占用的端口（通常是上一次未正常退出的本应用实例）。
-    仅 macOS / Linux 生效；失败静默忽略，不影响后续流程。"""
+    """尽力释放被占用的端口——但只杀本应用的残留实例，绝不误杀无关进程。
+
+    判断依据：占用进程的命令行含本应用特征（exe 名 / desktop_app.py / uvicorn server.main）。
+    仅 macOS / Linux 生效（用 lsof + ps 查命令行）；失败静默忽略，不影响后续流程。
+    """
+    def _is_ours(cmdline: str) -> bool:
+        return any(tok in cmdline for tok in (
+            "desktop_app", "report_qc", "server.main", "星衍质控", "report-qc-app",
+        ))
+
     try:
         out = subprocess.run(["lsof", "-ti", f"tcp:{port}"],
                              capture_output=True, text=True).stdout.strip()
         if out:
             for pid in out.split():
+                try:
+                    cmd = subprocess.run(["ps", "-o", "command=", "-p", pid],
+                                         capture_output=True, text=True).stdout or ""
+                except Exception:
+                    continue
+                if not _is_ours(cmd):
+                    continue  # 别人的进程，不碰
                 try:
                     os.kill(int(pid), 15)
                 except Exception:

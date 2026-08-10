@@ -111,5 +111,6 @@
     "require_followup": true,
     "severity": "low",
     "note": "结构化报告建议含『检查所见』与『诊断印象/结论』段，并给出随访/复查建议"
-  }
+  },
+  "enable_r19": true
 }

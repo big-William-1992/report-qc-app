@@ -213,7 +213,12 @@ def _machine_id():
 
 
 def validate_activation_code(code):
-    """用内置公钥验证激活码（须为『本机硬件标识』的有效 Ed25519 签名）。"""
+    """用内置公钥验证激活码（须为『本机机器识别码 machine_id』的有效 Ed25519 签名）。
+
+    验签对象必须与发卡工具（gen_activation_code.py）及 Web 版（server/license_web.py）
+    保持一致，否则同一台机器两版激活码互不通用（历史 bug：此文件此前绑定完整硬件标识
+    _stable_hw_id，而发卡/Web 版绑定 12 位短码 machine_id）。
+    """
     if not code:
         return False
     try:
@@ -229,7 +234,7 @@ def validate_activation_code(code):
     except Exception:
         return False
     try:
-        public_key.verify(sig, _stable_hw_id().encode("utf-8"))
+        public_key.verify(sig, _machine_id().encode("utf-8"))
         return True
     except Exception:
         return False
@@ -272,8 +277,8 @@ def show_activation_dialog(parent):
     tk.Label(win, text="免费试用期已结束，请输入激活码", font=("PingFang SC", 10),
              bg="#FFFFFF", fg="#5A6B7A").pack(pady=(0, 18))
 
-    # 机器 ID 显示（方便客服核验）
-    mid = _stable_hw_id()
+    # 机器 ID 显示（方便客服核验）—— 与验签对象 machine_id 一致
+    mid = _machine_id()
     tk.Label(win, text=f"机器识别码（发卡用）: {mid}", font=("PingFang SC", 9),
              bg="#FFFFFF", fg="#9AA0A6").pack()
 
