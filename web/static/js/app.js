@@ -591,17 +591,70 @@ async function queueLoad(qid) {
   toast('已载入工作区，入库后自动出队', 'success');
 }
 
-/** 把整段报告粗分为「影像描述 / 影像诊断」两段 */
+/** 把整段报告粗分为「影像描述 / 影像诊断」两段。
+ *  支持常见的报告排版：
+ *   - 描述标题：影像描述 / 检查所见 / 影像所见 / 所见 / findings
+ *   - 诊断标题：影像诊断 / 诊断印象 / 影像结论 / 诊断意见 / 结论 / 印象 / impression
+ *   - 可带冒号、换行、序号（1. 影像诊断：…）
+ *  原则：靠前的标题归描述段，靠后的标题归诊断段；诊断标题靠后，未找到时整段视为描述。
+ */
 function splitReportSections(text) {
   const t = (text || '').trim();
-  const m = t.match(/(诊断印象|影像诊断|影像结论|诊断意见|结论|印象|impression)\s*[:：]?\s*/i);
-  if (m && m.index > 0) {
-    return {
-      findings: t.slice(0, m.index).replace(/^(检查所见|影像描述|影像所见|findings)\s*[:：]?\s*/i, '').trim(),
-      impression: t.slice(m.index + m[0].length).trim(),
-    };
+  if (!t) return { findings: '', impression: '' };
+
+  // 诊断标题（可能带序号/冒号/换行）
+  const impRe = /(?:^|\n)\s*(?:[（(]?\d+[)）]?[.、．]?\s*)?(影像诊断|诊断印象|影像结论|诊断意见|诊断结论|结论|印象|impression|conclusion)\s*[:：]?\s*(?=[\s\S]*)/i;
+  const imp = t.match(impRe);
+  if (imp && imp.index > 0) {
+    const impText = t.slice(imp.index);
+    let findings = t.slice(0, imp.index).trim();
+    // 去掉描述段自身的标题（保留正文）
+    findings = findings.replace(/^(?:影像描述|检查所见|影像所见|所见|findings|description)\s*[:：]?\s*/i, '').trim();
+    // 去掉诊断标题本身（保留诊断正文）
+    const impBody = impText.replace(impRe, '').trim();
+    return { findings, impression: impBody };
   }
-  return { findings: t.replace(/^(检查所见|影像描述|影像所见|findings)\s*[:：]?\s*/i, '').trim(), impression: '' };
+  // 无诊断标题 → 整段视为描述（去掉可能的描述标题）
+  return { findings: t.replace(/^(?:影像描述|检查所见|影像所见|所见|findings|description)\s*[:：]?\s*/i, '').trim(), impression: '' };
+}
+
+/** 粘贴剪贴板全文 → 自动分栏（靠前描述、靠后诊断）→ 填入对应输入框 → 自动质控。
+ *  返回 Promise<boolean>：是否成功读取剪贴板。
+ */
+async function pasteAndSplit() {
+  try {
+    let full = '';
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      full = await navigator.clipboard.readText();
+    }
+    if (!full) {
+      // 降级：老式浏览器/非安全上下文无 Clipboard API 时提示手动粘贴
+      toast('未读取到剪贴板内容，请先点击输入框用 Ctrl+V/Cmd+V 粘贴', 'warn');
+      return false;
+    }
+    full = (full || '').trim();
+    if (!full) {
+      toast('剪贴板为空', 'warn');
+      return false;
+    }
+    const { findings, impression } = splitReportSections(full);
+    const fEl = document.getElementById('findingsText');
+    const iEl = document.getElementById('impressionText');
+    if (fEl) fEl.value = findings;
+    if (iEl) iEl.value = impression;
+    // 直接 set value 不触发 input 事件，需手动刷新字数统计
+    const fc = document.getElementById('findingsCount');
+    const ic = document.getElementById('impressionCount');
+    if (fc) fc.textContent = findings.length + ' 字';
+    if (ic) ic.textContent = impression.length + ' 字';
+    toast('已自动分栏：影像描述 ' + findings.length + ' 字 / 影像诊断 ' + impression.length + ' 字', 'success');
+    // 自动执行质控
+    setTimeout(() => { if (typeof runQC === 'function') runQC(); }, 60);
+    return true;
+  } catch (err) {
+    toast('读取剪贴板失败：' + (err && err.message || err), 'warn');
+    return false;
+  }
 }
 
 async function queueRemove(qid) {
