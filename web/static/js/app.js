@@ -1822,74 +1822,55 @@ async function ocrPipeline() {
   } catch (e) { toast('流程出错: ' + e.message, 'error'); }
 }
 
-// 一键识别（不弹框选界面）：直接复用已保存的框位设置，走完 抓屏→OCR→填充→入库→质控
+// 一键识别（不弹框选界面）：复用已保存框位，后端一次请求即完成 抓屏→OCR→填充→质控→入库
 let _ocrOneClickBusy = false;
 async function ocrOneClick() {
   if (_ocrOneClickBusy) return;     // 防重入：全局热键与 SPA 快捷键可能同时命中
   _ocrOneClickBusy = true;
   try {
-  // 1) 读取已保存的框位（web_regions），缺失则提示先去设置
-  let regions = null;
-  try {
-    const r = await fetch('/api/v1/screen/regions').then(x => x.json());
-    regions = (r && r.data && r.data.web_regions) || null;
-  } catch (e) { regions = null; }
-  const has = regions && (regions.basic || regions.findings || regions.impression);
-  if (!has) {
-    toast('未记住框位：请先点「📷 框选OCR」框选三区并「记住框位」', 'error');
-    return;
-  }
+    // 1) 读已保存框位；无则提示先去设置
+    let regions = null;
+    try {
+      const r = await fetch('/api/v1/screen/regions').then(x => x.json());
+      regions = (r && r.data && r.data.web_regions) || null;
+    } catch (e) { regions = null; }
+    if (!regions || !(regions.basic || regions.findings || regions.impression)) {
+      toast('未记住框位：请先点「📷 框选设置」框选三区并「记住框位」', 'error');
+      return;
+    }
 
-  // 2) 加载反馈
-  toast('📷 正在识别 PACS 报告…');
+    toast('📷 正在识别 PACS 报告…');
+    // 2) 截屏前让出焦点，避免截到应用自身（仅 WebView 桌面端有效）
+    _ocrHideApp();
+    await new Promise(res => setTimeout(res, 350));
 
-  // 3) 截屏前让出焦点，避免截到应用自身（仅 WebView 桌面端有效，浏览器无操作）
-  _ocrHideApp();
-  await new Promise(res => setTimeout(res, 350));
+    // 3) 一次请求完成：refresh=true 后端自动重新抓屏 + 按框位裁剪 OCR
+    let ocr;
+    try {
+      ocr = await fetch('/api/v1/screen/ocr', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ regions, refresh: true })
+      }).then(x => x.json());
+    } catch (err) {
+      _ocrShowApp();
+      toast('OCR 失败：' + ((err && err.message) || err), 'error');
+      return;
+    }
+    _ocrShowApp();   // 识别完成，恢复窗口显示结果
 
-  // 4) 先抓全屏（原图缓存于服务端）
-  let cap;
-  try {
-    cap = await fetch('/api/v1/screen/capture', { method: 'POST' }).then(x => x.json());
-  } catch (err) {
-    _ocrShowApp();
-    toast('截屏失败：' + ((err && err.message) || err), 'error');
-    return;
-  }
-  if (!cap || !cap.ok) {
-    _ocrShowApp();
-    toast('截屏失败：' + ((cap && cap.message) || '未知错误'), 'error');
-    return;
-  }
+    if (!ocr || !ocr.ok) {
+      toast('OCR 失败：' + ((ocr && ocr.message) || '未知错误'), 'error');
+      return;
+    }
+    const t = (ocr.data && ocr.data.texts) || {};
+    ocrFill({ basic: t.basic, findings: t.findings, impression: t.impression },
+             (ocr.data && ocr.data.meta) || null);
 
-  // 5) 用保存的框位直接识别（不弹框、不显示缩略图）
-  let ocr;
-  try {
-    ocr = await fetch('/api/v1/screen/ocr', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ regions, refresh: false })
-    }).then(x => x.json());
-  } catch (err) {
-    _ocrShowApp();
-    toast('OCR 失败：' + ((err && err.message) || err), 'error');
-    return;
-  }
-  // 抓屏+识别完成，恢复窗口显示结果
-  _ocrShowApp();
-
-  if (!ocr || !ocr.ok) {
-    toast('OCR 失败：' + ((ocr && ocr.message) || '未知错误'), 'error');
-    return;
-  }
-  const t = (ocr.data && ocr.data.texts) || {};
-  ocrFill({ basic: t.basic, findings: t.findings, impression: t.impression },
-           (ocr.data && ocr.data.meta) || null);
-
-  // 6) 先显式质控（saveToLibrary 内部仅当无质控结果时才补跑，必须强制对新识别文本运行），再入库
-  toast('已识别并填充，正在质控…', 'info');
-  await runQC();
-  await saveToLibrary();   // 入库（内部检测到已有质控结果不会重复跑）
-  toast('识别 → 质控 → 导入 完成', 'success');
+    // 4) 先显式质控（saveToLibrary 内部仅当无质控结果时才补跑，必须强制对新识别文本运行），再入库
+    toast('已识别并填充，正在质控…', 'info');
+    await runQC();
+    await saveToLibrary();
+    toast('识别 → 质控 → 导入 完成', 'success');
   } finally {
     _ocrOneClickBusy = false;
   }
