@@ -216,6 +216,39 @@ def _start_hotkeys():
         print(f"[警告] 全局热键启动失败（可能缺少辅助功能/输入监控权限）：{e}")
 
 
+# 冻结（PyInstaller，console=False）后 sys.stdout/sys.stderr 为 None。
+# 许多库会调用 sys.stdout.isatty()（典型：uvicorn 的日志 formatter），
+# 对 None 调用即抛 AttributeError: 'NoneType' object has no attribute 'isatty'，
+# 导致后端日志初始化失败、整个后端起不来、桌面窗口打不开。
+# 这里在进程早期把 None 的流重定向到 crash.log（UTF-8、行缓冲），
+# 既解决 isatty 崩溃，也便于后续排查。源码运行（非冻结）不动。
+def _ensure_std_streams():
+    if not getattr(sys, "frozen", False):
+        return
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    try:
+        _f = open(_crash_path(), "a", encoding="utf-8", buffering=1)
+    except OSError:
+        return
+    if sys.stdout is None:
+        sys.stdout = _f
+    if sys.stderr is None:
+        sys.stderr = _f
+
+
+# uvicorn 默认 formatter 在 use_colors=None 时会调用 sys.stdout.isatty()，
+# 冻结环境 sys.stdout 为 None 即崩溃。这里显式 use_colors=False 规避。
+def _build_uvicorn_log_config():
+    import uvicorn
+    cfg = dict(uvicorn.config.LOGGING_CONFIG)
+    for _name in ("default", "access"):
+        _fmt = cfg.get("formatters", {}).get(_name)
+        if isinstance(_fmt, dict):
+            _fmt["use_colors"] = False
+    return cfg
+
+
 # 后台 uvicorn 线程的启动异常。daemon 线程内的异常不会冒泡到主线程，
 # 且 console=False（冻结版无控制台）时 stderr 无处可去，异常会被静默吞掉——
 # 结果是用户只看到「20s 内未就绪」，crash.log 里却没有任何根因。这里显式留存。
@@ -226,7 +259,8 @@ def _start_uvicorn():
     """在后台线程运行 FastAPI（复用当前解释器的 uvicorn）。"""
     try:
         import uvicorn
-        config = uvicorn.Config("server.main:app", host=HOST, port=PORT, log_level="warning")
+        config = uvicorn.Config("server.main:app", host=HOST, port=PORT,
+                                log_level="warning", log_config=_build_uvicorn_log_config())
         uvicorn.Server(config).run()
     except BaseException:  # noqa: BLE001  含 SystemExit：端口绑定失败时 uvicorn 会直接退出
         import traceback as _tb
@@ -254,6 +288,10 @@ def main():
         multiprocessing.freeze_support()
     except Exception:
         pass
+
+    # 冻结版无控制台，sys.stdout/stderr 为 None，尽早重定向到 crash.log，
+    # 否则 uvicorn 等库初始化日志时调用 isatty() 会崩、后端起不来。
+    _ensure_std_streams()
 
     print("星衍AI放射质控 · 启动中…")
 
