@@ -1131,8 +1131,21 @@ import os as _os
 # 静态目录：冻结后用 _APP_ROOT（exe 所在目录），否则用 __file__ 回溯。
 _STATIC_DIR = _os.path.join(_APP_ROOT, "web", "static") if getattr(sys, "frozen", False) \
     else _os.path.abspath(_os.path.join(_os.path.dirname(__file__), "..", "web", "static"))
+# 静态前端每次版本更新都直接改文件；若浏览器/WebView 命中强缓存会一直加载旧版
+# app.js（曾因此出现「已修复 bodypart 仍报错」的假象）。统一给前端资源加 no-cache：
+# 每次仍重新校验（ETag/Last-Modified），文件变了浏览器必然拉到新版本，无需手动改 ?v=。
+class _NoCacheStaticFiles(StaticFiles):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
+        return resp
+
+
 if _os.path.isdir(_STATIC_DIR):
-    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+    app.mount("/static", _NoCacheStaticFiles(directory=_STATIC_DIR), name="static")
 
     @app.get("/{full_path:path}")
     async def spa_fallback(full_path: str):
