@@ -884,6 +884,7 @@ class ScreenRegion(BaseModel):
 class ScreenOCRReq(BaseModel):
     regions: Dict[str, ScreenRegion] = {}
     refresh: bool = False       # True=识别前重新抓屏（画面已变动时用）
+    dynamic: bool = False       # True=动态语义识别：整屏OCR后按标题切分，滚动不变形
 
 
 def _grab_fullscreen():
@@ -948,30 +949,43 @@ def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local)):
     W, H = img.width, img.height
     texts: Dict[str, str] = {}
     errors: Dict[str, str] = {}
-    for role, r in (req.regions or {}).items():
-        x0 = max(0, min(W - 1, int(r.x * W)))
-        y0 = max(0, min(H - 1, int(r.y * H)))
-        x1 = max(x0 + 1, min(W, int((r.x + r.w) * W)))
-        y1 = max(y0 + 1, min(H, int((r.y + r.h) * H)))
-        crop = img.crop((x0, y0, x1, y1))
-        # 画面未变则直接复用上次识别结果，跳过 CPU 推理（解决重复识别卡顿）
+
+    if req.dynamic:
+        # ---- 动态语义识别：整屏 OCR 一次，按标题在文本流中切分 ----
+        # 固定像素框在 PACS 内容上下/左右滚动后会错位；本模式不依赖坐标，
+        # 只依赖「检查所见/影像描述 → 描述段、诊断印象/结论 → 诊断段」的文本顺序。
+        # 滚动改变的是屏幕上的像素位置，不改变文本流顺序，故怎么滚都能识别对。
         try:
-            sig = ocr_provider.image_signature(crop)
-        except Exception:
-            sig = None
-        cached = _OCR_CACHE.get(role)
-        if cached and cached.get("sig") == sig:
-            texts[role] = cached.get("text") or ""
-            continue
-        try:
-            txt = ocr_provider.ocr_image(crop) or ""
-            texts[role] = txt
-            _OCR_CACHE[role] = {"sig": sig, "text": txt}
-            if len(_OCR_CACHE) > _OCR_CACHE_MAX:
-                _OCR_CACHE.pop(next(iter(_OCR_CACHE)))
+            full = ocr_provider.ocr_image(img) or ""
+            texts, errors = _split_dynamic(full)
         except Exception as exc:
-            texts[role] = ""
-            errors[role] = str(exc)
+            errors["_dynamic"] = str(exc)
+    else:
+        # ---- 固定框位模式（原逻辑，供精确框选场景）----
+        for role, r in (req.regions or {}).items():
+            x0 = max(0, min(W - 1, int(r.x * W)))
+            y0 = max(0, min(H - 1, int(r.y * H)))
+            x1 = max(x0 + 1, min(W, int((r.x + r.w) * W)))
+            y1 = max(y0 + 1, min(H, int((r.y + r.h) * H)))
+            crop = img.crop((x0, y0, x1, y1))
+            # 画面未变则直接复用上次识别结果，跳过 CPU 推理（解决重复识别卡顿）
+            try:
+                sig = ocr_provider.image_signature(crop)
+            except Exception:
+                sig = None
+            cached = _OCR_CACHE.get(role)
+            if cached and cached.get("sig") == sig:
+                texts[role] = cached.get("text") or ""
+                continue
+            try:
+                txt = ocr_provider.ocr_image(crop) or ""
+                texts[role] = txt
+                _OCR_CACHE[role] = {"sig": sig, "text": txt}
+                if len(_OCR_CACHE) > _OCR_CACHE_MAX:
+                    _OCR_CACHE.pop(next(iter(_OCR_CACHE)))
+            except Exception as exc:
+                texts[role] = ""
+                errors[role] = str(exc)
     meta = {}
     try:
         meta = engine.extract_meta_full(texts.get("basic", ""),
@@ -983,6 +997,75 @@ def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local)):
         except Exception:
             meta = {}
     return _envelope(True, "OK", {"texts": texts, "meta": meta, "errors": errors})
+
+
+# 动态模式：整屏 OCR 文本流 → 按标题切分三区。
+# 顺序遍历所有行，命中标题关键词的行作为段起点：
+#   basic=患者信息 / findings=检查所见·影像描述 / impression=诊断印象·影像诊断·结论
+# 若找不到某标题，则该段并入相邻段或留空，由 extract_meta_full / 前端兜底。
+_FINDINGS_TITLES = ("检查所见", "影像所见", "影像描述", "所见", "检查描述", "描述")
+_IMPRESSION_TITLES = ("诊断印象", "影像诊断", "诊断意见", "诊断结论", "印象", "结论", "诊断")
+_BASIC_TITLES = ("患者", "病人", "姓名", "检查号", "影像号", "登记")
+
+
+def _strip_title(line: str, pats) -> str:
+    """剥离行首的段落标题词，保留正文。如『检查所见：双肺纹理增多』→『双肺纹理增多』。
+    标题可能后接中文冒号/空格/顿点；也可能标题在行中（罕见），统一只剥行首。"""
+    s = line.strip()
+    for p in sorted(pats, key=len, reverse=True):
+        if s.startswith(p):
+            rest = s[len(p):].lstrip("：:：: .、\t")
+            return rest.strip()
+        # 兼容『所见：』『描述 :』等带空格的标题写法
+        if s.startswith(p + " ") or s.startswith(p + "："):
+            rest = s[len(p):].lstrip(" ：: .、\t")
+            return rest.strip()
+    return s
+
+
+def _split_dynamic(full: str) -> (Dict[str, str], Dict[str, str]):
+    texts = {"basic": "", "findings": "", "impression": ""}
+    errors: Dict[str, str] = {}
+    lines = [ln for ln in (full or "").splitlines() if ln.strip()]
+    if not lines:
+        return texts, errors
+    # 找各段标题行下标（首个命中）
+    def _first_idx(pats):
+        for i, ln in enumerate(lines):
+            for p in pats:
+                if p in ln:
+                    return i
+        return -1
+    f_idx = _first_idx(_FINDINGS_TITLES)
+    i_idx = _first_idx(_IMPRESSION_TITLES)
+    b_idx = _first_idx(_BASIC_TITLES)
+    # 修正：诊断标题若出现在描述标题之前（PACS 常把「诊断」列在患者信息区），
+    # 以描述标题为基准重排——取描述之后首个诊断标题。
+    if f_idx >= 0 and i_idx >= 0 and i_idx < f_idx:
+        for j in range(f_idx, len(lines)):
+            if any(p in lines[j] for p in _IMPRESSION_TITLES):
+                i_idx = j
+                break
+    # basic：起始（或患者标题）→ 描述标题（或诊断标题）
+    b_start = b_idx if b_idx >= 0 else 0
+    if f_idx >= 0:
+        texts["basic"] = "\n".join(lines[b_start:f_idx]).strip()
+    elif i_idx >= 0:
+        texts["basic"] = "\n".join(lines[b_start:i_idx]).strip()
+    else:
+        texts["basic"] = "\n".join(lines[b_start:]).strip()
+    # findings：从描述标题行开始（含该行正文，标题词被剥掉）→ 诊断标题行前
+    if f_idx >= 0:
+        end = i_idx if i_idx > f_idx else len(lines)
+        head = _strip_title(lines[f_idx], _FINDINGS_TITLES)
+        body = [head] + [ln for ln in lines[f_idx + 1:end]]
+        texts["findings"] = "\n".join(body).strip()
+    # impression：从诊断标题行开始（含该行正文，标题词被剥掉）→ 末尾
+    if i_idx >= 0:
+        head = _strip_title(lines[i_idx], _IMPRESSION_TITLES)
+        body = [head] + [ln for ln in lines[i_idx + 1:]]
+        texts["impression"] = "\n".join(body).strip()
+    return texts, errors
 
 
 class OCRMetaReq(BaseModel):

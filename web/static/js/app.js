@@ -17,6 +17,7 @@ const PAGE_TITLES = {
 let APP_SETTINGS = {
   emp_id: 'demo01', default_modality: '', auto_qc_on_ocr: true, auto_enqueue: true,
   ocr_min_score: 0.55, screen_refresh_on_ocr: false, anonymize: false, theme: 'light',
+  ocr_dynamic: true,   // 动态语义识别（整屏OCR按标题切分，PACS滚动不变形）
   // 默认 Windows 风 Ctrl+；设置页可逐条重绑（保存后持久化到 web_settings.json）
   shortcuts: {
     run_qc:       { mods: ['ctrl'], key: 'Enter' },
@@ -507,6 +508,7 @@ function openSettings() {
   document.getElementById('setAutoEnqueue').checked   = !!s.auto_enqueue;
   document.getElementById('setScreenRefresh').checked = !!s.screen_refresh_on_ocr;
   document.getElementById('setAnonymize').checked     = !!s.anonymize;
+  document.getElementById('setOcrDynamic').checked    = !!s.ocr_dynamic;
   syncClipWatchUI();           // 同步桌面壳「监听剪贴板」开关状态
   renderShortcuts();
   populateLicenseSettings();   // 填授权状态 + 机器码
@@ -550,6 +552,7 @@ async function saveSettings() {
     auto_enqueue:          document.getElementById('setAutoEnqueue').checked,
     screen_refresh_on_ocr: document.getElementById('setScreenRefresh').checked,
     anonymize:             document.getElementById('setAnonymize').checked,
+    ocr_dynamic:           document.getElementById('setOcrDynamic').checked,
     shortcuts:            APP_SETTINGS.shortcuts || {},
   };
   try {
@@ -1889,12 +1892,14 @@ async function ocrOneClick() {
     _ocrHideApp();
     await new Promise(res => setTimeout(res, 350));
 
-    // 3) 一次请求完成：refresh=true 后端自动重新抓屏 + 按框位裁剪 OCR
+    // 3) 一次请求完成：refresh=true 后端自动重新抓屏 + 识别。
+    //    默认 dynamic=true（整屏OCR按标题切分），PACS 上下/左右滚动内容也不变形；
+    //    设置页关闭时才退回固定框位模式。
     let ocr;
     try {
       ocr = await fetch('/api/v1/screen/ocr', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ regions, refresh: true })
+        body: JSON.stringify({ regions, refresh: true, dynamic: !!APP_SETTINGS.ocr_dynamic })
       }).then(x => x.json());
     } catch (err) {
       _ocrShowApp();
