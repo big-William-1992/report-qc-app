@@ -164,8 +164,85 @@ GLOBAL_HOTKEYS = {
 _WEBVIEW = None
 
 
+# ---------------------- 剪贴板监听（复制即质控） ----------------------
+# 浏览器 JS 受安全模型限制，无法在后台监听系统剪贴板；由桌面壳轮询实现：
+# 检测到剪贴板出现新报告文本 → 通过 evaluate_js 推给前端自动分栏 + 质控。
+_CLIP_WATCH = False          # 监听开关（前端设置页控制）
+_CLIP_LAST = ""              # 上次已处理文本（去重）
+_CLIP_COOLDOWN = 0.0         # 防抖：同一时刻不重复处理
+
+
+def _norm_clip(s: str) -> str:
+    if not s:
+        return ""
+    return s.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _get_clipboard_text() -> str:
+    """跨平台读取系统剪贴板纯文本（零第三方依赖）。
+    - macOS:  pbpaste（Tk 在 macOS 读剪贴板有缺陷，用系统命令最稳）
+    - Windows: ctypes Win32 CF_UNICODETEXT（读 Unicode 文本）
+    - Linux:  xclip / wl-paste
+    """
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.run(["pbpaste"], capture_output=True, timeout=2).stdout
+            return out.decode("utf-8", "ignore")
+        if sys.platform.startswith("win"):
+            import ctypes
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            CF_UNICODETEXT = 13
+            if not user32.OpenClipboard(None):
+                return ""
+            try:
+                if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+                    return ""
+                h = user32.GetClipboardData(CF_UNICODETEXT)
+                if not h:
+                    return ""
+                ptr = kernel32.GlobalLock(h)
+                if not ptr:
+                    return ""
+                try:
+                    return ctypes.wstring_at(ptr)
+                finally:
+                    kernel32.GlobalUnlock(h)
+            finally:
+                user32.CloseClipboard()
+        for cmd in (["xclip", "-selection", "clipboard", "-o"], ["wl-paste"]):
+            try:
+                out = subprocess.run(cmd, capture_output=True, timeout=2).stdout
+                return out.decode("utf-8", "ignore")
+            except Exception:
+                continue
+    except Exception:
+        return ""
+    return ""
+
+
+def _clipwatch_loop():
+    """后台线程：每 1s 轮询剪贴板，发现新文本推给前端 onClipboardCopy。"""
+    global _CLIP_LAST, _CLIP_COOLDOWN
+    while True:
+        try:
+            if _CLIP_WATCH:
+                data = _norm_clip(_get_clipboard_text())
+                now = time.time()
+                if data and data != _CLIP_LAST and now - _CLIP_COOLDOWN > 2.0:
+                    _CLIP_LAST = data
+                    _CLIP_COOLDOWN = now
+                    import json as _json
+                    # json.dumps 产出合法 JS 字符串字面量，换行/引号/反斜杠均安全
+                    _eval_js("window.onClipboardCopy && onClipboardCopy("
+                             + _json.dumps(data) + ")")
+            time.sleep(1.0)
+        except Exception:
+            time.sleep(1.0)
+
+
 class Bridge:
-    """暴露给前端 JS 的原生桥：隐藏/显示/最小化窗口。
+    """暴露给前端 JS 的原生桥：隐藏/显示/最小化窗口 + 剪贴板监听开关。
 
     OCR 采集「前台 PACS 窗口」前需先让出焦点，否则会截到/读到本应用自身。
     """
@@ -188,6 +265,19 @@ class Bridge:
 
     def minimize_app(self):
         Bridge._each(lambda w: w.minimize())
+
+    def setClipWatch(self, on: bool):
+        """前端设置页开关：开启后后台监听剪贴板，复制报告即自动质控。"""
+        global _CLIP_WATCH, _CLIP_LAST
+        _CLIP_WATCH = bool(on)
+        if on:
+            _CLIP_LAST = ""   # 开启即刻处理当前剪贴板里已复制的内容
+            print("[剪贴板] 监听已开启（复制即质控）")
+        else:
+            print("[剪贴板] 监听已关闭")
+
+    def getClipWatch(self):
+        return _CLIP_WATCH
 
 
 def _eval_js(js: str):
@@ -333,6 +423,8 @@ def main():
         _WEBVIEW = _wv
         # 启动全局热键监听（后台线程，不阻塞 WebView 主事件循环）
         threading.Thread(target=_start_hotkeys, daemon=True).start()
+        # 剪贴板监听（复制即质控）：默认关闭，由前端设置页开关控制
+        threading.Thread(target=_clipwatch_loop, daemon=True).start()
         try:
             _wv.create_window("星衍AI放射质控", url, width=1280, height=860,
                               min_size=(1024, 700), js_api=Bridge())

@@ -507,6 +507,7 @@ function openSettings() {
   document.getElementById('setAutoEnqueue').checked   = !!s.auto_enqueue;
   document.getElementById('setScreenRefresh').checked = !!s.screen_refresh_on_ocr;
   document.getElementById('setAnonymize').checked     = !!s.anonymize;
+  syncClipWatchUI();           // 同步桌面壳「监听剪贴板」开关状态
   renderShortcuts();
   populateLicenseSettings();   // 填授权状态 + 机器码
   document.getElementById('settingsModal').style.display = 'flex';
@@ -745,6 +746,50 @@ async function pasteAndSplit() {
     toast('读取剪贴板失败：' + (err && err.message || err), 'warn');
     return false;
   }
+}
+
+// ==================== 剪贴板监听（复制即质控，桌面壳轮询推送） ====================
+// desktop_app.py 后台线程检测到剪贴板出现新文本后，经 evaluate_js 调用本函数：
+// 自动分栏填入描述/诊断 → 刷新字数 → 质控。浏览器环境（无桌面壳）不会触发。
+function onClipboardCopy(text) {
+  if (!text || !text.trim()) return;
+  const { findings, impression } = splitReportSections(text);
+  const fEl = document.getElementById('findingsText');
+  const iEl = document.getElementById('impressionText');
+  if (fEl) fEl.value = findings;
+  if (iEl) iEl.value = impression;
+  const fc = document.getElementById('findingsCount');
+  const ic = document.getElementById('impressionCount');
+  if (fc) fc.textContent = findings.length + ' 字';
+  if (ic) ic.textContent = impression.length + ' 字';
+  toast('📋 检测到剪贴板新报告，已分栏填入并质控', 'success');
+  setTimeout(() => { if (typeof runQC === 'function') runQC(); }, 60);
+}
+
+// 设置页「监听剪贴板」开关 → 调桌面壳原生桥（浏览器环境无桥，仅提示）
+function toggleClipWatch(on) {
+  try {
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.setClipWatch) {
+      window.pywebview.api.setClipWatch(!!on).catch(function () {});
+      toast(on ? '剪贴板监听已开启（复制即质控）' : '剪贴板监听已关闭', 'success');
+    } else {
+      toast('仅桌面版支持剪贴板监听（浏览器无法后台读取剪贴板）', 'warn');
+    }
+  } catch (e) {
+    toast('切换监听失败：' + (e && e.message || e), 'error');
+  }
+}
+
+// 打开设置时同步桌面壳监听状态到开关
+function syncClipWatchUI() {
+  try {
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.getClipWatch) {
+      window.pywebview.api.getClipWatch().then(function (on) {
+        const el = document.getElementById('setClipWatch');
+        if (el) el.checked = !!on;
+      }).catch(function () {});
+    }
+  } catch (e) { /* 忽略 */ }
 }
 
 async function queueRemove(qid) {
