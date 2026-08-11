@@ -83,6 +83,13 @@ function applyRoleUI() {
   document.querySelectorAll('[data-admin-only]').forEach(el => {
     el.style.display = isAdmin ? '' : 'none';
   });
+  // 侧边宫格：基于「可见项」判断奇数项 → 最后一项跨满整行。
+  // 不能用 DOM :last-child:nth-child(odd)，隐藏的「用户管理」会干扰判断。
+  document.querySelectorAll('#sidebar .nav-cell').forEach(el => el.classList.remove('span-full'));
+  const cells = [...document.querySelectorAll('#sidebar .nav-cell')].filter(el => el.offsetParent !== null);
+  if (cells.length % 2 === 1 && cells.length > 1) {
+    cells[cells.length - 1].classList.add('span-full');
+  }
   const sub = document.getElementById('userMenuSub');
   if (sub) sub.textContent = (isAdmin ? '系统管理员' : '医生') + ' · ' + (AUTH.empId || '');
 }
