@@ -167,7 +167,7 @@
       <div class="tips-row"><span>运行质控</span><span class="tips-key" data-action="run_qc">Ctrl+Enter</span></div>
       <div class="tips-row"><span>存入样本库</span><span class="tips-key" data-action="save_sample">Ctrl+S</span></div>
       <div class="tips-row"><span>清空录入</span><span class="tips-key">Esc</span></div>
-      <div class="tips-row"><span>框选OCR·一键</span><span class="tips-key" data-action="ocr_capture">Ctrl+Shift+O</span></div>
+      <div class="tips-row"><span>框选OCR·一键识别</span><span class="tips-key" data-action="ocr_capture">Ctrl+Shift+O</span></div>
     </div>
     <div class="sidebar-version">v1.0 · 桌面客户端</div>
   </div>
@@ -265,7 +265,8 @@
             <button class="btn btn-outline" onclick="clearInput()">🗑 清空</button>
             <button class="btn btn-outline" onclick="pasteAndSplit()" title="一次复制报告全文（含描述+诊断），自动按标题分栏填入并立即质控">📋 粘贴全文并质控</button>
             <button class="btn btn-outline" onclick="saveToLibrary()">💾 入库</button>
-            <button class="btn btn-outline" onclick="openOcrModal()">📷 框选OCR</button>
+            <button class="btn btn-outline" onclick="openOcrModal()">📷 框选设置</button>
+            <button class="btn btn-primary" onclick="ocrOneClick()" title="用已保存的框位一键抓屏识别并质控（Ctrl+Shift+O）">⚡ 一键识别</button>
             <button class="btn btn-outline" onclick="enqueueCurrent('手动')">📥 加入队列</button>
             <div style="flex:1"></div>
             <button class="btn btn-outline btn-sm" onclick="openSettings()">⚙ 高级设置</button>

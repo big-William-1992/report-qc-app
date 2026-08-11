@@ -1820,10 +1820,90 @@ async function ocrPipeline() {
   } catch (e) { toast('流程出错: ' + e.message, 'error'); }
 }
 
-// 供全局热键调用：若 OCR 模态已开则执行流程，否则打开模态
+// 一键识别（不弹框选界面）：直接复用已保存的框位设置，走完 抓屏→OCR→填充→入库→质控
+let _ocrOneClickBusy = false;
+async function ocrOneClick() {
+  if (_ocrOneClickBusy) return;     // 防重入：全局热键与 SPA 快捷键可能同时命中
+  _ocrOneClickBusy = true;
+  try {
+  // 1) 读取已保存的框位（web_regions），缺失则提示先去设置
+  let regions = null;
+  try {
+    const r = await fetch('/api/v1/screen/regions').then(x => x.json());
+    regions = (r && r.data && r.data.web_regions) || null;
+  } catch (e) { regions = null; }
+  const has = regions && (regions.basic || regions.findings || regions.impression);
+  if (!has) {
+    toast('未记住框位：请先点「📷 框选OCR」框选三区并「记住框位」', 'error');
+    return;
+  }
+
+  // 2) 加载反馈
+  toast('📷 正在识别 PACS 报告…');
+
+  // 3) 截屏前让出焦点，避免截到应用自身（仅 WebView 桌面端有效，浏览器无操作）
+  _ocrHideApp();
+  await new Promise(res => setTimeout(res, 350));
+
+  // 4) 先抓全屏（原图缓存于服务端）
+  let cap;
+  try {
+    cap = await fetch('/api/v1/screen/capture', { method: 'POST' }).then(x => x.json());
+  } catch (err) {
+    _ocrShowApp();
+    toast('截屏失败：' + ((err && err.message) || err), 'error');
+    return;
+  }
+  if (!cap || !cap.ok) {
+    _ocrShowApp();
+    toast('截屏失败：' + ((cap && cap.message) || '未知错误'), 'error');
+    return;
+  }
+
+  // 5) 用保存的框位直接识别（不弹框、不显示缩略图）
+  let ocr;
+  try {
+    ocr = await fetch('/api/v1/screen/ocr', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ regions, refresh: false })
+    }).then(x => x.json());
+  } catch (err) {
+    _ocrShowApp();
+    toast('OCR 失败：' + ((err && err.message) || err), 'error');
+    return;
+  }
+  // 抓屏+识别完成，恢复窗口显示结果
+  _ocrShowApp();
+
+  if (!ocr || !ocr.ok) {
+    toast('OCR 失败：' + ((ocr && ocr.message) || '未知错误'), 'error');
+    return;
+  }
+  const t = (ocr.data && ocr.data.texts) || {};
+  ocrFill({ basic: t.basic, findings: t.findings, impression: t.impression },
+           (ocr.data && ocr.data.meta) || null);
+
+  // 6) 导入并质控（与手动「识别·导入·质控」一致）
+  toast('已识别并填充，正在导入并质控…', 'info');
+  await saveToLibrary();   // 其内部先运行质控
+  toast('识别 → 导入 → 质控 完成', 'success');
+  } finally {
+    _ocrOneClickBusy = false;
+  }
+}
+
+// 通过 pywebview 原生桥隐藏/显示窗口（截屏前让出焦点）。浏览器环境无桥则无操作。
+function _ocrHideApp() {
+  try { window.pywebview && window.pywebview.api && window.pywebview.api.hide_app && window.pywebview.api.hide_app(); } catch (e) {}
+}
+function _ocrShowApp() {
+  try { window.pywebview && window.pywebview.api && window.pywebview.api.show_app && window.pywebview.api.show_app(); } catch (e) {}
+}
+
+// 供全局热键调用：若 OCR 模态已开（用户在设置框位）则执行模态内流程，否则一键识别
 function ocrHotkey() {
   if (document.getElementById('ocrModal').style.display === 'flex') ocrPipeline();
-  else openOcrModal();
+  else ocrOneClick();
 }
 
 
