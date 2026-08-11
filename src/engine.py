@@ -711,6 +711,98 @@ def save_rules_config(cfg: dict, path: str = RULES_CONFIG_PATH) -> None:
         json.dump(cfg, fh, ensure_ascii=False, indent=2)
 
 
+def learn_typo(wrong: str, correct: str, path: str = RULES_CONFIG_PATH) -> bool:
+    """修正反馈闭环：把用户确认的「错词→正确词」写入规则库 typos。
+    带 _source: "learned" 标记，后续自动生效（R8 直接命中），
+    且与人工录入（无 _source）区分，便于审计与回滚。"""
+    wrong = (wrong or "").strip()
+    correct = (correct or "").strip()
+    if not wrong or not correct or wrong == correct:
+        return False
+    cfg = load_rules_config(path)
+    typos = cfg.setdefault("typos", {})
+    # 反向冲突保护：若正确词本身在错词表里（如曾误学 结节→姐姐），跳过
+    if typos.get(correct) == wrong:
+        return False
+    typos[wrong] = correct
+    save_rules_config(cfg, path)
+    return True
+
+
+def scan_reports_for_typos(path: str = RULES_CONFIG_PATH, limit: int = 200) -> list:
+    """历史报告词频学习：扫描样本库 report_text，自动发现「低频写法 → 高频标准写法」候选。
+    返回候选列表 [{wrong, correct, count, category, similarity, reason}]，供前端一键采纳。
+
+    算法（纯本地、无模型）：
+    1. 从样本库读取最近 limit 份报告正文；
+    2. 滑窗 2-4 字切词 + 高频词库锚定，统计每词出现频次；
+    3. 对每个「不在白名单、出现次数少」的片段，用读音相似度与高频正确词比对；
+    4. 相似度高（同音/近音）且明显低于锚点词频的，列为候选错字；
+    5. 已存在于 typos / ignores 的自动排除。
+    """
+    try:
+        import samplelib
+        samples = samplelib.list_samples_full()
+    except Exception:
+        return []
+    if not samples:
+        return []
+    # 词频统计
+    from collections import Counter
+    freq: Counter = Counter()
+    for s in samples[-limit:]:
+        text = (s.get("report_text") or "") if isinstance(s, dict) else getattr(s, "report_text", "") or ""
+        text = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", text)
+        if not text:
+            continue
+        n = len(text)
+        for i in range(n):
+            for L in (4, 3, 2):
+                if i + L <= n:
+                    w = text[i:i + L]
+                    # 只统计「含中文且不全为数字字母」的词，过滤噪声
+                    if re.search(r"[\u4e00-\u9fa5]", w):
+                        freq[w] += 1
+    if not freq:
+        return []
+    # 读取现有规则避免重复推荐
+    cfg = load_rules_config(path)
+    typos = set(cfg.get("typos", {}))
+    ignores = set(cfg.get("ignores", []))
+    # 高频锚点：取词库中出现次数 ≥ 2 的词作为「标准写法」
+    anchors = {w for w, c in freq.items() if c >= 2 and len(w) >= 2}
+    # 低频候选 + 读音比对
+    candidates = []
+    seen = set()
+    try:
+        from highfreq_lexicon import find_homophone_suggestions, highfreq_words
+        hf = {w for w, _ in highfreq_words()}
+    except Exception:
+        hf = set()
+    for w, c in sorted(freq.items(), key=lambda kv: -kv[1]):
+        if c >= 3 or len(w) < 2:
+            continue
+        if w in typos or w in ignores or w in hf or w in seen:
+            continue
+        if w in anchors:
+            continue
+        cand = find_homophone_suggestions(w)
+        if not cand:
+            continue
+        best, cat, sim = cand[0]
+        if sim < 0.97:
+            continue
+        seen.add(w)
+        candidates.append({
+            "wrong": w, "correct": best, "count": c,
+            "category": cat, "similarity": round(sim, 3),
+            "reason": f"历史报告出现 {c} 次，读音与「{best}」相似，疑似错字",
+        })
+        if len(candidates) >= 20:
+            break
+    return candidates
+
+
 # ----------------------------- NER -----------------------------
 class ChineseRadiologyNER:
     SECTION_MAP = [

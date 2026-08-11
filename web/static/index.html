@@ -641,6 +641,23 @@
           </div>
         </div>
       </div>
+
+      <!-- P0 智能学习：历史报告词频发现候选错字，一键采纳 -->
+      <div class="card" style="margin-top:20px;">
+        <div class="card-header">
+          <h3><span class="icon">🧠</span> 智能学习（从历史报告自动发现错字）</h3>
+          <button class="btn btn-primary btn-sm" id="scanBtn" onclick="scanReportsForTypos()">🔄 扫描历史报告学习</button>
+        </div>
+        <div class="card-body">
+          <div id="scanResult">
+            <div class="muted" style="font-size:13px;">
+              扫描样本库中的历史报告，统计词频并与高频标准词组做读音比对，
+              自动发现「低频写法 → 高频标准写法」的候选错字，点「采纳」即写入规则库。
+              样本越多，学习越准。
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
   </main><!-- /content -->

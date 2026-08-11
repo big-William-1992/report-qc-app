@@ -363,13 +363,19 @@ function _renderFindingList() {
   countEl.textContent = filtered.length + ' / ' + findings.length + ' 条';
   listEl.innerHTML = filtered.map(f => {
     const m = SEV_META[f.severity] || SEV_META.low;
+    // R8 同音错别字：提供「采纳修正」——把错词→正确词写入规则库，下次自动识别（P0 修正反馈闭环）
+    const isTypo = f.rule_id === 'R8-TYPO';
+    const learnBtn = isTypo ? `
+      <button class="btn btn-xs learn-btn" onclick="learnTypoFromFinding(this)"
+        data-wrong="${escapeHtml(f.snippet || '')}" data-correct="${escapeHtml(f.suggestion || '')}"
+        title="把「${escapeHtml(f.snippet || '')}」→「${escapeHtml(f.suggestion || '')}」写入规则库，以后自动识别">✅ 采纳修正</button>` : '';
     return `
     <li class="finding-item">
       <span class="severity-dot ${f.severity}"></span>
       <span class="sev-badge ${m.cls}">${m.icon} ${m.label}</span>
       <div>
         <div class="finding-text">${escapeHtml(f.message)}</div>
-        <div class="finding-meta">${f.rule_id} · ${f.category || ''}</div>
+        <div class="finding-meta">${f.rule_id} · ${f.category || ''}${learnBtn}</div>
       </div>
     </li>`;
   }).join('');
@@ -1140,6 +1146,86 @@ async function exportSamples() {
 }
 
 // ==================== 规则词表维护（R8 错别字 / R9 矛盾对 / 忽略词 / R10 模板） ====================
+
+/** P0 修正反馈闭环：QC 结果里点「采纳修正」→ 错词→正确词写入规则库 */
+async function learnTypoFromFinding(btn) {
+  const wrong = (btn && btn.dataset.wrong || '').trim();
+  const correct = (btn && btn.dataset.correct || '').trim();
+  if (!wrong || !correct) { toast('缺少错词/正确词，无法学习', 'error'); return; }
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/v1/qc/rules/learn-typo', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wrong, correct })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '学习失败');
+    btn.textContent = '✓ 已学习';
+    btn.classList.add('done');
+    toast(`已学习：${wrong} → ${correct}，下次自动识别`, 'success');
+  } catch (err) {
+    btn.disabled = false;
+    toast('学习失败：' + (err.message || err), 'error');
+  }
+}
+
+/** P0 历史报告词频学习：扫描样本库发现候选错字并展示，一键采纳 */
+let _scanCandidates = [];
+async function scanReportsForTypos() {
+  const box = document.getElementById('scanResult');
+  const btn = document.getElementById('scanBtn');
+  if (!box) return;
+  btn && (btn.disabled = true);
+  btn && (btn.textContent = '扫描中…（读取最近 200 份报告）');
+  box.innerHTML = '<div class="muted">正在扫描样本库并统计词频…</div>';
+  try {
+    const res = await fetch('/api/v1/qc/rules/scan-reports', { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '扫描失败');
+    _scanCandidates = (data.data && data.data.candidates) || [];
+    if (_scanCandidates.length === 0) {
+      box.innerHTML = '<div class="muted">未发现候选错字（样本库为空或均为标准写法）。入库的报告越多，学习越准。</div>';
+    } else {
+      box.innerHTML = `<div class="scan-head">发现 ${_scanCandidates.length} 个候选错字（来自历史报告词频+读音比对）</div>` +
+        `<div class="scan-list">` + _scanCandidates.map((c, i) => `
+          <div class="scan-item">
+            <span class="scan-word">${escapeHtml(c.wrong)}</span>
+            <span class="scan-arrow">→</span>
+            <span class="scan-word ok">${escapeHtml(c.correct)}</span>
+            <span class="scan-count">${c.count}次</span>
+            <span class="scan-reason" title="${escapeHtml(c.reason)}">${escapeHtml(c.reason)}</span>
+            <button class="btn btn-xs learn-btn" onclick="adoptScanCandidate(this, ${i})">采纳</button>
+          </div>`).join('') + `</div>`;
+    }
+  } catch (err) {
+    box.innerHTML = '<div class="muted">扫描失败：' + escapeHtml(err.message || err) + '</div>';
+  } finally {
+    btn && (btn.disabled = false);
+    btn && (btn.textContent = '🔄 扫描历史报告学习');
+  }
+}
+
+/** 采纳一个扫描候选错字 → 写入规则库 */
+async function adoptScanCandidate(btn, idx) {
+  const c = _scanCandidates[idx];
+  if (!c) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/v1/qc/rules/learn-typo', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wrong: c.wrong, correct: c.correct })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '学习失败');
+    btn.textContent = '✓';
+    btn.classList.add('done');
+    toast(`已学习：${c.wrong} → ${c.correct}`, 'success');
+  } catch (err) {
+    btn.disabled = false;
+    toast('采纳失败：' + (err.message || err), 'error');
+  }
+}
+
 async function loadRulesConfig(silent = false) {
   try {
     const res = await fetch('/api/v1/qc/rules/config');

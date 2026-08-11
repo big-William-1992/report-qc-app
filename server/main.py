@@ -1205,6 +1205,30 @@ def qc_rules_config_put(cfg: Dict[str, Any], emp: str = Depends(require_emp_loca
         raise HTTPException(500, str(exc))
 
 
+class LearnTypoReq(BaseModel):
+    wrong: str = ""
+    correct: str = ""
+
+
+@app.post("/api/v1/qc/rules/learn-typo")
+def qc_rules_learn_typo(req: LearnTypoReq, emp: str = Depends(require_emp_local)):
+    """P0 修正反馈闭环：用户确认的「错词→正确词」写入规则库，下次自动识别。"""
+    ok = engine.learn_typo(req.wrong, req.correct)
+    if not ok:
+        raise HTTPException(400, "无效的错字对（为空或已存在反向冲突）")
+    return _envelope(True, "OK", None, f"已学习错字对：{req.wrong}→{req.correct}")
+
+
+@app.post("/api/v1/qc/rules/scan-reports")
+def qc_rules_scan_reports(emp: str = Depends(require_emp_local)):
+    """P0 历史报告词频学习：扫描样本库，自动发现候选错字对，供一键采纳。"""
+    try:
+        cands = engine.scan_reports_for_typos()
+        return _envelope(True, "OK", {"candidates": cands}, f"发现 {len(cands)} 个候选错字")
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+
 # ----------------------------- 静态前端托管（SPA） -----------------------------
 # 单服务同时提供 REST API 与同一套 SPA 前端，桌面 WebView 壳与浏览器共用。
 from fastapi.staticfiles import StaticFiles
