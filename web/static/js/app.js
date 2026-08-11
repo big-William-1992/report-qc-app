@@ -1885,10 +1885,11 @@ async function ocrOneClick() {
   ocrFill({ basic: t.basic, findings: t.findings, impression: t.impression },
            (ocr.data && ocr.data.meta) || null);
 
-  // 6) 导入并质控（与手动「识别·导入·质控」一致）
-  toast('已识别并填充，正在导入并质控…', 'info');
-  await saveToLibrary();   // 其内部先运行质控
-  toast('识别 → 导入 → 质控 完成', 'success');
+  // 6) 先显式质控（saveToLibrary 内部仅当无质控结果时才补跑，必须强制对新识别文本运行），再入库
+  toast('已识别并填充，正在质控…', 'info');
+  await runQC();
+  await saveToLibrary();   // 入库（内部检测到已有质控结果不会重复跑）
+  toast('识别 → 质控 → 导入 完成', 'success');
   } finally {
     _ocrOneClickBusy = false;
   }
@@ -1916,7 +1917,7 @@ const SHORTCUT_ACTIONS = {
   paste_split:  { label: '粘贴全文并分栏', run: () => pasteAndSplit() },
   ocr_capture:  { label: '识别并质控',   run: () => {
     if (document.getElementById('ocrModal').style.display === 'flex') ocrPipeline();
-    else openOcrModal();
+    else ocrOneClick();
   } },
   toggle_theme: { label: '明暗主题切换', run: () => toggleTheme() },
 };
