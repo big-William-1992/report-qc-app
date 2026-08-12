@@ -54,6 +54,27 @@ try:
 except Exception as _e:
     print("WARNING: collect_all('webview') failed:", _e)
 
+# ---- pythonnet(clr) / clr_loader 全量收集（Windows 关键！）----
+# pywebview 6.x 在 Windows 上默认只用 winforms 后端，强制依赖 pythonnet(clr)。
+# PyInstaller 静态分析能抓到 `import clr` 的模块，但 clr_loader 在冻结环境无法
+# 定位 Python.Runtime.dll 的运行时目录，导致：
+#   RuntimeError: Failed to resolve Python.Runtime.Loader.Initialize ...
+# （pywebview/pythonnet/clr_loader + PyInstaller 的经典打包冲突，见 pywebview#1215）
+# 必须 collect_all 把 pythonnet 的 runtime DLL / runtimeconfig / hooks 与
+# clr_loader 的加载器全部打进 dist，并配合 desktop_app.py 入口 os.add_dll_directory。
+try:
+    from PyInstaller.utils.hooks import collect_all as _pn_collect
+    _pnb, _pnd, _pnh = _pn_collect("pythonnet")
+    _extra_binaries += _pnb
+    _extra_datas += _pnd
+    _extra_hiddenimports += _pnh
+    _clb, _cld, _clh = _pn_collect("clr_loader")
+    _extra_binaries += _clb
+    _extra_datas += _cld
+    _extra_hiddenimports += _clh
+except Exception as _e:
+    print("WARNING: collect_all('pythonnet'/'clr_loader') failed:", _e)
+
 # ---- 后端核心依赖 SQLAlchemy 全量收集 ----
 # SQLAlchemy 含按需加载的 C 扩展(cprocessors/cresultprocessor)与方言(dialects.*)，
 # 仅靠 `from sqlalchemy import create_engine` 的静态分析在冻结时常漏整包，

@@ -39,6 +39,26 @@ if str(ROOT / "src") not in sys.path:
 if getattr(sys, "frozen", False) and str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Windows 冻结关键修复：pywebview 6.x 在 Windows 上强制走 winforms/edgechromium
+# 后端，两者都 import clr（pythonnet）。clr_loader 在 PyInstaller 打包后找不到
+# Python.Runtime.dll 的加载目录，会抛：
+#   RuntimeError: Failed to resolve Python.Runtime.Loader.Initialize ...
+# 必须在 import webview 之前，把 pythonnet 的 runtime 目录显式加入 DLL 搜索路径。
+# （onedir 模式下 DLL 位于 <exe 同目录>/_internal/pythonnet/runtime/）
+if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
+    _dll_dirs = [
+        os.path.join(ROOT, "pythonnet", "runtime"),
+        os.path.join(ROOT, "_internal", "pythonnet", "runtime"),
+        os.path.join(ROOT, "clr_loader"),
+        os.path.join(ROOT, "_internal", "clr_loader"),
+    ]
+    for _dd in _dll_dirs:
+        if os.path.isdir(_dd):
+            try:
+                os.add_dll_directory(_dd)
+            except Exception:
+                pass
+
 
 # ---------------------- 冻结版崩溃可见化 ----------------------
 # 默认 console=False（无控制台黑窗），任何未捕获异常都会被静默吞掉，
@@ -387,7 +407,7 @@ def main():
 
     # 依赖预检：后端模块（含 cv2 / uvicorn / fastapi / sqlalchemy 等）必须可导入，
     # 否则后端起不来、health 永远不通、_wait_ready 超时后整个进程静默退出，
-    # 表现为“软件打不开”。提前 import 一次，缺依赖时给出明确指引而不是干等。
+    # 表现为"软件打不开"。提前 import 一次，缺依赖时给出明确指引而不是干等。
     try:
         import server.main  # noqa: F401  触发后端全部依赖的导入
     except Exception as e:  # noqa: BLE001
@@ -430,20 +450,42 @@ def main():
                               min_size=(1024, 700), js_api=Bridge())
             _wv.start()
         except Exception as e:  # noqa: BLE001
-            # WebView2 / Edge 运行时缺失等导致原生窗口创建失败：降级到系统浏览器，
-            # 而不是让进程崩溃（否则用户只看到“闪一下打不开”）。
+            # WebView2 / Edge 运行时缺失、pythonnet(clr) 打包问题等导致原生窗口创建失败：
+            # 降级到系统浏览器，而不是让进程崩溃（否则用户只看到"闪一下打不开"）。
             import webbrowser
             print(f"[警告] 原生窗口创建失败（{e}），改用系统浏览器打开：{url}")
             print("        若提示缺少 WebView2，请安装 Edge WebView2 运行时：")
             print("        https://developer.microsoft.com/zh-cn/microsoft-edge/webview2/")
-            webbrowser.open(url)
-            input("按 Enter 退出…")
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+            # 冻结版（console=False）下 sys.stdin 为 None，input() 会抛
+            # RuntimeError: lost sys.stdin，造成「二次崩溃」盖住真实错误。这里兜底。
+            if getattr(sys, "frozen", False):
+                show_fatal("星衍质控 启动降级",
+                           "原生窗口创建失败，已尝试改用系统浏览器打开。\n\n"
+                           f"详情：{e}\n\n"
+                           "若提示缺少 WebView2，请安装 Edge WebView2 运行时：\n"
+                           "https://developer.microsoft.com/zh-cn/microsoft-edge/webview2/")
+            else:
+                try:
+                    input("按 Enter 退出…")
+                except Exception:
+                    pass
     except ImportError:
         # 未安装 pywebview 时回退到系统浏览器
         import webbrowser
         print(f"[提示] 未安装 pywebview，改用浏览器打开：{url}")
-        webbrowser.open(url)
-        input("按 Enter 退出…")
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+        if not getattr(sys, "frozen", False):
+            try:
+                input("按 Enter 退出…")
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
