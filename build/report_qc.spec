@@ -62,13 +62,37 @@ except Exception as _e:
 # （pywebview/pythonnet/clr_loader + PyInstaller 的经典打包冲突，见 pywebview#1215）
 # 必须 collect_all 把 pythonnet 的 runtime DLL / runtimeconfig / hooks 与
 # clr_loader 的加载器全部打进 dist，并配合 desktop_app.py 入口 os.add_dll_directory。
+#
+# 【关键】.NET 相关 DLL（Python.Runtime.dll / ClrLoader.dll）绝不能走 UPX：
+# UPX 压缩 .NET 程序集会破坏其内部结构，导致「DLL 存在但无法解析
+# Python.Runtime.Loader.Initialize」→ 首次 netfx import clr 失败 → pywebview
+# 的 except 强制切 coreclr → 目标机无 .NET Core → 崩溃（clr_loader\vfx.py）。
+# 因此把这些 DLL 从 binaries（会被 UPX 压缩）移到 datas（原样复制）。
+def _pn_move_dll_to_datas(bins, datas):
+    """把 collect_all 返回中 .dll/.pdb 条目从 binaries 移到 datas，规避 UPX 破坏。"""
+    moved = []
+    kept = []
+    for _b in bins:
+        _src, _dest = _b[0], _b[1]
+        _low = os.path.basename(_src).lower()
+        if _low.endswith((".dll", ".pdb", ".config", ".json", ".xml")):
+            datas.append(_b)   # (src, dest) 元组结构一致，原样放 datas
+            moved.append(_low)
+        else:
+            kept.append(_b)
+    if moved:
+        print("  [pythonnet] 移出 UPX 范围:", ", ".join(sorted(set(moved))))
+    return kept
+
 try:
     from PyInstaller.utils.hooks import collect_all as _pn_collect
     _pnb, _pnd, _pnh = _pn_collect("pythonnet")
+    _pnb = _pn_move_dll_to_datas(_pnb, _pnd)
     _extra_binaries += _pnb
     _extra_datas += _pnd
     _extra_hiddenimports += _pnh
     _clb, _cld, _clh = _pn_collect("clr_loader")
+    _clb = _pn_move_dll_to_datas(_clb, _cld)
     _extra_binaries += _clb
     _extra_datas += _cld
     _extra_hiddenimports += _clh

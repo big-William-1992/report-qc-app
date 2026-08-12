@@ -11,8 +11,8 @@ uvicorn>=0.27                 # ASGI 服务器（desktop_app.py 以后台线程�
 python-multipart>=0.0.9       # UploadFile 表单解析：/ocr/upload、/samples/import/upload 必需
 sqlalchemy>=1.4,<3.0          # ORM 数据层（users/departments/samples/queue/settings 持久化，运行必需；漏列会导致冻结 exe 启动即 ModuleNotFoundError）
 pywebview>=4.4                # 桌面壳（macOS 用系统 WKWebView，Windows 用 WebView2）
-pythonnet>=3.0.3; platform_system == "Windows"   # Windows 下 pywebview 6.x 的 winforms/edgechromium 后端强制依赖 pythonnet(clr)；需锁定版本避免打包后 clr_loader 无法解析 Python.Runtime.dll
-clr-loader>=0.2.7; platform_system == "Windows"  # pythonnet 的 .NET 运行时加载器（PyInstaller 打包必须显式收集）
+pythonnet==3.1.0; platform_system == "Windows"  # Windows 下 pywebview 6.x 的 winforms/edgechromium 后端强制依赖 pythonnet(clr)；锁定 3.1.0（runtime 目录结构已验证，netfx 模式可加载）
+clr-loader==0.3.1; platform_system == "Windows"  # pythonnet 的 .NET 运行时加载器（PyInstaller 打包必须显式收集；锁定版避免 vfx/coreclr 路径差异）
 
 # ── 屏幕区域 OCR（框选 PACS 报告 → 离线识别）──────────────────────
 # rapidocr-onnxruntime 的完整运行依赖（pip 会自动解析 Requires，但此处显式列出，

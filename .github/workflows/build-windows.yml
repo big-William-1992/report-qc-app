@@ -140,6 +140,48 @@ jobs:
       - name: Package portable zip
         run: Compress-Archive -Path "dist/报告质控软件/*" -DestinationPath "report-qc-portable.zip" -Force
 
+      # ---- 阻断闸：打包产物里 pythonnet/clr 必须可加载（Windows 桌面壳关键） ----
+      # 此前用户下载后报「Failed to resolve Python.Runtime.Loader.Initialize」，
+      # 根因：.NET DLL 被 UPX 压缩破坏 + runtime 目录层级不对。此步在打包机
+      # （自带 .NET Framework）上直接 import dist 里的 clr，验证 netfx 能加载。
+      # 注意：这里用 dist 内收集的 pythonnet/clr_loader，若收集不全必然失败。
+      - name: Verify pythonnet clr loads from bundle
+        shell: bash
+        continue-on-error: true
+        env:
+          PYTHONNET_RUNTIME: "netfx"
+          PYTHONUTF8: "1"
+        run: |
+          python - <<'PY'
+          import os, sys, glob
+          # 找到 dist 里的 pythonnet 运行时目录
+          dist_root = "dist"
+          pn_runtime = None
+          for root, dirs, files in os.walk(dist_root):
+              if os.path.basename(root) == "runtime" and "pythonnet" in root:
+                  pn_runtime = root
+                  break
+          print("pythonnet runtime dir:", pn_runtime)
+          if not pn_runtime:
+              print("FAIL: pythonnet/runtime 未打进 dist"); sys.exit(1)
+          dll = os.path.join(pn_runtime, "Python.Runtime.dll")
+          if not os.path.exists(dll):
+              print("FAIL: Python.Runtime.dll 缺失:", dll); sys.exit(1)
+          print("Python.Runtime.dll 存在:", dll, os.path.getsize(dll), "bytes")
+          # clr_loader 的 ClrLoader.dll 也必须存在
+          clr_dll = glob.glob(os.path.join(dist_root, "**", "clr_loader", "ffi", "dlls", "amd64", "ClrLoader.dll"), recursive=True)
+          print("ClrLoader.dll found:", clr_dll)
+          if not clr_dll:
+              print("FAIL: clr_loader/ffi/dlls/amd64/ClrLoader.dll 未打进 dist"); sys.exit(1)
+          # 用 dist 的 pythonnet 尝试 import clr（netfx）
+          try:
+              import clr
+              print("CLR LOAD OK (netfx)")
+          except Exception as e:
+              print("FAIL: import clr 失败:", repr(e)); sys.exit(1)
+          print("PYTHONNET_BUNDLE_OK")
+          PY
+
       # ---- 阻断闸：sqlalchemy 必须进 bundle，否则 exe 启动即 ModuleNotFoundError ----
       # 不放行到「删除旧 latest / 发布」：坏包一旦发布，用户下载即崩。
       # 检测用 Python os.walk（与上方 Verify bundle 同模式），避免 bash find 遍历中文目录名

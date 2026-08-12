@@ -46,6 +46,12 @@ if getattr(sys, "frozen", False) and str(ROOT) not in sys.path:
 # 必须在 import webview 之前，把 pythonnet 的 runtime 目录显式加入 DLL 搜索路径。
 # （onedir 模式下 DLL 位于 <exe 同目录>/_internal/pythonnet/runtime/）
 if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
+    # 关键修复：pythonnet/clr_loader 默认走 .NET Core（coreclr）模式，靠 hostfxr
+    # 探测本机 .NET 运行时；目标机器若未装 .NET Core Runtime 就抛
+    # 「Failed to resolve Python.Runtime.Loader.Initialize」。
+    # 而 Windows 10/11 系统级自带 .NET Framework 4.8，强制 PYTHONNET_RUNTIME=netfx
+    # 走 .NET Framework 加载，无需用户安装任何额外运行时，根治 clr 加载失败。
+    os.environ["PYTHONNET_RUNTIME"] = "netfx"
     _dll_dirs = [
         os.path.join(ROOT, "pythonnet", "runtime"),
         os.path.join(ROOT, "_internal", "pythonnet", "runtime"),
