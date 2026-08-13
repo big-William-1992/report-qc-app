@@ -717,7 +717,13 @@ def learn_typo(wrong: str, correct: str, path: str = RULES_CONFIG_PATH) -> bool:
     且与人工录入（无 _source）区分，便于审计与回滚。"""
     wrong = (wrong or "").strip()
     correct = (correct or "").strip()
+    # 校验：非空、不等、长度受限（1~10 字）、仅含中文（防止标点/超长/异物写入规则库）
     if not wrong or not correct or wrong == correct:
+        return False
+    if len(wrong) > 10 or len(correct) > 10:
+        return False
+    _CN = re.compile(r"^[\u4e00-\u9fa5]+$")
+    if not _CN.match(wrong) or not _CN.match(correct):
         return False
     cfg = load_rules_config(path)
     typos = cfg.setdefault("typos", {})
@@ -742,27 +748,31 @@ def scan_reports_for_typos(path: str = RULES_CONFIG_PATH, limit: int = 200) -> l
     """
     try:
         import samplelib
-        samples = samplelib.list_samples_full()
+        # SQL 层直接限制最近 limit 份（避免全量载入长文本报告）
+        samples = samplelib.list_samples_full(limit=limit)
     except Exception:
         return []
     if not samples:
         return []
-    # 词频统计
+    # 词频统计（单报告处理长度设上限，防止极端超长文本拖垮接口）
     from collections import Counter
+    _MAX_CHARS = 4000
     freq: Counter = Counter()
-    for s in samples[-limit:]:
+    for s in samples:
         text = (s.get("report_text") or "") if isinstance(s, dict) else getattr(s, "report_text", "") or ""
-        text = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", text)
         if not text:
             continue
-        n = len(text)
-        for i in range(n):
-            for L in (4, 3, 2):
-                if i + L <= n:
-                    w = text[i:i + L]
-                    # 只统计「含中文且不全为数字字母」的词，过滤噪声
-                    if re.search(r"[\u4e00-\u9fa5]", w):
-                        freq[w] += 1
+        text = text[:_MAX_CHARS]
+        # 标点/空白替换为空格作为切词边界，避免跨标点把不相关的字拼成「伪词」
+        # （如「结节。复查」被拼成「结节复查」误导统计）
+        text = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]+", " ", text)
+        # 只对连续中文片段滑窗，英文/数字单词整体计一次
+        for seg in re.findall(r"[\u4e00-\u9fa5]{2,}", text):
+            n = len(seg)
+            for i in range(n):
+                for L in (4, 3, 2):
+                    if i + L <= n:
+                        freq[seg[i:i + L]] += 1
     if not freq:
         return []
     # 读取现有规则避免重复推荐

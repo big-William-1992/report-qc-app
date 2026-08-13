@@ -382,7 +382,7 @@ function _renderFindingList() {
       <span class="sev-badge ${m.cls}">${m.icon} ${m.label}</span>
       <div>
         <div class="finding-text">${escapeHtml(f.message)}</div>
-        <div class="finding-meta">${f.rule_id} · ${f.category || ''}${learnBtn}</div>
+        <div class="finding-meta">${f.rule_id} · ${escapeHtml(f.category || '')}${learnBtn}</div>
       </div>
     </li>`;
   }).join('');
@@ -2011,9 +2011,13 @@ async function ocrOneClick() {
 
     // 4) 先显式质控（saveToLibrary 内部仅当无质控结果时才补跑，必须强制对新识别文本运行），再入库
     toast('已识别并填充，正在质控…', 'info');
-    await runQC();
-    await saveToLibrary();
-    toast('识别 → 质控 → 导入 完成', 'success');
+    try {
+      await runQC();
+      await saveToLibrary();
+      toast('识别 → 质控 → 导入 完成', 'success');
+    } catch (err) {
+      toast('质控/入库失败：' + ((err && err.message) || err), 'error');
+    }
   } finally {
     _ocrOneClickBusy = false;
   }

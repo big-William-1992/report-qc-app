@@ -196,6 +196,7 @@ _WEBVIEW = None
 _CLIP_WATCH = False          # 监听开关（前端设置页控制）
 _CLIP_LAST = ""              # 上次已处理文本（去重）
 _CLIP_COOLDOWN = 0.0         # 防抖：同一时刻不重复处理
+_CLIP_LOCK = threading.Lock()   # 保护上述跨线程共享状态（监听线程 vs WebView 桥线程）
 
 
 def _norm_clip(s: str) -> str:
@@ -231,7 +232,11 @@ def _get_clipboard_text() -> str:
                 if not ptr:
                     return ""
                 try:
-                    return ctypes.wstring_at(ptr)
+                    # 读前先用 GlobalSize 约束长度，防异常巨型剪贴板内容读到超长串
+                    size = kernel32.GlobalSize(h)
+                    if size and size > 0 and size < 8 * 1024 * 1024:
+                        return ctypes.wstring_at(ptr)
+                    return ""
                 finally:
                     kernel32.GlobalUnlock(h)
             finally:
@@ -252,12 +257,17 @@ def _clipwatch_loop():
     global _CLIP_LAST, _CLIP_COOLDOWN
     while True:
         try:
-            if _CLIP_WATCH:
+            with _CLIP_LOCK:
+                watch = _CLIP_WATCH
+            if watch:
                 data = _norm_clip(_get_clipboard_text())
                 now = time.time()
-                if data and data != _CLIP_LAST and now - _CLIP_COOLDOWN > 2.0:
-                    _CLIP_LAST = data
-                    _CLIP_COOLDOWN = now
+                with _CLIP_LOCK:
+                    last, cooldown = _CLIP_LAST, _CLIP_COOLDOWN
+                if data and data != last and now - cooldown > 2.0:
+                    with _CLIP_LOCK:
+                        _CLIP_LAST = data
+                        _CLIP_COOLDOWN = now
                     import json as _json
                     # json.dumps 产出合法 JS 字符串字面量，换行/引号/反斜杠均安全
                     _eval_js("window.onClipboardCopy && onClipboardCopy("
@@ -294,16 +304,19 @@ class Bridge:
 
     def setClipWatch(self, on: bool):
         """前端设置页开关：开启后后台监听剪贴板，复制报告即自动质控。"""
-        global _CLIP_WATCH, _CLIP_LAST
-        _CLIP_WATCH = bool(on)
-        if on:
-            _CLIP_LAST = ""   # 开启即刻处理当前剪贴板里已复制的内容
-            print("[剪贴板] 监听已开启（复制即质控）")
-        else:
-            print("[剪贴板] 监听已关闭")
+        global _CLIP_WATCH, _CLIP_LAST, _CLIP_COOLDOWN
+        with _CLIP_LOCK:
+            _CLIP_WATCH = bool(on)
+            if on:
+                _CLIP_LAST = ""   # 开启即刻处理当前剪贴板里已复制的内容
+                _CLIP_COOLDOWN = 0.0
+                print("[剪贴板] 监听已开启（复制即质控）")
+            else:
+                print("[剪贴板] 监听已关闭")
 
     def getClipWatch(self):
-        return _CLIP_WATCH
+        with _CLIP_LOCK:
+            return _CLIP_WATCH
 
 
 def _eval_js(js: str):

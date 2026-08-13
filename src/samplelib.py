@@ -123,12 +123,18 @@ def get_sample(sid: int, path: str = None) -> dict:
         return dict(r) if r else {}
 
 
-def list_samples_full(path: str = None) -> list:
-    """返回样本全部字段（含 report_text / findings_json / scores_json），供导出报表使用。"""
+def list_samples_full(path: str = None, limit: int = None) -> list:
+    """返回样本全部字段（含 report_text / findings_json / scores_json），供导出报表使用。
+    limit 可选：>0 时只在 SQL 层取最近 N 条，避免全量载入长文本（扫描学习用）。"""
     init_db(path)
     with sqlite3.connect(path or db_path()) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM samples ORDER BY id DESC").fetchall()
+        if limit and limit > 0:
+            rows = conn.execute(
+                "SELECT * FROM samples ORDER BY id DESC LIMIT ?", (int(limit),)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM samples ORDER BY id DESC").fetchall()
         return [dict(r) for r in rows]
 
 

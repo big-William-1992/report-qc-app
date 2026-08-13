@@ -23,6 +23,7 @@ import hmac
 import hashlib
 import base64
 import json
+import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -111,10 +112,21 @@ def _emp_from_auth(authorization: Optional[str]) -> Optional[str]:
 
 def require_emp(authorization: Optional[str] = Header(None),
                  x_emp_id: Optional[str] = Header(None)) -> str:
-    """写操作鉴权：Bearer token 或内网 X-Emp-Id 头，二选一。"""
+    """写操作鉴权：Bearer token 或内网 X-Emp-Id 头，二选一。
+    回退到 X-Emp-Id 时必须校验工号真实存在，防止远程任意填头冒充他人。"""
     emp = _emp_from_auth(authorization) or (x_emp_id or "").strip()
     if not emp:
         raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token> 或 X-Emp-Id 头")
+    if not _emp_from_auth(authorization):
+        # 仅当来自 X-Emp-Id 头（非 Bearer token）时校验工号存在性
+        try:
+            import src.accounts as _acct
+            if not _acct.account_exists(emp):
+                raise HTTPException(401, "X-Emp-Id 工号不存在")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
     return emp
 
 
@@ -704,9 +716,14 @@ async def sample_import_upload(file: UploadFile = File(...), emp: str = Depends(
     """浏览器端上传 CSV/JSON 文件导入样本库。"""
     import tempfile
     suffix = os.path.splitext(file.filename or "import.csv")[1] or ".csv"
+    # 上传体积上限（与 OCR 上传一致），防止超大文件一次性读入内存造成 DoS
+    _MAX_IMPORT_BYTES = 20 * 1024 * 1024
+    data = await file.read(_MAX_IMPORT_BYTES + 1)
+    if len(data) > _MAX_IMPORT_BYTES:
+        raise HTTPException(413, f"导入文件超过 {_MAX_IMPORT_BYTES // (1024 * 1024)}MB 上限")
     tf = tempfile.NamedTemporaryFile("wb", suffix=suffix, delete=False)
     try:
-        tf.write(await file.read())
+        tf.write(data)
         tf.close()
         inserted, skipped = samplelib.import_samples(tf.name)
         return _envelope(True, "OK", {"inserted": inserted, "skipped": skipped})
@@ -721,12 +738,12 @@ async def sample_import_upload(file: UploadFile = File(...), emp: str = Depends(
 
 # ----------------------------- 统计 -----------------------------
 @app.get("/api/v1/stats/error-types")
-def stats_error_types():
+def stats_error_types(emp: str = Depends(require_emp_local)):
     return _envelope(True, "OK", samplelib.stats_by_error_type())
 
 
 @app.get("/api/v1/stats/trend")
-def stats_trend():
+def stats_trend(emp: str = Depends(require_emp_local)):
     return _envelope(True, "OK", samplelib.stats_by_date())
 
 
@@ -812,7 +829,7 @@ class QueueItemReq(BaseModel):
 
 
 @app.get("/api/v1/queue")
-def queue_list():
+def queue_list(emp: str = Depends(require_emp_local)):
     items = _load_queue()
     return _envelope(True, "OK", {"items": items, "count": len(items)})
 
@@ -872,6 +889,9 @@ _SHOT_MAX_W = 1600          # 传给前端的缩略图最大宽度（省带宽�
 # OCR 结果缓存：按「区域 key + 裁剪图指纹」缓存识别文本，画面未变时跳过推理，降低重识别卡顿。
 _OCR_CACHE: Dict[str, Any] = {}     # region_key -> {"sig": tuple, "text": str}
 _OCR_CACHE_MAX = 12
+# 截屏/识别共享全局（_SHOT/_OCR_CACHE）并发锁：热键连按 + SPA 同时触发时，
+# 防止「一个请求重抓屏覆盖另一个正在裁剪的原图」「缓存读写非原子」的竞态。
+_OCR_LOCK = threading.Lock()
 
 
 class ScreenRegion(BaseModel):
@@ -910,11 +930,12 @@ def _grab_fullscreen():
 def screen_capture(emp: str = Depends(require_emp_local)):
     """抓取整屏，返回缩略图 base64（原图缓存于服务端供后续高精度裁剪）。"""
     try:
-        img = _grab_fullscreen()
+        with _OCR_LOCK:
+            img = _grab_fullscreen()
+            _SHOT["img"], _SHOT["w"], _SHOT["h"], _SHOT["ts"] = img, img.width, img.height, time.time()
     except Exception as exc:
         return JSONResponse(status_code=503,
                             content=_envelope(False, "SCREEN_UNAVAILABLE", None, str(exc)))
-    _SHOT["img"], _SHOT["w"], _SHOT["h"], _SHOT["ts"] = img, img.width, img.height, time.time()
     thumb = img
     if img.width > _SHOT_MAX_W:
         ratio = _SHOT_MAX_W / float(img.width)
@@ -938,54 +959,55 @@ def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local)):
         return JSONResponse(status_code=503,
                             content=_envelope(False, "OCR_UNAVAILABLE", None, why))
     img = _SHOT.get("img")
-    if req.refresh or img is None:
-        try:
-            img = _grab_fullscreen()
-            _SHOT["img"], _SHOT["w"], _SHOT["h"], _SHOT["ts"] = \
-                img, img.width, img.height, time.time()
-        except Exception as exc:
-            return JSONResponse(status_code=503,
-                                content=_envelope(False, "SCREEN_UNAVAILABLE", None, str(exc)))
-    W, H = img.width, img.height
-    texts: Dict[str, str] = {}
-    errors: Dict[str, str] = {}
-
-    if req.dynamic:
-        # ---- 动态语义识别：整屏 OCR 一次，按标题在文本流中切分 ----
-        # 固定像素框在 PACS 内容上下/左右滚动后会错位；本模式不依赖坐标，
-        # 只依赖「检查所见/影像描述 → 描述段、诊断印象/结论 → 诊断段」的文本顺序。
-        # 滚动改变的是屏幕上的像素位置，不改变文本流顺序，故怎么滚都能识别对。
-        try:
-            full = ocr_provider.ocr_image(img) or ""
-            texts, errors = _split_dynamic(full)
-        except Exception as exc:
-            errors["_dynamic"] = str(exc)
-    else:
-        # ---- 固定框位模式（原逻辑，供精确框选场景）----
-        for role, r in (req.regions or {}).items():
-            x0 = max(0, min(W - 1, int(r.x * W)))
-            y0 = max(0, min(H - 1, int(r.y * H)))
-            x1 = max(x0 + 1, min(W, int((r.x + r.w) * W)))
-            y1 = max(y0 + 1, min(H, int((r.y + r.h) * H)))
-            crop = img.crop((x0, y0, x1, y1))
-            # 画面未变则直接复用上次识别结果，跳过 CPU 推理（解决重复识别卡顿）
+    with _OCR_LOCK:
+        if req.refresh or img is None:
             try:
-                sig = ocr_provider.image_signature(crop)
-            except Exception:
-                sig = None
-            cached = _OCR_CACHE.get(role)
-            if cached and cached.get("sig") == sig:
-                texts[role] = cached.get("text") or ""
-                continue
-            try:
-                txt = ocr_provider.ocr_image(crop) or ""
-                texts[role] = txt
-                _OCR_CACHE[role] = {"sig": sig, "text": txt}
-                if len(_OCR_CACHE) > _OCR_CACHE_MAX:
-                    _OCR_CACHE.pop(next(iter(_OCR_CACHE)))
+                img = _grab_fullscreen()
+                _SHOT["img"], _SHOT["w"], _SHOT["h"], _SHOT["ts"] = \
+                    img, img.width, img.height, time.time()
             except Exception as exc:
-                texts[role] = ""
-                errors[role] = str(exc)
+                return JSONResponse(status_code=503,
+                                    content=_envelope(False, "SCREEN_UNAVAILABLE", None, str(exc)))
+        W, H = img.width, img.height
+        texts: Dict[str, str] = {}
+        errors: Dict[str, str] = {}
+
+        if req.dynamic:
+            # ---- 动态语义识别：整屏 OCR 一次，按标题在文本流中切分 ----
+            # 固定像素框在 PACS 内容上下/左右滚动后会错位；本模式不依赖坐标，
+            # 只依赖「检查所见/影像描述 → 描述段、诊断印象/结论 → 诊断段」的文本顺序。
+            # 滚动改变的是屏幕上的像素位置，不改变文本流顺序，故怎么滚都能识别对。
+            try:
+                full = ocr_provider.ocr_image(img) or ""
+                texts, errors = _split_dynamic(full)
+            except Exception as exc:
+                errors["_dynamic"] = str(exc)
+        else:
+            # ---- 固定框位模式（原逻辑，供精确框选场景）----
+            for role, r in (req.regions or {}).items():
+                x0 = max(0, min(W - 1, int(r.x * W)))
+                y0 = max(0, min(H - 1, int(r.y * H)))
+                x1 = max(x0 + 1, min(W, int((r.x + r.w) * W)))
+                y1 = max(y0 + 1, min(H, int((r.y + r.h) * H)))
+                crop = img.crop((x0, y0, x1, y1))
+                # 画面未变则直接复用上次识别结果，跳过 CPU 推理（解决重复识别卡顿）
+                try:
+                    sig = ocr_provider.image_signature(crop)
+                except Exception:
+                    sig = None
+                cached = _OCR_CACHE.get(role)
+                if cached and cached.get("sig") == sig:
+                    texts[role] = cached.get("text") or ""
+                    continue
+                try:
+                    txt = ocr_provider.ocr_image(crop) or ""
+                    texts[role] = txt
+                    _OCR_CACHE[role] = {"sig": sig, "text": txt}
+                    if len(_OCR_CACHE) > _OCR_CACHE_MAX:
+                        _OCR_CACHE.pop(next(iter(_OCR_CACHE)))
+                except Exception as exc:
+                    texts[role] = ""
+                    errors[role] = str(exc)
     meta = {}
     try:
         meta = engine.extract_meta_full(texts.get("basic", ""),
@@ -1047,18 +1069,27 @@ def _split_dynamic(full: str) -> (Dict[str, str], Dict[str, str]):
                 i_idx = j
                 break
     # basic：起始（或患者标题）→ 描述标题（或诊断标题）
-    b_start = b_idx if b_idx >= 0 else 0
+    # 注意：若「患者」标题出现在描述/诊断之后（部分 PACS 布局），b_start > end，
+    # 直接取起始段即可（lines[0:end]），避免 basic 被截成空串。
     if f_idx >= 0:
-        texts["basic"] = "\n".join(lines[b_start:f_idx]).strip()
+        end = i_idx if i_idx > f_idx else len(lines)
     elif i_idx >= 0:
-        texts["basic"] = "\n".join(lines[b_start:i_idx]).strip()
+        end = i_idx
     else:
-        texts["basic"] = "\n".join(lines[b_start:]).strip()
+        end = len(lines)
+    b_start = b_idx if 0 <= b_idx < end else 0
+    texts["basic"] = "\n".join(lines[b_start:end]).strip()
     # findings：从描述标题行开始（含该行正文，标题词被剥掉）→ 诊断标题行前
+    # 注意跳过中间的患者标题行（部分 PACS 布局把患者信息插在描述段里），
+    # 避免「患者：张三」等 basic 内容混入描述正文。
     if f_idx >= 0:
         end = i_idx if i_idx > f_idx else len(lines)
         head = _strip_title(lines[f_idx], _FINDINGS_TITLES)
-        body = [head] + [ln for ln in lines[f_idx + 1:end]]
+        body = [head]
+        for ln in lines[f_idx + 1:end]:
+            if b_idx >= 0 and b_idx != f_idx and any(p in ln for p in _BASIC_TITLES):
+                continue
+            body.append(ln)
         texts["findings"] = "\n".join(body).strip()
     # impression：从诊断标题行开始（含该行正文，标题词被剥掉）→ 末尾
     if i_idx >= 0:
@@ -1102,7 +1133,7 @@ def _ocr_config_path() -> str:
 
 
 @app.get("/api/v1/screen/regions")
-def screen_regions_get():
+def screen_regions_get(emp: str = Depends(require_emp_local)):
     """读取 SPA 侧保存的比例框（web_regions）。"""
     try:
         with open(_ocr_config_path(), encoding="utf-8") as fh:
@@ -1151,7 +1182,7 @@ def _settings_path() -> str:
 
 
 @app.get("/api/v1/settings")
-def settings_get():
+def settings_get(emp: str = Depends(require_emp_local)):
     data = dict(_DEFAULT_SETTINGS)
     try:
         with open(_settings_path(), encoding="utf-8") as fh:
@@ -1190,7 +1221,7 @@ def settings_put(cfg: Dict[str, Any], emp: str = Depends(require_emp_local)):
 
 # ----------------------------- 规则配置（供规则维护页编辑） -----------------------------
 @app.get("/api/v1/qc/rules/config")
-def qc_rules_config_get():
+def qc_rules_config_get(emp: str = Depends(require_emp_local)):
     """返回可编辑的规则配置：R8 错别字表 / R9 矛盾对 / 忽略词 / 模板规范。"""
     return _envelope(True, "OK", engine.load_rules_config())
 
