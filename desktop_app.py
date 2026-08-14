@@ -178,13 +178,107 @@ except Exception:
     _HAVE_PYNPUT = False
 
 # 默认全局热键（与 SPA 默认快捷键一致）。
-# 注意：SPA 设置页重绑快捷键不会自动同步到全局热键（v1 已知限制）。
+# 设置页重绑后经 Bridge.applyGlobalHotkeys 同步到这里（后台热键跟随自定义）。
 GLOBAL_HOTKEYS = {
     "<ctrl>+<enter>": "runQC()",
     "<ctrl>+s": "saveToLibrary()",
     "<ctrl>+t": "toggleTheme()",
     "<ctrl>+<shift>+o": "ocrHotkey()",
 }
+# 当前生效的全局热键映射（默认=上面；设置页保存后替换）
+_ACTIVE_HOTKEYS = dict(GLOBAL_HOTKEYS)
+_HOTKEY_LOCK = threading.Lock()          # 保护 _ACTIVE_HOTKEYS 并发读写
+_HOTKEY_LISTENER = None                  # pynput GlobalHotKeys 实例（需在 Listener 线程运行）
+
+
+def _mods_to_pynput(mods, key) -> str:
+    """把 SPA 的 {mods:['ctrl','shift'], key:'o'} 转成 pynput 组合串
+    '<ctrl>+<shift>+o'。key 只取单个字符（如 'Enter'→'<enter>'）。"""
+    parts = []
+    for m in (mods or []):
+        m = str(m).lower()
+        if m == 'ctrl': parts.append('<ctrl>')
+        elif m == 'shift': parts.append('<shift>')
+        elif m == 'alt': parts.append('<alt>')
+        elif m == 'meta': parts.append('<cmd>')
+    k = str(key or '').strip()
+    if not k:
+        return ''
+    k_low = k.lower()
+    if len(k) == 1 and k.isalnum():
+        parts.append(k_low)
+    else:
+        # Enter/Tab/F1..F12/空格 等命名键
+        named = {'enter': 'enter', 'tab': 'tab', 'space': 'space', 'esc': 'esc',
+                 'escape': 'esc', 'up': 'up', 'down': 'down', 'left': 'left',
+                 'right': 'right', 'delete': 'delete', 'backspace': 'backspace',
+                 'home': 'home', 'end': 'end', 'pageup': 'page_up', 'pagedown': 'page_down',
+                 'insert': 'insert'}
+        if k_low in named:
+            parts.append('<' + named[k_low] + '>')
+        elif k_low.startswith('f') and k_low[1:].isdigit():
+            parts.append('<' + k_low + '>')
+        else:
+            parts.append(k_low)   # 兜底
+    return '+'.join(parts)
+
+
+def apply_global_hotkeys(shortcuts: dict) -> bool:
+    """设置页保存快捷键后调用：把自定义组合同步到全局后台热键。
+    shortcuts 形如 {run_qc:{mods:['ctrl'],key:'Enter'}, ocr_capture:{mods:['ctrl','shift'],key:'o'}, ...}"""
+    if not _HAVE_PYNPUT:
+        return False
+    mapping = {}
+    actions = {
+        'run_qc': 'runQC()',
+        'save_sample': 'saveToLibrary()',
+        'paste_split': 'pasteAndSplit()',
+        'ocr_capture': 'ocrHotkey()',
+        'toggle_theme': 'toggleTheme()',
+    }
+    for act, js in actions.items():
+        sc = (shortcuts or {}).get(act)
+        if not sc or not sc.get('key'):
+            continue
+        combo = _mods_to_pynput(sc.get('mods'), sc.get('key'))
+        if combo:
+            mapping[combo] = js
+    with _HOTKEY_LOCK:
+        global _ACTIVE_HOTKEYS
+        _ACTIVE_HOTKEYS = mapping or dict(GLOBAL_HOTKEYS)
+    _restart_hotkey_listener()
+    return True
+
+
+def _restart_hotkey_listener():
+    """停止并重启全局热键监听器（在独立线程），使新映射立即生效。"""
+    global _HOTKEY_LISTENER
+    try:
+        if _HOTKEY_LISTENER is not None:
+            _HOTKEY_LISTENER.stop()
+    except Exception:
+        pass
+    _HOTKEY_LISTENER = None
+    threading.Thread(target=_run_hotkey_listener, daemon=True).start()
+
+
+def _run_hotkey_listener():
+    global _HOTKEY_LISTENER
+    try:
+        with _HOTKEY_LOCK:
+            mapping = dict(_ACTIVE_HOTKEYS)
+        bindings = {combo: (lambda js=js: _eval_js(js))
+                    for combo, js in mapping.items()}
+        if not bindings:
+            print("[全局热键] 无自定义快捷键，使用默认")
+            bindings = {combo: (lambda js=js: _eval_js(js))
+                        for combo, js in GLOBAL_HOTKEYS.items()}
+        hot = _pynput_kb.GlobalHotKeys(bindings)
+        _HOTKEY_LISTENER = hot
+        print(f"[全局热键] 已注册 {len(bindings)} 个：", ", ".join(bindings.keys()))
+        hot.run()   # 阻塞直到 stop()
+    except Exception as e:
+        print(f"[警告] 全局热键启动失败（可能缺少辅助功能/输入监控权限）：{e}")
 
 # pywebview 模块引用（main 中按需导入后写入，便于后台线程调用）
 _WEBVIEW = None
@@ -318,6 +412,15 @@ class Bridge:
         with _CLIP_LOCK:
             return _CLIP_WATCH
 
+    def applyGlobalHotkeys(self, shortcuts: dict):
+        """设置页保存快捷键后调用：把自定义组合同步到全局后台热键并即时生效。"""
+        try:
+            ok = apply_global_hotkeys(shortcuts or {})
+            return ok
+        except Exception as e:  # noqa: BLE001
+            print("[全局热键] applyGlobalHotkeys 失败:", e)
+            return False
+
 
 def _eval_js(js: str):
     if _WEBVIEW is None:
@@ -330,19 +433,12 @@ def _eval_js(js: str):
 
 
 def _start_hotkeys():
-    """后台线程：注册系统级全局热键，触发时调用 SPA 内对应全局函数。"""
+    """后台线程：注册系统级全局热键（支持设置页自定义重绑），触发时调用 SPA 内对应函数。"""
     if not _HAVE_PYNPUT:
         print("[提示] 未安装 pynput，全局快捷键（后台热键）不可用；"
               "窗口聚焦时仍可用 SPA 内快捷键。安装：pip install pynput")
         return
-    try:
-        bindings = {combo: (lambda js=js: _eval_js(js))
-                    for combo, js in GLOBAL_HOTKEYS.items()}
-        hot = _pynput_kb.GlobalHotKeys(bindings)
-        print(f"[全局热键] 已注册 {len(bindings)} 个：", ", ".join(GLOBAL_HOTKEYS.keys()))
-        hot.run()
-    except Exception as e:
-        print(f"[警告] 全局热键启动失败（可能缺少辅助功能/输入监控权限）：{e}")
+    _run_hotkey_listener()
 
 
 # 冻结（PyInstaller，console=False）后 sys.stdout/sys.stderr 为 None。

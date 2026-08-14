@@ -540,6 +540,11 @@ async function loadSettings(applyUI = true) {
     const rf = document.getElementById('ocrRefresh');
     if (rf) rf.checked = !!APP_SETTINGS.screen_refresh_on_ocr;
     updateShortcutHints();
+    // 启动时同步已保存的自定义快捷键到全局后台热键（持久化后跨重启生效）
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.applyGlobalHotkeys
+        && APP_SETTINGS.shortcuts) {
+      window.pywebview.api.applyGlobalHotkeys(APP_SETTINGS.shortcuts).catch(function () {});
+    }
   }
   return APP_SETTINGS;
 }
@@ -619,6 +624,10 @@ async function saveSettings() {
     const u = document.getElementById('mUser'); if (u) u.value = payload.emp_id;
     const rf = document.getElementById('ocrRefresh'); if (rf) rf.checked = payload.screen_refresh_on_ocr;
     updateShortcutHints();
+    // 同步自定义快捷键到桌面壳全局后台热键（PACS 聚焦时也能用新组合）
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.applyGlobalHotkeys) {
+      window.pywebview.api.applyGlobalHotkeys(payload.shortcuts || {}).catch(function () {});
+    }
     closeSettings();
     toast('设置已保存并生效', 'success');
   } catch (e) { toast('保存设置失败: ' + e.message, 'error'); }
