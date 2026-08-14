@@ -291,8 +291,8 @@ async function runQC() {
     const scoreObj = data.data.score || {};
     const scores = {};
     for (const [k, v] of Object.entries(scoreObj)) scores[scoreMap[k] || k] = v;
-    const findings = (data.data.findings || []).map(f => ({ ...f, category: f.error_type }));
-    renderQCResult({ findings, scores });
+    const qcFindings = (data.data.findings || []).map(f => ({ ...f, category: f.error_type }));
+    renderQCResult({ findings: qcFindings, scores });
     return true;
 
   } catch (err) {
