@@ -318,6 +318,10 @@
           <div class="card" style="flex:1">
             <div class="card-header">
               <h3><span class="icon">🔍</span> 质控发现</h3>
+              <div class="card-header-tabs">
+                <button class="qctab active" id="qctabList" onclick="showQcTab('list')">问题列表</button>
+                <button class="qctab" id="qctabAnno" onclick="showQcTab('anno')">原文标注</button>
+              </div>
               <div class="card-header-actions" id="findingFilterBar" style="display:none">
                 <button class="sev-filter active" data-sev="all" onclick="setSevFilter('all')">全部</button>
                 <button class="sev-filter" data-sev="high" onclick="setSevFilter('high')">⛔ 严重</button>
@@ -332,6 +336,8 @@
                 <p>运行质控后在此显示发现</p>
               </div>
               <ul class="finding-list" id="findingList" style="display:none"></ul>
+              <!-- 原文标注视图：描述/诊断原文中按 span 高亮错误词（红=严重/橙=警告/灰=提示） -->
+              <div id="annoView" style="display:none"></div>
             </div>
           </div>
         </div>

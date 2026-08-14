@@ -672,6 +672,31 @@ textarea.qc-textarea:focus {
   color: var(--text-muted); font-size: 13px; text-align: center;
 }
 .error-row .empty-icon { font-size: 26px; }
+
+/* 质控发现：问题列表 / 原文标注 tab */
+.card-header-tabs { display: flex; gap: 4px; margin-right: 8px; }
+.qctab {
+  padding: 3px 10px; font-size: 12px; border: 1px solid var(--border-color, #cbd5e0);
+  border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer;
+}
+.qctab.active { background: var(--primary, #2d6cdf); color: #fff; border-color: var(--primary, #2d6cdf); }
+
+/* 原文标注视图 */
+.anno-legend { display: flex; gap: 14px; margin-bottom: 10px; font-size: 12px; color: var(--text-muted); }
+.anno-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.anno-swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.anno-swatch.anno-danger { background: var(--danger, #e5484d); }
+.anno-swatch.anno-warning { background: var(--warning, #e8941a); }
+.anno-swatch.anno-info { background: var(--text-secondary, #7a8699); }
+.anno-text {
+  font-size: 13px; line-height: 1.8; white-space: pre-wrap; word-break: break-all;
+  padding: 10px 12px; background: var(--input-bg, #f8fafc); border: 1px solid var(--border-color, #e3e8f0);
+  border-radius: 8px; color: var(--text-primary);
+}
+mark.anno-mark { padding: 1px 3px; border-radius: 3px; font-weight: 600; }
+mark.anno-danger { background: rgba(229, 72, 77, 0.16); color: var(--danger, #d64545); border-bottom: 2px solid var(--danger, #e5484d); }
+mark.anno-warning { background: rgba(232, 148, 26, 0.16); color: var(--warning, #c78a1a); border-bottom: 2px solid var(--warning, #e8941a); }
+mark.anno-info { background: rgba(122, 134, 153, 0.14); color: var(--text-secondary, #5b6472); border-bottom: 1px dashed var(--text-secondary, #94a3b8); }
 .finding-item {
   display: flex;
   align-items: flex-start;

@@ -352,11 +352,19 @@ function _showQcError(err) {
 
 let _qcAllFindings = [];        // 最近一次质控全部发现（供严重度筛选）
 let _qcSevFilter = 'all';       // 当前严重度筛选
+let _qcAnnoText = '';           // 原文标注：报告全文（描述+结论拼接，与 span 对齐）
+let _qcAnnoFindings = [];       // 原文标注用 finding（含 span）
 
 function renderQCResult(data) {
   const { findings, scores } = data;
   _qcAllFindings = findings || [];
   _qcSevFilter = 'all';
+
+  // 保存原文标注数据：报告原文 = 描述 + 结论（与 /api/v1/qc/check 的 report 拼接一致）
+  const fEl2 = document.getElementById('findingsText');
+  const iEl2 = document.getElementById('impressionText');
+  _qcAnnoText = [fEl2 && fEl2.value, iEl2 && iEl2.value].filter(Boolean).join('\n');
+  _qcAnnoFindings = (_qcAllFindings || []).filter(f => Array.isArray(f.span) && f.span.length === 2 && f.span[1] > f.span[0]);
 
   // 渲染评分
   renderScore('scoreAcc', 'accuracy', scores.accuracy || 0);
@@ -366,6 +374,64 @@ function renderQCResult(data) {
 
   // 渲染发现列表（按严重度筛选后）
   _renderFindingList();
+  // 同步刷新原文标注视图（若当前在标注页）
+  renderAnnotatedText();
+}
+
+// 质控发现卡片：问题列表 / 原文标注 两个 tab 切换
+function showQcTab(tab) {
+  const listBox = document.getElementById('findingList');
+  const anno = document.getElementById('annoView');
+  const empty = document.getElementById('findingEmpty');
+  const btnL = document.getElementById('qctabList');
+  const btnA = document.getElementById('qctabAnno');
+  if (btnL) btnL.classList.toggle('active', tab === 'list');
+  if (btnA) btnA.classList.toggle('active', tab === 'anno');
+  if (tab === 'anno') {
+    renderAnnotatedText();   // 每次进入都刷新
+    if (listBox) listBox.style.display = 'none';
+    if (empty) empty.style.display = 'none';
+    if (anno) anno.style.display = 'block';
+  } else {
+    if (anno) anno.style.display = 'none';
+    _renderFindingList();    // 恢复列表视图
+  }
+}
+
+// 原文标注：把发现按 span 高亮在原文对应位置（红=严重/橙=警告/灰=提示）
+function renderAnnotatedText() {
+  const box = document.getElementById('annoView');
+  if (!box) return;
+  const text = _qcAnnoText;
+  if (!text) { box.innerHTML = ''; return; }
+  const fds = _qcAnnoFindings;
+  if (!fds.length) {
+    box.innerHTML = '<div class="empty-state" style="padding:16px"><div class="empty-icon">✅</div><p>未发现需要标注的问题</p></div>';
+    return;
+  }
+  // 按 span 收集高亮片段（span 相对全文，可直接切）
+  const marks = fds.map(f => ({
+    s: f.span[0], e: f.span[1], sev: f.severity || 'low', msg: f.message || ''
+  })).sort((a, b) => a.s - b.s);
+  // 去重叠：后面的标记不覆盖已标记区间（取更严重者优先——已排序则保留先出现）
+  let html = '', pos = 0;
+  const sevCls = { high: 'anno-danger', medium: 'anno-warning', low: 'anno-info' };
+  for (const m of marks) {
+    const s = Math.max(pos, m.s), e = Math.max(s, m.e);
+    if (s > text.length) break;
+    html += escapeHtml(text.slice(pos, s));
+    const seg = text.slice(s, e);
+    if (seg) {
+      html += `<mark class="anno-mark ${sevCls[m.sev] || 'anno-info'}" title="${escapeHtml(m.msg)}">${escapeHtml(seg)}</mark>`;
+    }
+    pos = e;
+  }
+  html += escapeHtml(text.slice(pos));
+  box.innerHTML =
+    `<div class="anno-legend"><span class="anno-legend-item"><i class="anno-swatch anno-danger"></i>严重</span>` +
+    `<span class="anno-legend-item"><i class="anno-swatch anno-warning"></i>警告</span>` +
+    `<span class="anno-legend-item"><i class="anno-swatch anno-info"></i>提示</span></div>` +
+    `<div class="anno-text">${html}</div>`;
 }
 
 function _renderFindingList() {
