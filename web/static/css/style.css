@@ -665,6 +665,13 @@ textarea.qc-textarea:focus {
 
 /* 发现列表 */
 .finding-list { list-style: none; }
+/* 加载/错误行（承载在 finding-list 的 li 内，避免覆盖容器销毁子元素） */
+.loading-row, .error-row {
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 8px; padding: 32px 12px;
+  color: var(--text-muted); font-size: 13px; text-align: center;
+}
+.error-row .empty-icon { font-size: 26px; }
 .finding-item {
   display: flex;
   align-items: flex-start;

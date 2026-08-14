@@ -260,13 +260,16 @@ async function runQC() {
   }
 
   // 显示加载状态（元素可能不存在：剪贴板/热键触发时若未切到质控页，跳过而不崩）
+  // 关键：不能覆盖 findingListContainer 的 innerHTML——那会销毁其子元素
+  // findingEmpty/findingList，导致后续 _renderFindingList 里 getElementById
+  // 找不到 ul、loading 永远不消失（一直转圈）。只切换子元素显示。
   const fe = document.getElementById('findingEmpty');
   const fl = document.getElementById('findingList');
-  const fc = document.getElementById('findingListContainer');
   if (fe) fe.style.display = 'none';
-  if (fl) fl.style.display = 'none';
-  if (fc) fc.innerHTML =
-    '<div class="loading-spinner"><div class="spinner"></div>正在运行质控引擎...</div>';
+  if (fl) {
+    fl.style.display = 'block';
+    fl.innerHTML = '<li class="loading-row"><div class="spinner"></div>正在运行质控引擎...</li>';
+  }
 
   try {
     const report = [findings, impression].filter(Boolean).join('\n');
@@ -332,12 +335,17 @@ function _showQcError(err) {
   } else {
     hint = '发生未知错误，请截图反馈给管理员，并附上操作步骤。';
   }
-  const errBox = document.getElementById('findingListContainer');
+  // 错误也显示在 findingList(ul) 内，保持 findingEmpty/findingList 子元素结构
+  // （不覆盖 findingListContainer.innerHTML，否则下次 runQC 找不到 ul 又转圈）
+  const errBox = document.getElementById('findingList');
+  const emptyEl = document.getElementById('findingEmpty');
+  if (emptyEl) emptyEl.style.display = 'none';
   if (errBox) {
+    errBox.style.display = 'block';
     errBox.innerHTML =
-      `<div class="empty-state"><div class="empty-icon">${icon}</div>` +
+      `<li class="error-row"><div class="empty-icon">${icon}</div>` +
       `<p><b>质控运行出错</b></p><p style="font-size:12px;color:var(--text-muted)">${hint}</p>` +
-      `<p style="font-size:11px;color:var(--text-muted);opacity:.7">${escapeHtml(msg)}</p></div>`;
+      `<p style="font-size:11px;color:var(--text-muted);opacity:.7">${escapeHtml(msg)}</p></li>`;
   }
   toast('质控运行出错: ' + msg, 'error');
 }
@@ -368,11 +376,11 @@ function _renderFindingList() {
   const listContainer = document.getElementById('findingListContainer');
 
   const findings = _qcAllFindings;
+  const emptyEl = document.getElementById('findingEmpty');
+  // 空结果：显示空态（findingEmpty），隐藏 ul——不再覆盖容器 innerHTML
   if (!findings || findings.length === 0) {
-    if (listContainer) {
-      listContainer.innerHTML =
-        '<div class="empty-state"><div class="empty-icon">✅</div><p>未发现问题，报告质量良好</p></div>';
-    }
+    if (emptyEl) emptyEl.style.display = 'block';
+    if (listEl) listEl.style.display = 'none';
     if (countEl) countEl.textContent = '0 条';
     if (filterBar) filterBar.style.display = 'none';
     return;
@@ -385,6 +393,7 @@ function _renderFindingList() {
   if (filterBar) filterBar.style.display = 'flex';
   if (countEl) countEl.textContent = filtered.length + ' / ' + findings.length + ' 条';
   if (!listEl) return;   // 非质控页：渲染结果留给下次进入质控页时展示
+  if (emptyEl) emptyEl.style.display = 'none';
   listEl.innerHTML = filtered.map(f => {
     const m = SEV_META[f.severity] || SEV_META.low;
     // R8 同音错别字：提供「采纳修正」——把错词→正确词写入规则库，下次自动识别（P0 修正反馈闭环）
@@ -453,10 +462,13 @@ function clearInput() {
     if (bar) { bar.style.width = '0%'; }
   });
 
-  // 重置发现（元素仅质控页存在，缺失时跳过不崩）
+  // 重置发现（只切换子元素显示，不覆盖容器——避免销毁 findingEmpty/findingList）
   const flc = document.getElementById('findingListContainer');
-  if (flc) flc.innerHTML =
-    '<div class="empty-state" id="findingEmpty"><div class="empty-icon">📭</div><p>运行质控后在此显示发现</p></div>';
+  const fe2 = document.getElementById('findingEmpty');
+  const fl2 = document.getElementById('findingList');
+  if (fe2) { fe2.style.display = 'block'; fe2.innerHTML =
+    '<div class="empty-icon">📭</div><p>运行质控后在此显示发现</p>'; }
+  if (fl2) fl2.style.display = 'none';
   const fcnt = document.getElementById('findingCount');
   if (fcnt) fcnt.textContent = '0 条';
 }
