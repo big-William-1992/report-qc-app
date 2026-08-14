@@ -1250,6 +1250,17 @@ def qc_rules_config_put(cfg: Dict[str, Any], emp: str = Depends(require_emp_loca
         raise HTTPException(500, str(exc))
 
 
+@app.post("/api/v1/qc/rules/config/reset")
+def qc_rules_config_reset(emp: str = Depends(require_emp_local)):
+    """恢复出厂默认规则库（覆盖用户自定义）。"""
+    try:
+        cfg = engine.default_rules_config()
+        engine.save_rules_config(cfg)
+        return _envelope(True, "OK", engine.load_rules_config(), "已恢复默认规则库")
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+
 class LearnTypoReq(BaseModel):
     wrong: str = ""
     correct: str = ""

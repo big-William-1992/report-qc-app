@@ -1348,42 +1348,79 @@ async function adoptScanCandidate(btn, idx) {
   }
 }
 
+// 规则词表维护界面的数据快照（用于恢复默认/取消编辑）
+let _cfgSnapshot = null;
+
 async function loadRulesConfig(silent = false) {
   try {
     const res = await fetch('/api/v1/qc/rules/config');
     const data = await res.json();
     const cfg = (data.data || {});
     const typos = cfg.typos || {};
+    // 错字表按错词排序，长表更易查
     document.getElementById('cfgTypos').value =
-      Object.entries(typos).map(([k, v]) => `${k}=${v}`).join('\n');
+      Object.keys(typos).sort((a, b) => a.localeCompare(b, 'zh'))
+        .map(k => `${k}=${typos[k]}`).join('\n');
     const conflicts = cfg.conflicts || [];
     document.getElementById('cfgConflicts').value =
       conflicts
         .map(c => Array.isArray(c) ? c.join('|') : [c.a, c.b].join('|'))
         .filter(ln => ln.split('|').every(s => s.trim()) && ln.split('|')[0] !== ln.split('|')[1])
+        .sort((a, b) => a.localeCompare(b, 'zh'))
         .join('\n');
     const ignores = cfg.ignores || [];
-    document.getElementById('cfgIgnores').value = ignores.map(String).join('\n');
+    document.getElementById('cfgIgnores').value = ignores.map(String).sort((a, b) => a.localeCompare(b, 'zh')).join('\n');
     const tpl = cfg.template || {};
     document.getElementById('cfgTplFollowup').checked = !!tpl.require_followup;
     // R19 读音相似错字（高频词组锚定）；默认开启
     const r19El = document.getElementById('cfgR19');
     if (r19El) r19El.checked = cfg.enable_r19 !== false;
+    // 快照：供「恢复默认/撤销编辑」使用
+    _cfgSnapshot = {
+      typos: document.getElementById('cfgTypos').value,
+      conflicts: document.getElementById('cfgConflicts').value,
+      ignores: document.getElementById('cfgIgnores').value,
+    };
+    updateCfgStats();   // 统计规则条数
     if (!silent) toast('规则配置已载入', 'success');
   } catch (e) {
     if (!silent) toast('载入规则配置失败: ' + e.message, 'error');
   }
 }
 
+// 实时统计各词表条数（供界面展示）
+function updateCfgStats() {
+  const count = (txt) => txt.split('\n').map(s => s.trim()).filter(Boolean).length;
+  const el = (id) => document.getElementById(id);
+  const nTypos = count(el('cfgTypos').value || '');
+  const nConf = count(el('cfgConflicts').value || '');
+  const nIg = count(el('cfgIgnores').value || '');
+  const stat = el('cfgStats');
+  if (stat) stat.textContent = `共 ${nTypos} 条错字 · ${nConf} 条矛盾对 · ${nIg} 条忽略词`;
+}
+
+// 撤销本次编辑，回到上次载入的配置
+function revertRulesConfig() {
+  if (!_cfgSnapshot) { toast('尚无快照，请先载入配置', 'warn'); return; }
+  document.getElementById('cfgTypos').value = _cfgSnapshot.typos;
+  document.getElementById('cfgConflicts').value = _cfgSnapshot.conflicts;
+  document.getElementById('cfgIgnores').value = _cfgSnapshot.ignores;
+  updateCfgStats();
+  toast('已撤销本次编辑', 'info');
+}
+
 async function saveRulesConfig() {
+  // 错字表解析：每行「错词=正词」；格式错误（缺=号、空值）行计数并提示
+  const typoLines = document.getElementById('cfgTypos').value.split('\n').map(s => s.trim()).filter(Boolean);
   const typos = {};
-  document.getElementById('cfgTypos').value.split('\n').forEach(line => {
+  let nTypoBad = 0;
+  for (const line of typoLines) {
     const i = line.indexOf('=');
-    if (i > 0) {
-      const k = line.slice(0, i).trim(), v = line.slice(i + 1).trim();
-      if (k) typos[k] = v;
-    }
-  });
+    const k = line.slice(0, i).trim(), v = line.slice(i + 1).trim();
+    if (i <= 0 || !k || !v || k === v) { nTypoBad++; continue; }
+    typos[k] = v;
+  }
+  if (nTypoBad > 0) toast(`有 ${nTypoBad} 行错字格式无效已跳过（应为 错词=正词 且错≠正）`, 'warn');
   // R9 矛盾对解析：格式必须为「词A|词B」，A≠B 且都非空；
   // 空行/只有一列/自反(A==B)都跳过，避免生成『A 与 A 互斥』的误报规则。
   const rawLines = document.getElementById('cfgConflicts').value
@@ -1414,9 +1451,31 @@ async function saveRulesConfig() {
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '保存失败');
-    toast('规则配置已保存并生效', 'success');
+    // 保存成功后刷新快照与统计（保持「撤销」基准与已保存一致）
+    _cfgSnapshot = {
+      typos: document.getElementById('cfgTypos').value,
+      conflicts: document.getElementById('cfgConflicts').value,
+      ignores: document.getElementById('cfgIgnores').value,
+    };
+    updateCfgStats();
+    toast(`规则配置已保存并生效（错字 ${Object.keys(typos).length} 条 / 矛盾对 ${conflicts.length} 条 / 忽略词 ${ignores.length} 条）`, 'success');
   } catch (e) {
     toast('保存失败: ' + e.message, 'error');
+  }
+}
+
+// 恢复默认规则库（内置出厂配置），操作前需确认
+async function resetRulesConfig() {
+  if (!confirm('确定恢复默认规则库吗？当前所有自定义规则将被出厂配置覆盖。')) return;
+  try {
+    const res = await fetch('/api/v1/qc/rules/config/reset', { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '恢复失败');
+    _cfgSnapshot = null;
+    await loadRulesConfig();
+    toast('已恢复默认规则库', 'success');
+  } catch (e) {
+    toast('恢复失败: ' + e.message, 'error');
   }
 }
 

@@ -687,11 +687,16 @@ DEFAULT_TEMPLATE = {
 }
 
 
+def default_rules_config() -> dict:
+    """出厂默认规则配置（恢复默认用）。"""
+    return {"typos": dict(TYPO_MAP_DEFAULT), "conflicts": [],
+            "ignores": [], "template": dict(DEFAULT_TEMPLATE),
+            "enable_r19": True}
+
+
 def load_rules_config(path: str = RULES_CONFIG_PATH) -> dict:
     """读取用户维护的规则配置。失败回退内置默认值，保证引擎始终可用。"""
-    defaults = {"typos": dict(TYPO_MAP_DEFAULT), "conflicts": [],
-                "ignores": [], "template": dict(DEFAULT_TEMPLATE),
-                "enable_r19": True}
+    defaults = default_rules_config()
     try:
         with open(path, encoding="utf-8") as fh:
             cfg = json.load(fh)
