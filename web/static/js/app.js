@@ -1358,7 +1358,10 @@ async function loadRulesConfig(silent = false) {
       Object.entries(typos).map(([k, v]) => `${k}=${v}`).join('\n');
     const conflicts = cfg.conflicts || [];
     document.getElementById('cfgConflicts').value =
-      conflicts.map(c => Array.isArray(c) ? c.join('|') : `${c.a || ''}|${c.b || ''}`).join('\n');
+      conflicts
+        .map(c => Array.isArray(c) ? c.join('|') : [c.a, c.b].join('|'))
+        .filter(ln => ln.split('|').every(s => s.trim()) && ln.split('|')[0] !== ln.split('|')[1])
+        .join('\n');
     const ignores = cfg.ignores || [];
     document.getElementById('cfgIgnores').value = ignores.map(String).join('\n');
     const tpl = cfg.template || {};
@@ -1381,11 +1384,24 @@ async function saveRulesConfig() {
       if (k) typos[k] = v;
     }
   });
-  const conflicts = document.getElementById('cfgConflicts').value
-    .split('\n').map(s => s.trim()).filter(Boolean).map(s => {
-      const p = s.split('|');
-      return { a: p[0], b: p[1] || p[0] };
-    });
+  // R9 矛盾对解析：格式必须为「词A|词B」，A≠B 且都非空；
+  // 空行/只有一列/自反(A==B)都跳过，避免生成『A 与 A 互斥』的误报规则。
+  const rawLines = document.getElementById('cfgConflicts').value
+    .split('\n').map(s => s.trim()).filter(Boolean);
+  const conflicts = [];
+  for (const ln of rawLines) {
+    const p = ln.split('|').map(s => s.trim()).filter(Boolean);
+    if (p.length < 2) {
+      console.warn('矛盾对格式应为 词A|词B，已跳过：' + ln);
+      continue;
+    }
+    const a = p[0], b = p[1];
+    if (a === b) { console.warn('矛盾对 A 与 B 相同，已跳过：' + ln); continue; }
+    conflicts.push({ a, b });
+  }
+  if (rawLines.length > conflicts.length) {
+    toast('部分矛盾对格式无效已跳过（每行应为 词A|词B 且 A≠B）', 'warn');
+  }
   const ignores = document.getElementById('cfgIgnores').value
     .split('\n').map(s => s.trim()).filter(Boolean);
   const tpl = { require_followup: document.getElementById('cfgTplFollowup').checked };

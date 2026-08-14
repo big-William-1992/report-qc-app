@@ -77,6 +77,7 @@ LATERALITY = {"左": "left", "右": "right", "双侧": "bilateral", "两边": "b
 GENDER_ORGANS = {
     "前列腺": "male", "睾丸": "male", "阴茎": "male", "精囊": "male",
     "子宫": "female", "卵巢": "female", "宫颈": "female", "阴道": "female",
+    "乳腺": "female", "乳房": "female",
 }
 
 # 解剖部位同义词 → 规范节点（带左右前缀便于跨段比对）
@@ -1238,8 +1239,8 @@ class RuleEngine:
         for rule in conflicts:
             a = (rule.get("a") or "").strip()
             b = (rule.get("b") or "").strip()
-            if not a or not b:
-                continue
+            if not a or not b or a == b:
+                continue   # 自反矛盾对(A==B)或空值无效，跳过防误报
             scope = rule.get("scope", "正文")
             sev = rule.get("severity", "medium")
             # 范围：描述段 → 仅影像描述/检查所见；正文（默认）→ 整篇
