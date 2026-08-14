@@ -293,6 +293,78 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # ---- 端到端启动测试：真实启动 exe，轮询后端 health（阻断闸） ----
+  # 这是本仓库对「exe 能否正确打开」的唯一真实验证。
+  # 此前多次启动崩溃（clr 加载失败、isatty、依赖缺失）都只在用户机器上暴露，
+  # 因为 CI 只有静态检查（文件存在/import OK），从未真正启动过打包产物。
+  # 此 job 在构建机真实拉起 exe → 探测 127.0.0.1:8500 health → 失败则 job 红，
+  # 从而把「下载即崩」的坏包挡在发布前。
+  launch-test:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download portable bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: report-qc-exe
+          path: dist-app
+      - name: Launch exe and probe backend health
+        shell: bash
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python - <<'PY'
+          import glob, json, os, subprocess, time, urllib.request
+
+          exes = glob.glob("dist-app/**/报告质控软件.exe", recursive=True)
+          print("found exe:", exes)
+          assert exes, "未找到 dist 内的 报告质控软件.exe"
+          exe = exes[0]
+          cwd = os.path.dirname(exe)
+
+          # 真实启动打包产物（cwd 必须是 exe 所在目录：冻结版按 exe 位置找资源）
+          proc = subprocess.Popen([exe], cwd=cwd)
+          print("launched pid:", proc.pid)
+
+          # 轮询后端 health（最多 60s）。这同时证明：依赖完整、server 可 import、
+          # FastAPI 能监听、静态资源可服务——即「exe 打开后能正常提供服务」。
+          ok = False
+          for i in range(30):
+              time.sleep(2)
+              try:
+                  with urllib.request.urlopen(
+                          "http://127.0.0.1:8500/api/v1/health", timeout=3) as r:
+                      body = json.loads(r.read().decode("utf-8"))
+                      if body.get("ok"):
+                          ok = True
+                          print(f"HEALTH OK after {(i + 1) * 2}s:", body)
+                          break
+              except Exception as e:
+                  print(f"  probe {i + 1}: {type(e).__name__}: {e}")
+
+          # 无论成败都终止进程（防泄漏占用 8500）
+          try:
+              proc.terminate()
+          except Exception:
+              pass
+          time.sleep(1)
+          try:
+              proc.kill()
+          except Exception:
+              pass
+
+          if not ok:
+              print("::error::exe 启动后后端未就绪（依赖缺失/崩溃/端口未监听）")
+              raise SystemExit(1)
+          print("EXE_LAUNCH_E2E_OK")
+          PY
+
   # ---- 自动更新端到端实测：构建发布 latest 后，用真实的 Windows 安装器跑完整更新 ----
   test-update:
     needs: build
