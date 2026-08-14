@@ -46,12 +46,12 @@ if getattr(sys, "frozen", False) and str(ROOT) not in sys.path:
 # 必须在 import webview 之前，把 pythonnet 的 runtime 目录显式加入 DLL 搜索路径。
 # （onedir 模式下 DLL 位于 <exe 同目录>/_internal/pythonnet/runtime/）
 if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
-    # 关键修复：pythonnet/clr_loader 默认走 .NET Core（coreclr）模式，靠 hostfxr
-    # 探测本机 .NET 运行时；目标机器若未装 .NET Core Runtime 就抛
-    # 「Failed to resolve Python.Runtime.Loader.Initialize」。
-    # 而 Windows 10/11 系统级自带 .NET Framework 4.8，强制 PYTHONNET_RUNTIME=netfx
-    # 走 .NET Framework 加载，无需用户安装任何额外运行时，根治 clr 加载失败。
-    os.environ["PYTHONNET_RUNTIME"] = "netfx"
+    # ---- pythonnet 运行时探测与兜底 ----
+    # 1) 默认走 netfx（.NET Framework）：Win10/11 系统自带 4.8，多数机器可用。
+    # 2) 若 netfx 加载失败（老系统/环境问题），自动切 coreclr（.NET Core）——但
+    #    需要系统装了 .NET Core Runtime 才能成功。
+    # 3) 两者都失败：程序降级到系统浏览器模式并给出明确诊断，绝不崩溃。
+    _pn_runtime = "netfx"
     _dll_dirs = [
         os.path.join(ROOT, "pythonnet", "runtime"),
         os.path.join(ROOT, "_internal", "pythonnet", "runtime"),
@@ -64,6 +64,27 @@ if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
                 os.add_dll_directory(_dd)
             except Exception:
                 pass
+    try:
+        # 预探测 netfx 能否加载 pythonnet；失败则切 coreclr 再试。
+        os.environ["PYTHONNET_RUNTIME"] = "netfx"
+        import clr  # noqa: F401
+        _pn_runtime = "netfx"
+    except Exception:
+        try:
+            os.environ["PYTHONNET_RUNTIME"] = "coreclr"
+            import clr  # noqa: F401
+            _pn_runtime = "coreclr"
+        except Exception as _ce:
+            # 记录最终失败原因，供 fallback 诊断；保持环境变量为 coreclr
+            # （pywebview 的 winforms/edgechromium import clr 失败时会自己重试 coreclr）
+            os.environ["PYTHONNET_RUNTIME"] = "coreclr"
+            print("[clr] pythonnet 加载失败（netfx 与 coreclr 均不可用）→ 将降级浏览器模式")
+    print(f"[clr] pythonnet 运行时模式 = {_pn_runtime}")
+    # 标记 pythonnet 是否可用，供 main() 决定是否跳过 pywebview 直接降级浏览器
+    _CLR_OK = (_pn_runtime in ("netfx", "coreclr"))
+    globals()["_CLR_OK"] = _CLR_OK
+else:
+    globals()["_CLR_OK"] = True
 
 
 # ---------------------- 冻结版崩溃可见化 ----------------------
@@ -450,16 +471,24 @@ def _start_hotkeys():
 def _ensure_std_streams():
     if not getattr(sys, "frozen", False):
         return
-    if sys.stdout is not None and sys.stderr is not None:
+    if sys.stdout is not None and sys.stderr is not None and sys.stdin is not None:
         return
     try:
         _f = open(_crash_path(), "a", encoding="utf-8", buffering=1)
     except OSError:
-        return
-    if sys.stdout is None:
+        _f = None
+    if sys.stdout is None and _f is not None:
         sys.stdout = _f
-    if sys.stderr is None:
+    if sys.stderr is None and _f is not None:
         sys.stderr = _f
+    # stdin 也一并兜底：冻结版(console=False)下 sys.stdin 为 None，
+    # 任何库/traceback 若读 stdin 会抛 RuntimeError: lost sys.stdin，
+    # 会盖住真正的错误。给一个最小可读文件避免彻底崩溃。
+    if sys.stdin is None:
+        try:
+            sys.stdin = open(os.devnull, "r")
+        except OSError:
+            pass
 
 
 # uvicorn 默认 formatter 在 use_colors=None 时会调用 sys.stdout.isatty()，
@@ -552,6 +581,25 @@ def main():
         sys.exit(1)
 
     url = f"{BASE}/"
+    # 若 pythonnet 两种运行时都不可用（winforms/edgechromium 都依赖 clr），
+    # 直接跳过 pywebview 降级浏览器，避免 create_window 内的崩溃噪音。
+    if not globals().get("_CLR_OK", True):
+        import webbrowser
+        print("[降级] pythonnet 不可用（netfx/coreclr 均加载失败），改用系统浏览器打开")
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+        show_fatal("星衍质控 启动降级",
+                   "原生窗口所需的组件（pythonnet/clr）在本机无法加载。\n"
+                   "已改用系统浏览器打开质控界面。\n\n"
+                   "若您希望使用桌面窗口，请：\n"
+                   "1) 确认已安装 Microsoft .NET Framework 4.8（Windows 10/11 自带）\n"
+                   "2) 或安装 .NET Core Runtime\n"
+                   "3) 重新下载最新版（本版已做兼容处理）\n\n"
+                   "浏览器模式功能完整，可正常使用。")
+        return
+
     try:
         import webview as _wv
         global _WEBVIEW
