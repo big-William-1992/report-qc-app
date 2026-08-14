@@ -1123,6 +1123,7 @@ class RuleEngine:
             return out
         secs = self._split_for_r5(text)
         f_txt = secs["findings"]
+        i_txt = secs["impression"]
         # 防误报：描述段整体为正常声明（含『未见异常』等且不带阳性征）→ 视为各区域已声明
         # 未见异常，不判漏写（避免『上腹部CT未见异常』因未点名器官被误报）
         if _claims_normal(f_txt) and not _has_positive(f_txt):
@@ -1131,12 +1132,14 @@ class RuleEngine:
             orgs = REGION_TO_ORGANS.get(region, [])
             if not orgs:
                 continue
-            hit = any(org in f_txt for org in orgs)
+            # 描述段或结论段任一覆盖该区域器官即视为已描述（结论段常只点名异常器官，
+            # 描述段常写正常所见，两段互补避免漏报；两段都无才判漏写）。
+            hit = any(org in f_txt for org in orgs) or any(org in i_txt for org in orgs)
             if not hit:
                 sample = "、".join(orgs[:4])
                 out.append(Finding("R18-COVERAGE", "检查部位器官漏写", "medium",
-                    f"检查部位含「{region}」，但影像描述段未描述{region}相关器官"
-                    f"（如{sample}等），疑似漏写或检查部位登记有误",
+                    f"检查部位含「{region}」，但影像描述与影像诊断中均未描述{region}"
+                    f"相关器官（如{sample}等），疑似漏写或检查部位登记有误",
                     region, (-1, -1)))
         return out
 
