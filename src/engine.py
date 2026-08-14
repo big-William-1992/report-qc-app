@@ -271,6 +271,60 @@ REGION_TO_ORGANS = {
     "膝关节": ["股骨远端", "胫骨近端", "髌骨", "半月板", "交叉韧带", "髌上囊"],
 }
 
+# 检查类型 → 必查要素清单（R20 模板完整性校验）。
+# 与 R18 的区别：R18 只查『登记区域是否提到至少一个器官』（粒度粗，防误报）；
+# R20 按『检查类型』校验必查要素缺项（粒度细，抓漏写），如胸部 CT 应描述
+# 肺纹理/纵隔/胸膜/骨性胸廓等。由登记部位/检查类型关键词自动匹配。
+REPORT_TYPE_REQUIREMENTS = {
+    "胸部CT": {
+        "要素": ["肺纹理", "肺实质", "肺门", "纵隔", "胸膜", "胸腔", "心脏", "心影",
+                "骨性胸廓", "胸壁", "气管", "支气管"],
+        "提示": "胸部 CT 报告应描述肺野/肺纹理、肺门及纵隔、胸膜与胸腔、心脏大血管、骨性胸廓等",
+    },
+    "腹部CT": {
+        "要素": ["肝", "胆囊", "胆管", "胰腺", "脾", "双肾", "肾", "肾上腺",
+                "胃", "肠道", "肠", "腹腔", "腹膜", "淋巴结"],
+        "提示": "腹部 CT 报告应描述肝/胆/胰/脾/双肾、胃肠及腹腔淋巴结等",
+    },
+    "头颅CT": {
+        "要素": ["脑实质", "脑白质", "脑灰质", "小脑", "脑干", "脑室", "基底节",
+                "中线", "脑沟", "颅骨", "蛛网膜下腔"],
+        "提示": "头颅 CT 报告应描述脑实质、脑室系统、中线结构、颅骨等",
+    },
+    "腰椎": {
+        "要素": ["腰椎", "椎体", "椎间盘", "硬膜囊", "神经根", "黄韧带", "椎管", "小关节"],
+        "提示": "腰椎报告应描述椎体/附件、椎间盘、硬膜囊及神经根、椎管等",
+    },
+    "颈椎": {
+        "要素": ["颈椎", "椎体", "椎间盘", "硬膜囊", "神经根", "椎管", "韧带"],
+        "提示": "颈椎报告应描述椎体/附件、椎间盘、硬膜囊及神经根、椎管等",
+    },
+    "乳腺": {
+        "要素": ["腺体", "肿块", "结节", "钙化", "腋窝", "皮肤", "乳头", "Cooper"],
+        "提示": "乳腺报告应描述腺体类型、肿块/结节、钙化、腋窝淋巴结等",
+    },
+    "盆腔": {
+        "要素": ["膀胱", "直肠", "盆壁", "盆腔"],
+        "提示": "盆腔报告应描述膀胱、直肠、盆壁等结构",
+    },
+    "膝关节": {
+        "要素": ["股骨", "胫骨", "髌骨", "半月板", "交叉韧带", "关节囊", "髌上囊"],
+        "提示": "膝关节报告应描述股骨/胫骨/髌骨、半月板、交叉韧带、关节腔等",
+    },
+}
+
+# 检查类型关键词 → 规范类型（从登记部位/检查方式匹配）
+_TYPE_KEYWORDS = [
+    ("胸部CT", ["胸部ct", "胸部平扫", "胸部增强", "肺部ct", "肺ct", "双肺ct", "胸ct", "胸部ct平扫"]),
+    ("腹部CT", ["腹部ct", "全腹ct", "上腹ct", "下腹ct", "腹ct", "腹部平扫", "腹部增强"]),
+    ("头颅CT", ["头颅ct", "头部ct", "颅脑ct", "脑ct", "头颅平扫", "颅脑平扫"]),
+    ("腰椎", ["腰椎", "腰段", "l1", "l2", "l3", "l4", "l5", "腰1", "腰2", "腰3", "腰4", "腰5"]),
+    ("颈椎", ["颈椎", "颈段", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "颈1", "颈2", "颈3"]),
+    ("乳腺", ["乳腺", "乳房", "钼靶", "breast"]),
+    ("盆腔", ["盆腔", "骨盆", "pelvis"]),
+    ("膝关节", ["膝关节", "膝部", "knee"]),
+]
+
 # 区域关键词别名 → 规范区域名（用于从登记部位『胸部、上腹部』中逐区域提取，多区域互不牵连）
 _REGION_ALIAS_TO_REGION = {
     "胸部": "胸部", "双肺": "胸部", "肺部": "胸部", "肺": "胸部",
@@ -929,6 +983,8 @@ class RuleEngine:
                 + self._r15_internal(text)
                 + self._r17_cross_region(text, secs)
                 + self._r18_region_coverage(text, meta)
+                + self._r20_template_completeness(text, meta)
+                + self._r21_gender_site(text, meta)
                 + (self._r19_homophone(text)
                    if self.rules_config.get("enable_r19", True) else [])
                 + (self._r16_followup_timeframe(text)
@@ -1141,6 +1197,74 @@ class RuleEngine:
                     f"检查部位含「{region}」，但影像描述与影像诊断中均未描述{region}"
                     f"相关器官（如{sample}等），疑似漏写或检查部位登记有误",
                     region, (-1, -1)))
+        return out
+
+    # R20 模板完整性校验：按检查类型（从登记部位/检查方式推断）校验必查要素缺项。
+    # 与 R18 互补：R18 查『区域是否有任意器官』，R20 查『该检查类型必查要素是否齐』。
+    # 防误报策略：报告头/描述段整体"未见异常"声明不豁免（与 R18 不同）——
+    # 胸部 CT 即使全部正常也应点名肺纹理/纵隔/胸膜等，故缺项仍提示（medium 级）。
+    def _r20_template_completeness(self, text, meta) -> List[Finding]:
+        out = []
+        applied = (meta.get("applied_site") or "").strip().lower()
+        modality = (meta.get("modality") or "").strip().lower()
+        src = " | ".join([applied, modality]).lower()
+        # 匹配检查类型
+        matched = None
+        for tname, kws in _TYPE_KEYWORDS:
+            if any(kw in src for kw in kws):
+                matched = tname
+                break
+        # 若登记部位无类型信息，尝试从报告正文头部推断（OCR 场景）
+        if not matched:
+            head = text[:200].lower()
+            for tname, kws in _TYPE_KEYWORDS:
+                if any(kw in head for kw in kws):
+                    matched = tname
+                    break
+        if not matched:
+            return out
+        req = REPORT_TYPE_REQUIREMENTS[matched]
+        elems = req["要素"]
+        # 描述段+结论段合并检查（必查要素可能分布在两段）
+        secs = self._split_for_r5(text)
+        combined = secs["findings"] + "\n" + secs["impression"]
+        # 数值/量词噪声过滤：单纯出现『肝』但实际是『肝区不适』之类不适主体？不做过度过滤，
+        # 以子串匹配为准，但排除『未见异常』整体声明对单要素的豁免——正常报告也应点名结构。
+        missing = [e for e in elems if e not in combined]
+        if missing and not _claims_normal(combined):
+            sample = "、".join(missing[:6])
+            out.append(Finding("R20-TEMPLATE", "报告必查要素漏写", "medium",
+                f"「{matched}」报告缺少必查要素：{sample}。{req['提示']}",
+                matched, (-1, -1)))
+        return out
+
+    # R21 性别-部位联动（检查类型级）：男性检查乳腺/子宫/卵巢，女性检查前列腺/睾丸。
+    # 与 R1(正文出现异性别器官) 互补：R1 抓正文描述，R21 抓『检查部位登记』层面——
+    # 登记部位/检查方式与性别不匹配（如男性做钼靶、女性做前列腺 MR）。
+    def _r21_gender_site(self, text, meta) -> List[Finding]:
+        out = []
+        rg = _norm_gender(meta.get("gender"))
+        if not rg:
+            rg = _parse_gender_from_text(text)
+        if not rg:
+            return out
+        applied = (meta.get("applied_site") or "").strip().lower()
+        modality = (meta.get("modality") or "").strip().lower()
+        src = applied + " " + modality
+        female_only = ["乳腺", "乳房", "钼靶", "子宫", "卵巢", "宫颈", "阴道", "输卵管"]
+        male_only = ["前列腺", "睾丸", "阴茎", "精囊", "阴囊"]
+        for kw in female_only:
+            if kw in src and rg == "male":
+                out.append(Finding("R21-GENDER-SITE", "检查部位与性别不符", "high",
+                    f"登记检查部位含「{kw}」（女性专属检查），与{_zh(rg)}性别不符",
+                    kw, (-1, -1)))
+                break
+        for kw in male_only:
+            if kw in src and rg == "female":
+                out.append(Finding("R21-GENDER-SITE", "检查部位与性别不符", "high",
+                    f"登记检查部位含「{kw}」（男性专属检查），与{_zh(rg)}性别不符",
+                    kw, (-1, -1)))
+                break
         return out
 
     # R7 描述内部矛盾（同一描述段内出现男女专属器官混用 —— 真实自相矛盾）
