@@ -407,7 +407,7 @@ function _renderFindingList() {
       <span class="severity-dot ${f.severity}"></span>
       <span class="sev-badge ${m.cls}">${m.icon} ${m.label}</span>
       <div>
-        <div class="finding-text">${escapeHtml(f.message)}</div>
+        <div class="finding-text ${m.cls}">${escapeHtml(f.message)}</div>
         <div class="finding-meta">${f.rule_id} · ${escapeHtml(f.category || '')}${learnBtn}</div>
       </div>
     </li>`;
@@ -1141,7 +1141,7 @@ async function viewSample(sid) {
         return `<li class="finding-item">
           <span class="severity-dot ${f.severity}"></span>
           <span class="sev-badge ${m.cls}">${m.icon} ${m.label}</span>
-          <div><div class="finding-text">${escapeHtml(f.message)}</div>
+          <div><div class="finding-text ${m.cls}">${escapeHtml(f.message)}</div>
           <div class="finding-meta">${escapeHtml(f.rule_id || '')} · ${escapeHtml(f.error_type || '')}</div></div>
         </li>`; }).join('')}</ul>`
         : '<div style="font-size:13px;color:var(--text-muted);">无发现，报告质量良好</div>'}

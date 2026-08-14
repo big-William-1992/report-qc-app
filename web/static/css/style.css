@@ -692,6 +692,26 @@ textarea.qc-textarea:focus {
   line-height: 1.55;
   color: var(--text-primary);
 }
+/* 问题文本按严重度着色：严重(红)/警告(橙)/提示(灰蓝)，色盲可用（配合左侧圆点+徽章） */
+.finding-text.danger {
+  color: var(--danger, #d64545);
+  font-weight: 600;
+}
+.finding-text.warning {
+  color: var(--warning, #c78a1a);
+  font-weight: 500;
+}
+.finding-text.info {
+  color: var(--text-secondary);
+}
+/* 整条发现按严重度加浅色底纹，严重问题一眼可见 */
+.finding-item {
+  border-left: 3px solid transparent;
+}
+.finding-item .severity-dot.high,
+.finding-item:has(.finding-text.danger) { border-left-color: var(--danger, #d64545); }
+.finding-item:has(.finding-text.warning) { border-left-color: var(--warning, #c78a1a); }
+.finding-item:has(.finding-text.info) { border-left-color: transparent; }
 .finding-meta {
   font-size: 11.5px;
   color: var(--text-muted);
