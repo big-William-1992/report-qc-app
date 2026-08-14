@@ -635,8 +635,9 @@
               <textarea id="cfgTypos" rows="12" class="cfg-textarea" oninput="updateCfgStats()" placeholder="肋膜=胸膜&#10;园形=圆形"></textarea>
             </div>
             <div class="form-group">
-              <label>R9 矛盾对（每行 <code>词A|词B</code>，A≠B）</label>
-              <textarea id="cfgConflicts" rows="12" class="cfg-textarea" oninput="updateCfgStats()" placeholder="未见明显异常|结节&#10;正常|占位"></textarea>
+              <label>R9 逻辑错误（每行 <code>[范围] 词A|词B</code>，A≠B；范围可选，默认正文整篇）</label>
+              <textarea id="cfgConflicts" rows="14" class="cfg-textarea" oninput="updateCfgStats()"
+                placeholder="支持 5 种范围：&#10;  正文（默认）＝整篇互斥：未见明显异常|结节&#10;  同一句＝同一行/句内前后矛盾：[同一句] 正常|增大&#10;  描述段＝仅影像描述段：[描述段] 边界清晰|边缘毛糙&#10;  结论段＝仅诊断结论段：[结论段] 良性|恶性&#10;  描述vs结论＝描述与诊断跨段矛盾：[描述vs结论] 结节|未见占位"></textarea>
             </div>
             <div class="form-group">
               <label>忽略词/白名单（每行一项，命中即不报）</label>

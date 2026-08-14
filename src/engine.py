@@ -1248,14 +1248,34 @@ class RuleEngine:
                 continue   # 自反矛盾对(A==B)或空值无效，跳过防误报
             scope = rule.get("scope", "正文")
             sev = rule.get("severity", "medium")
-            # 范围：描述段 → 仅影像描述/检查所见；正文（默认）→ 整篇
+            # 范围扩展：
+            #   正文    → 整篇报告
+            #   描述段  → 仅 检查所见/影像描述 段
+            #   结论段  → 仅 诊断印象/影像诊断/结论 段
+            #   同一句  → 同一句内 A 与 B 同时出现才算冲突（"同一行前后错误"）
+            #   描述vs结论 → A 出现在描述段 且 B 出现在结论段（跨段上下文错误）
+            secs = self._split_for_r5(text)
+            f_txt, i_txt = secs["findings"], secs["impression"]
+            note = rule.get("note", "")
+            hit = False
             if scope == "描述段":
-                secs = self._split_for_r5(text)
-                target = secs["findings"]
-            else:
-                target = text
-            if a in target and b in target:
-                note = rule.get("note", "")
+                target = f_txt
+                hit = bool(target) and a in target and b in target
+            elif scope == "结论段":
+                target = i_txt
+                hit = bool(target) and a in target and b in target
+            elif scope == "同一句":
+                # 同一句内 A、B 同现（按句切分，逐句判断）
+                for sent in _split_sentences(f_txt + "\n" + i_txt):
+                    if a in sent and b in sent:
+                        hit = True
+                        break
+            elif scope == "描述vs结论":
+                # 跨段：描述含 A 且 结论含 B（或反向）——"描述/诊断错误"
+                hit = (a in f_txt and b in i_txt) or (b in f_txt and a in i_txt)
+            else:   # 正文（默认）
+                hit = a in text and b in text
+            if hit:
                 msg = (f"检出互斥冲突：『{a}』与『{b}』在[{scope}]内同时出现，应互斥"
                        + (f"（{note}）" if note else ""))
                 out.append(Finding("R9-CONFLICT", "自定义互斥冲突", sev, msg, a, (-1, -1)))

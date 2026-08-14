@@ -1364,9 +1364,16 @@ async function loadRulesConfig(silent = false) {
     const conflicts = cfg.conflicts || [];
     document.getElementById('cfgConflicts').value =
       conflicts
-        .map(c => Array.isArray(c) ? c.join('|') : [c.a, c.b].join('|'))
-        .filter(ln => ln.split('|').every(s => s.trim()) && ln.split('|')[0] !== ln.split('|')[1])
-        .sort((a, b) => a.localeCompare(b, 'zh'))
+        .map(c => {
+          const a = Array.isArray(c) ? c[0] : (c.a || '').trim();
+          const b = Array.isArray(c) ? c[1] : (c.b || '').trim();
+          const scope = (!Array.isArray(c) && c.scope) || '正文';
+          if (!a || !b || a === b) return '';
+          // 范围默认正文时省略前缀，保持简洁；非正文显示 [范围]
+          return scope === '正文' ? `${a}|${b}` : `[${scope}] ${a}|${b}`;
+        })
+        .filter(Boolean)
+        .sort((x, y) => x.localeCompare(y, 'zh'))
         .join('\n');
     const ignores = cfg.ignores || [];
     document.getElementById('cfgIgnores').value = ignores.map(String).sort((a, b) => a.localeCompare(b, 'zh')).join('\n');
@@ -1421,23 +1428,31 @@ async function saveRulesConfig() {
     typos[k] = v;
   }
   if (nTypoBad > 0) toast(`有 ${nTypoBad} 行错字格式无效已跳过（应为 错词=正词 且错≠正）`, 'warn');
-  // R9 矛盾对解析：格式必须为「词A|词B」，A≠B 且都非空；
-  // 空行/只有一列/自反(A==B)都跳过，避免生成『A 与 A 互斥』的误报规则。
+  // R9 矛盾对解析。支持两种格式：
+  //   词A|词B                                  → 范围=正文（默认，整篇互斥）
+  //   [范围] 词A|词B                          → 指定范围，范围 ∈ {正文, 描述段, 结论段, 同一句, 描述vs结论}
+  // A≠B 且都非空；空行/只有一列/自反(A==B)跳过，避免生成『A 与 A 互斥』的误报规则。
+  const _SCOPES = ['正文', '描述段', '结论段', '同一句', '描述vs结论'];
   const rawLines = document.getElementById('cfgConflicts').value
     .split('\n').map(s => s.trim()).filter(Boolean);
   const conflicts = [];
+  let nBad = 0;
   for (const ln of rawLines) {
-    const p = ln.split('|').map(s => s.trim()).filter(Boolean);
-    if (p.length < 2) {
-      console.warn('矛盾对格式应为 词A|词B，已跳过：' + ln);
-      continue;
+    let scope = '正文', body = ln;
+    const m = ln.match(/^\[(.+?)\]\s*(.*)$/);
+    if (m) {
+      scope = m[1].trim();
+      body = m[2].trim();
+      if (!_SCOPES.includes(scope)) { console.warn('未知范围，已跳过：' + ln); nBad++; continue; }
     }
+    const p = body.split('|').map(s => s.trim()).filter(Boolean);
+    if (p.length < 2) { console.warn('矛盾对格式应为 词A|词B，已跳过：' + ln); nBad++; continue; }
     const a = p[0], b = p[1];
-    if (a === b) { console.warn('矛盾对 A 与 B 相同，已跳过：' + ln); continue; }
-    conflicts.push({ a, b });
+    if (a === b) { console.warn('矛盾对 A 与 B 相同，已跳过：' + ln); nBad++; continue; }
+    conflicts.push({ a, b, scope });
   }
-  if (rawLines.length > conflicts.length) {
-    toast('部分矛盾对格式无效已跳过（每行应为 词A|词B 且 A≠B）', 'warn');
+  if (nBad > 0) {
+    toast(`有 ${nBad} 行矛盾对格式无效已跳过（每行应为 [范围] 词A|词B，范围∈{${_SCOPES.join('/')}}）`, 'warn');
   }
   const ignores = document.getElementById('cfgIgnores').value
     .split('\n').map(s => s.trim()).filter(Boolean);
