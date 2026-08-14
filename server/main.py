@@ -905,6 +905,7 @@ class ScreenOCRReq(BaseModel):
     regions: Dict[str, ScreenRegion] = {}
     refresh: bool = False       # True=识别前重新抓屏（画面已变动时用）
     dynamic: bool = False       # True=动态语义识别：整屏OCR后按标题切分，滚动不变形
+    dynamic_region: Optional[ScreenRegion] = None  # 动态模式限定 OCR 范围（三区外接矩形）
 
 
 def _grab_fullscreen():
@@ -973,12 +974,23 @@ def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local)):
         errors: Dict[str, str] = {}
 
         if req.dynamic:
-            # ---- 动态语义识别：整屏 OCR 一次，按标题在文本流中切分 ----
-            # 固定像素框在 PACS 内容上下/左右滚动后会错位；本模式不依赖坐标，
-            # 只依赖「检查所见/影像描述 → 描述段、诊断印象/结论 → 诊断段」的文本顺序。
+            # ---- 动态语义识别：先按三区外接矩形裁剪（限定报告区），
+            #      再对裁剪结果 OCR 一次，按标题在文本流中切分 ----
+            # 固定像素框在 PACS 内容上下/左右滚动后会错位；本模式不依赖精确坐标，
+            # 只依赖「检查所见/影像描述 → 描述段、诊断印象/结论 → 诊断段」的文本顺序，
             # 滚动改变的是屏幕上的像素位置，不改变文本流顺序，故怎么滚都能识别对。
+            # 外接矩形只需粗略覆盖报告区即可：排除 PACS 报告区外的工具栏/图像区/
+            # 其他窗口文字，避免整屏 OCR 把无关内容切进描述/诊断段。
+            ocr_img = img
+            if req.dynamic_region:
+                dr = req.dynamic_region
+                x0 = max(0, min(W - 1, int(dr.x * W)))
+                y0 = max(0, min(H - 1, int(dr.y * H)))
+                x1 = max(x0 + 1, min(W, int((dr.x + dr.w) * W)))
+                y1 = max(y0 + 1, min(H, int((dr.y + dr.h) * H)))
+                ocr_img = img.crop((x0, y0, x1, y1))
             try:
-                full = ocr_provider.ocr_image(img) or ""
+                full = ocr_provider.ocr_image(ocr_img) or ""
                 texts, errors = _split_dynamic(full)
             except Exception as exc:
                 errors["_dynamic"] = str(exc)

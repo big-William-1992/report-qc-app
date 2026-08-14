@@ -1963,6 +1963,22 @@ async function ocrPipeline() {
   } catch (e) { toast('流程出错: ' + e.message, 'error'); }
 }
 
+// 计算三区（basic/findings/impression）的外接矩形（比例坐标）。
+// 用于动态识别限定 OCR 范围：只识别 PACS 报告区，屏蔽屏幕其他无关文字。
+function unionRegions(regions) {
+  if (!regions) return null;
+  let xs = [], ys = [], xe = [], ye = [];
+  for (const key of ['basic', 'findings', 'impression']) {
+    const r = regions[key];
+    if (!r || !(r.w > 0 && r.h > 0)) continue;
+    xs.push(r.x); ys.push(r.y); xe.push(r.x + r.w); ye.push(r.y + r.h);
+  }
+  if (!xs.length) return null;
+  return { x: Math.min(...xs), y: Math.min(...ys),
+           w: Math.max(...xe) - Math.min(...xs),
+           h: Math.max(...ye) - Math.min(...ys) };
+}
+
 // 一键识别（不弹框选界面）：复用已保存框位，后端一次请求即完成 抓屏→OCR→填充→质控→入库
 let _ocrOneClickBusy = false;
 async function ocrOneClick() {
@@ -1986,13 +2002,17 @@ async function ocrOneClick() {
     await new Promise(res => setTimeout(res, 350));
 
     // 3) 一次请求完成：refresh=true 后端自动重新抓屏 + 识别。
-    //    默认 dynamic=true（整屏OCR按标题切分），PACS 上下/左右滚动内容也不变形；
-    //    设置页关闭时才退回固定框位模式。
+    //    默认 dynamic=true（标题切分）：滚动不变形，但只在三区外接矩形内 OCR，
+    //    避免把 PACS 报告区外的无关文字（工具栏/图像区/其他窗口）也识别进来；
+    //    设置页关闭动态时才退回三区逐一精确裁剪。
+    const useDynamic = !!APP_SETTINGS.ocr_dynamic;
+    const dynamicRegion = useDynamic ? unionRegions(regions) : null;
     let ocr;
     try {
       ocr = await fetch('/api/v1/screen/ocr', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ regions, refresh: true, dynamic: !!APP_SETTINGS.ocr_dynamic })
+        body: JSON.stringify({ regions, refresh: true, dynamic: useDynamic,
+                               dynamic_region: dynamicRegion })
       }).then(x => x.json());
     } catch (err) {
       _ocrShowApp();
