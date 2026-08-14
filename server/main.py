@@ -1176,6 +1176,8 @@ _DEFAULT_SETTINGS = {
     "auto_enqueue": True,          # 采集/RIS 拉取自动进待质控队列
     "ocr_min_score": 0.55,         # OCR 置信度阈值
     "screen_refresh_on_ocr": False,  # 识别前重新抓屏
+    "ocr_dynamic": True,           # 动态语义识别（整屏OCR按标题切分）
+    "ocr_silent": False,           # 静默质控：一键识别完成后不强制弹窗
     "anonymize": False,            # 入库脱敏
     "theme": "light",
     # ── 可配置快捷键（Windows 风 Ctrl+ 默认；设置页可逐条重绑，持久化到 web_settings.json）──

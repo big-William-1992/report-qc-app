@@ -737,6 +737,7 @@
         <label class="switch-row"><input type="checkbox" id="setAutoEnqueue" /> <span>屏幕采集 / RIS 拉取自动加入待质控队列</span></label>
         <label class="switch-row"><input type="checkbox" id="setScreenRefresh" /> <span>识别前重新抓屏（画面常变动时开启）</span></label>
         <label class="switch-row"><input type="checkbox" id="setOcrDynamic" /> <span>动态识别（整屏OCR按标题切分，PACS 上下/左右滚动内容也不变形）</span></label>
+        <label class="switch-row"><input type="checkbox" id="setOcrSilent" /> <span>静默质控（一键识别后不弹窗打断，后台完成质控并入库，结果稍后查看）</span></label>
         <label class="switch-row"><input type="checkbox" id="setAnonymize" /> <span>入库时脱敏（姓名等 PHI 不落库）</span></label>
         <label class="switch-row"><input type="checkbox" id="setClipWatch" onchange="toggleClipWatch(this.checked)" /> <span>监听剪贴板（复制报告即自动分栏并质控）</span></label>
       </div>

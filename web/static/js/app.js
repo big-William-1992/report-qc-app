@@ -18,6 +18,7 @@ let APP_SETTINGS = {
   emp_id: 'demo01', default_modality: '', auto_qc_on_ocr: true, auto_enqueue: true,
   ocr_min_score: 0.55, screen_refresh_on_ocr: false, anonymize: false, theme: 'light',
   ocr_dynamic: true,   // 动态语义识别（整屏OCR按标题切分，PACS滚动不变形）
+  ocr_silent: false,   // 静默模式：一键识别质控完成后不强制弹窗，保持后台运行
   // 默认 Windows 风 Ctrl+；设置页可逐条重绑（保存后持久化到 web_settings.json）
   shortcuts: {
     run_qc:       { mods: ['ctrl'], key: 'Enter' },
@@ -251,7 +252,7 @@ async function runQC() {
 
   if (!findings && !impression) {
     toast('请输入影像描述或结论文本', 'error');
-    return;
+    return false;
   }
 
   // 显示加载状态
@@ -292,10 +293,12 @@ async function runQC() {
     for (const [k, v] of Object.entries(scoreObj)) scores[scoreMap[k] || k] = v;
     const findings = (data.data.findings || []).map(f => ({ ...f, category: f.error_type }));
     renderQCResult({ findings, scores });
+    return true;
 
   } catch (err) {
     console.error(err);
     _showQcError(err);
+    return false;   // 返回失败标志，调用方（ocrOneClick）据此停止后续入库
   }
 }
 
@@ -522,6 +525,7 @@ function openSettings() {
   document.getElementById('setScreenRefresh').checked = !!s.screen_refresh_on_ocr;
   document.getElementById('setAnonymize').checked     = !!s.anonymize;
   document.getElementById('setOcrDynamic').checked    = !!s.ocr_dynamic;
+  document.getElementById('setOcrSilent').checked     = !!s.ocr_silent;
   syncClipWatchUI();           // 同步桌面壳「监听剪贴板」开关状态
   renderShortcuts();
   populateLicenseSettings();   // 填授权状态 + 机器码
@@ -566,6 +570,7 @@ async function saveSettings() {
     screen_refresh_on_ocr: document.getElementById('setScreenRefresh').checked,
     anonymize:             document.getElementById('setAnonymize').checked,
     ocr_dynamic:           document.getElementById('setOcrDynamic').checked,
+    ocr_silent:            document.getElementById('setOcrSilent').checked,
     shortcuts:            APP_SETTINGS.shortcuts || {},
   };
   try {
@@ -2005,6 +2010,7 @@ async function ocrOneClick() {
     //    默认 dynamic=true（标题切分）：滚动不变形，但只在三区外接矩形内 OCR，
     //    避免把 PACS 报告区外的无关文字（工具栏/图像区/其他窗口）也识别进来；
     //    设置页关闭动态时才退回三区逐一精确裁剪。
+    const silent = !!APP_SETTINGS.ocr_silent;   // 静默模式：后台质控完不强制弹窗
     const useDynamic = !!APP_SETTINGS.ocr_dynamic;
     const dynamicRegion = useDynamic ? unionRegions(regions) : null;
     let ocr;
@@ -2015,13 +2021,13 @@ async function ocrOneClick() {
                                dynamic_region: dynamicRegion })
       }).then(x => x.json());
     } catch (err) {
-      _ocrShowApp();
+      if (!silent) _ocrShowApp();
       toast('OCR 失败：' + ((err && err.message) || err), 'error');
       return;
     }
-    _ocrShowApp();   // 识别完成，恢复窗口显示结果
 
     if (!ocr || !ocr.ok) {
+      if (!silent) _ocrShowApp();
       toast('OCR 失败：' + ((ocr && ocr.message) || '未知错误'), 'error');
       return;
     }
@@ -2029,15 +2035,20 @@ async function ocrOneClick() {
     ocrFill({ basic: t.basic, findings: t.findings, impression: t.impression },
              (ocr.data && ocr.data.meta) || null);
 
-    // 4) 先显式质控（saveToLibrary 内部仅当无质控结果时才补跑，必须强制对新识别文本运行），再入库
+    // 4) 质控：runQC 返回 false 表示失败（空文本/引擎错），此时不再入库、直接收尾。
+    //    saveToLibrary 内部仅当无质控结果时才补跑，这里已先显式跑过。
     toast('已识别并填充，正在质控…', 'info');
-    try {
-      await runQC();
-      await saveToLibrary();
-      toast('识别 → 质控 → 导入 完成', 'success');
-    } catch (err) {
-      toast('质控/入库失败：' + ((err && err.message) || err), 'error');
+    const qcOk = await runQC();
+    if (qcOk) {
+      try {
+        await saveToLibrary();
+        toast('识别 → 质控 → 导入 完成', 'success');
+      } catch (err) {
+        toast('入库失败：' + ((err && err.message) || err), 'error');
+      }
     }
+    // 5) 收尾：非静默模式才把窗口弹回来展示结果；静默模式保持后台，仅 toast 提示
+    if (!silent) _ocrShowApp();
   } finally {
     _ocrOneClickBusy = false;
   }
