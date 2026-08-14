@@ -247,8 +247,12 @@ function effectiveLaterality() {
 }
 
 async function runQC() {
-  const findings = document.getElementById('findingsText').value.trim();
-  const impression = document.getElementById('impressionText').value.trim();
+  // 输入框仅质控页存在；剪贴板/热键后台触发时若未切页则为 null，须保护
+  const fEl = document.getElementById('findingsText');
+  const iEl = document.getElementById('impressionText');
+  if (!fEl || !iEl) { toast('请先在质控页输入描述/结论', 'warn'); return false; }
+  const findings = fEl.value.trim();
+  const impression = iEl.value.trim();
 
   if (!findings && !impression) {
     toast('请输入影像描述或结论文本', 'error');
@@ -357,6 +361,7 @@ function renderQCResult(data) {
 }
 
 function _renderFindingList() {
+  // 这些元素仅在质控页存在；剪贴板/热键在非质控页触发时可能为 null，须保护
   const listEl = document.getElementById('findingList');
   const countEl = document.getElementById('findingCount');
   const filterBar = document.getElementById('findingFilterBar');
@@ -364,9 +369,11 @@ function _renderFindingList() {
 
   const findings = _qcAllFindings;
   if (!findings || findings.length === 0) {
-    listContainer.innerHTML =
-      '<div class="empty-state"><div class="empty-icon">✅</div><p>未发现问题，报告质量良好</p></div>';
-    countEl.textContent = '0 条';
+    if (listContainer) {
+      listContainer.innerHTML =
+        '<div class="empty-state"><div class="empty-icon">✅</div><p>未发现问题，报告质量良好</p></div>';
+    }
+    if (countEl) countEl.textContent = '0 条';
     if (filterBar) filterBar.style.display = 'none';
     return;
   }
@@ -376,7 +383,8 @@ function _renderFindingList() {
     : findings.filter(f => (f.severity || 'low') === _qcSevFilter);
 
   if (filterBar) filterBar.style.display = 'flex';
-  countEl.textContent = filtered.length + ' / ' + findings.length + ' 条';
+  if (countEl) countEl.textContent = filtered.length + ' / ' + findings.length + ' 条';
+  if (!listEl) return;   // 非质控页：渲染结果留给下次进入质控页时展示
   listEl.innerHTML = filtered.map(f => {
     const m = SEV_META[f.severity] || SEV_META.low;
     // R8 同音错别字：提供「采纳修正」——把错词→正确词写入规则库，下次自动识别（P0 修正反馈闭环）
@@ -409,6 +417,8 @@ function setSevFilter(sev) {
 
 function renderScore(elId, key, value) {
   const el = document.getElementById(elId);
+  // 非质控页（剪贴板/热键后台触发）时 score 元素不存在，直接跳过渲染
+  if (!el) return;
   const pct = Math.min(100, Math.max(0, value));
   let cls, label;
   if (pct >= 90) { cls = 'excellent'; label = '优秀'; }
@@ -443,10 +453,12 @@ function clearInput() {
     if (bar) { bar.style.width = '0%'; }
   });
 
-  // 重置发现
-  document.getElementById('findingListContainer').innerHTML =
+  // 重置发现（元素仅质控页存在，缺失时跳过不崩）
+  const flc = document.getElementById('findingListContainer');
+  if (flc) flc.innerHTML =
     '<div class="empty-state" id="findingEmpty"><div class="empty-icon">📭</div><p>运行质控后在此显示发现</p></div>';
-  document.getElementById('findingCount').textContent = '0 条';
+  const fcnt = document.getElementById('findingCount');
+  if (fcnt) fcnt.textContent = '0 条';
 }
 
 // ==================== 入库 ====================
