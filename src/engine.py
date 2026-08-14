@@ -1062,7 +1062,7 @@ class RuleEngine:
         供 R5 用相对偏移取实体附近窗口（避免用绝对偏移索引子串导致错位）。"""
         spans = []
         for pat, sec in [("(?i)检查所见|影像描述|表现|imaging findings|findings", "findings"),
-                         ("(?i)诊断印象|印象|诊断意见|结论|impression", "impression")]:
+                         ("(?i)影像诊断|诊断印象|印象|诊断意见|诊断结论|影像结论|结论|impression|diagnosis", "impression")]:
             for m in re.finditer(pat, text):
                 spans.append((m.start(), sec))
         spans.sort()
