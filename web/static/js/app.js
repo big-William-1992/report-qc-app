@@ -255,10 +255,13 @@ async function runQC() {
     return false;
   }
 
-  // 显示加载状态
-  document.getElementById('findingEmpty').style.display = 'none';
-  document.getElementById('findingList').style.display = 'none';
-  document.getElementById('findingListContainer').innerHTML =
+  // 显示加载状态（元素可能不存在：剪贴板/热键触发时若未切到质控页，跳过而不崩）
+  const fe = document.getElementById('findingEmpty');
+  const fl = document.getElementById('findingList');
+  const fc = document.getElementById('findingListContainer');
+  if (fe) fe.style.display = 'none';
+  if (fl) fl.style.display = 'none';
+  if (fc) fc.innerHTML =
     '<div class="loading-spinner"><div class="spinner"></div>正在运行质控引擎...</div>';
 
   try {
@@ -325,10 +328,13 @@ function _showQcError(err) {
   } else {
     hint = '发生未知错误，请截图反馈给管理员，并附上操作步骤。';
   }
-  document.getElementById('findingListContainer').innerHTML =
-    `<div class="empty-state"><div class="empty-icon">${icon}</div>` +
-    `<p><b>质控运行出错</b></p><p style="font-size:12px;color:var(--text-muted)">${hint}</p>` +
-    `<p style="font-size:11px;color:var(--text-muted);opacity:.7">${escapeHtml(msg)}</p></div>`;
+  const errBox = document.getElementById('findingListContainer');
+  if (errBox) {
+    errBox.innerHTML =
+      `<div class="empty-state"><div class="empty-icon">${icon}</div>` +
+      `<p><b>质控运行出错</b></p><p style="font-size:12px;color:var(--text-muted)">${hint}</p>` +
+      `<p style="font-size:11px;color:var(--text-muted);opacity:.7">${escapeHtml(msg)}</p></div>`;
+  }
   toast('质控运行出错: ' + msg, 'error');
 }
 
@@ -784,6 +790,11 @@ function onClipboardCopy(text) {
   if (fc) fc.textContent = findings.length + ' 字';
   if (ic) ic.textContent = impression.length + ' 字';
   toast('📋 检测到剪贴板新报告，已分栏填入并质控', 'success');
+  // 先切到质控页再质控（runQC 依赖质控页 DOM 元素 findingListContainer 等；
+  // 否则用户停在设置/样本库等页面时元素为 null，抛 Cannot set properties of null）
+  if (document.getElementById('page-qc')) {
+    switchPage('qc', document.querySelector('.nav-cell[data-page="qc"]'));
+  }
   setTimeout(() => { if (typeof runQC === 'function') runQC(); }, 60);
 }
 
