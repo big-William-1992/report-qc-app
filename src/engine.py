@@ -985,6 +985,7 @@ class RuleEngine:
                 + self._r18_region_coverage(text, meta)
                 + self._r20_template_completeness(text, meta)
                 + self._r21_gender_site(text, meta)
+                + self._r22_lesion_size(text, self._split_for_r5(text))
                 + (self._r19_homophone(text)
                    if self.rules_config.get("enable_r19", True) else [])
                 + (self._r16_followup_timeframe(text)
@@ -1197,6 +1198,55 @@ class RuleEngine:
                     f"检查部位含「{region}」，但影像描述与影像诊断中均未描述{region}"
                     f"相关器官（如{sample}等），疑似漏写或检查部位登记有误",
                     region, (-1, -1)))
+        return out
+
+    # R22 病灶尺寸-术语一致性：称『结节』但测量值 >3cm（应称肿块），或
+    # 称『肿块』但测量值 <1cm（应称结节）。临床上结节≤3cm、肿块>3cm 是
+    # 放射科基本口径，术语与测量值明显不匹配提示描述或测量有误。
+    def _r22_lesion_size(self, text, secs) -> List[Finding]:
+        out = []
+        combined = secs["findings"] + "\n" + secs["impression"]
+        if not combined:
+            return out
+        # 提取所有带尺寸的结节/肿块表述：术语 + 紧随的测量值（cm）
+        # 匹配如：『结节，直径约 3.5cm』『结节大小约 4.2×3.1cm』『肿块，大小约 0.8cm』
+        pat = re.compile(
+            r"(结节|肿块|占位|肿物)[，,、:：\s]*"
+            r"(?:大小|直径|径线|体积|最长径)?\s*约?\s*"
+            r"(\d+(?:\.\d+)?)\s*(?:×|x|\*)\s*(\d+(?:\.\d+)?)?\s*(cm|毫米|mm)"
+            r"|(结节|肿块|占位|肿物)[，,、:：\s]*"
+            r"(?:大小|直径|径线|体积|最长径)?\s*约?\s*"
+            r"(\d+(?:\.\d+)?)\s*(cm|毫米|mm)",
+            re.I)
+        for m in pat.finditer(combined):
+            # 两分支：分支1(双径线 结节…4.2×3.1cm) 组1/2/3/4；
+            #        分支2(单径线 结节…3.5cm) 组5/6/7
+            term = m.group(1) or m.group(5)
+            if not term:
+                continue
+            if m.group(2) is not None:          # 双径线分支
+                v1 = float(m.group(2))
+                v2 = float(m.group(3)) if m.group(3) else None
+                unit = (m.group(4) or "").lower()
+            else:                                # 单径线分支
+                v1 = float(m.group(6))
+                v2 = None
+                unit = (m.group(7) or "").lower()
+            cm = v1 if unit == "cm" else v1 / 10.0
+            # 双径线取最大径
+            if v2 is not None:
+                v2cm = v2 if unit == "cm" else v2 / 10.0
+                cm = max(cm, v2cm)
+            if term == "结节" and cm > 3.0:
+                out.append(Finding("R22-SIZE", "病灶尺寸-术语矛盾", "medium",
+                    f"称「结节」但测量最大径约 {cm:.1f}cm（>3cm），按放射科口径应称「肿块」，"
+                    f"请核对描述或测量是否一致（结节≤3cm）",
+                    m.group(0), (-1, -1)))
+            elif term == "肿块" and cm < 1.0:
+                out.append(Finding("R22-SIZE", "病灶尺寸-术语矛盾", "medium",
+                    f"称「肿块」但测量最大径约 {cm:.1f}cm（<1cm），按放射科口径应称「结节」，"
+                    f"请核对描述或测量是否一致",
+                    m.group(0), (-1, -1)))
         return out
 
     # R20 模板完整性校验：按检查类型（从登记部位/检查方式推断）校验必查要素缺项。
