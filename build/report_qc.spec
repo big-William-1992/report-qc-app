@@ -188,64 +188,22 @@ a = Analysis(
     cipher=block_cipher,
 )
 
-# ---- 根治：.NET 程序集（pythonnet/clr_loader 的 DLL）绝不能被 UPX 压缩 ----
+# ---- 根治：彻底禁用 UPX（对 .NET 程序集破坏性过大） ----
 # 此前用户下载后报：
 #   RuntimeError: Failed to resolve Python.Runtime.Loader.Initialize
-# 根因（双保险）：
-#   1) PyInstaller 内置 hook-clr.py 用 collect_dynamic_libs 把 pythonnet /
-#      clr_loader 的 DLL 收集进 a.binaries；COLLECT(upx=True) 时被 UPX 压缩，
-#      破坏 .NET 混合程序集（C++/CLI）的导出表——DLL 能 LoadLibrary 但
-#      GetProcAddress 找不到 Python.Runtime.Loader.Initialize。
-#   2) 我们 collect_all 收集的同一批 DLL 在 a.datas（_pn_move_dll_to_datas
-#      移入，原样复制不经 UPX），与 binaries 里 hook 收集的同 dest 冲突，
-#      若 binaries 版本后写入 dist 会覆盖完好的 datas 版本。
-# 对策：
-#   ① upx_exclude：官方机制，声明这些文件跳过 UPX（即使未被剥离也安全）；
-#   ② 从 a.binaries 剥离 hook 收集的 pythonnet/clr_loader DLL 到 a.datas，
-#      消除同 dest 覆盖隐患，确保 dist 里只有完好的原样副本。
-_upx_exclude_names = [
-    "Python.Runtime.dll", "Python.Runtime.pdb", "Python.Runtime.xml",
-    "Python.Runtime.deps.json", "Python.Runtime.runtimeconfig.json",
-    "ClrLoader.dll", "ClrLoader.pdb", "hostfxr.dll", "hostpolicy.dll",
-    "coreclr.dll", "clrjit.dll", "mscordaccore.dll", "mscordbi.dll",
-    "libhostfxr.so", "libhostpolicy.so", "libcoreclr.so",
-    "libhostfxr.dylib", "libhostpolicy.dylib", "libcoreclr.dylib",
-]
-
-
-def _is_clr_binary(entry):
-    """判断 binaries/datas 条目（3 元组 (dest_name, src_path, typecode)）
-    是否属于 pythonnet / clr_loader 的 .NET DLL。"""
-    _dest = str(entry[0]).replace("\\", "/").lower()
-    _src = str(entry[1]).replace("\\", "/").lower()
-    _dest_base = _dest.split("/")[-1]
-    _src_parts = _src.split("/")
-    return ("pythonnet" in _src_parts or "clr_loader" in _src_parts
-            or _dest_base in ("python.runtime.dll", "clrloader.dll",
-                              "python.runtime.pdb", "clrloader.pdb"))
-
-
-# a.binaries 元素为 3 元组 (dest_name, src_path, typecode)；仅当 hook 确实
-# 收集到 pythonnet 相关 DLL 时才剥离（macOS 无 .NET DLL，_clr_entries 为空，
-# 直接跳过，不影响其他平台构建）。
-if a.binaries:
-    _clr_binaries = [b for b in a.binaries if _is_clr_binary(b)]
-    if _clr_binaries:
-        print(f"[pythonnet] 剥离 {len(_clr_binaries)} 个 .NET DLL（避免 UPX 压缩与同 dest 覆盖）：")
-        _datas_dest = {str(d[0]) for d in a.datas}
-        _moved = []
-        for _b in _clr_binaries:
-            _dest_name = str(_b[0])
-            _print_name = os.path.basename(str(_b[1]))
-            if _dest_name in _datas_dest:
-                print("   - 丢弃(已在 datas):", _print_name)
-                continue
-            _moved.append(_b)
-            _datas_dest.add(_dest_name)
-            print("   - 移入 datas:", _print_name)
-        if _moved:
-            a.datas = a.datas + _moved
-        a.binaries = [b for b in a.binaries if not _is_clr_binary(b)]
+# 根因：PyInstaller 内置 hook-clr.py 用 collect_dynamic_libs 把 pythonnet /
+# clr_loader 的 DLL 收集进 binaries；COLLECT(upx=True) 时被 UPX 压缩，
+# 破坏 .NET 混合程序集（C++/CLI）的导出表——DLL 能 LoadLibrary 但
+# GetProcAddress 找不到 Python.Runtime.Loader.Initialize（clr_loader 的
+# NetFx._get_callable 反射该符号失败）。
+#
+# 结论：UPX 压缩对 .NET 程序集（pythonnet/clr_loader）是破坏性的，且 PyInstaller
+# 的 upx_exclude 只匹配「源文件路径」、依赖环境中的 UPX 版本与行为，无法做到
+# 100% 可靠排除（此前 upx_exclude 方案在打包机验证仍失败）。既然稳定性优先
+# 于体积，这里直接 upx=False 全局禁用 UPX——所有二进制原样保留，彻底消除
+# 「UPX 破坏导出表」这一类问题；代价是 exe 体积增大（约 30~50MB），可接受。
+# （collect_all 收进 datas 的 DLL 本就原样复制，与 upx 无关；保留 _pn_move_dll_to_datas
+#   避免 hook 收集的 binaries 副本与 datas 同 dest 覆盖，双保险。）
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
@@ -258,8 +216,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=_upx_exclude_names,
+    upx=False,
     console=False,          # Windows 下不弹控制台黑窗
     icon=os.path.join(assets_dir, "app.ico") if os.path.exists(os.path.join(assets_dir, "app.ico")) else None,
 )
@@ -270,7 +227,6 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
-    upx_exclude=_upx_exclude_names,
+    upx=False,
     name="报告质控软件",
 )
