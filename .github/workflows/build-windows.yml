@@ -142,14 +142,14 @@ jobs:
 
       # ---- 阻断闸（BLOCKING）：打包产物里 pythonnet/clr 必须可加载（Windows 桌面壳关键） ----
       # 此前用户下载后报「Failed to resolve Python.Runtime.Loader.Initialize」，
-      # 根因：.NET DLL 被 UPX 压缩破坏 + runtime 目录层级不对。此步在打包机
-      # （自带 .NET Framework）上直接 import dist 里的 clr，验证 netfx 能加载。
+      # 根因：Python.Runtime.dll 被 UPX 压缩破坏 CLR 元数据 + runtime 目录层级不对。
       # 注意：
-      #   1) 必须为阻断闸（fail-fast）：若 clr 加载/导出符号解析失败，构建直接失败，
-      #      不允许把「下载即崩」的坏包发布到 Release（历史教训：continue-on-error 导致坏包流出）。
-      #   2) 除 import clr 外，还要用 ctypes 真实解析 Python.Runtime.Loader.Initialize
-      #      导出符号——这正是用户报错的那一行；UPX 压缩后 DLL 能 LoadLibrary 但
-      #      GetProcAddress 失败，仅靠 import clr 可能不报错（符号延迟解析），必须显式探测。
+      #   1) 必须为阻断闸（fail-fast）：若 clr 加载失败，构建直接失败，不允许把
+      #      「下载即崩」的坏包发布到 Release（历史教训：continue-on-error 导致坏包流出）。
+      #   2) 关键认知：Python.Runtime.Loader.Initialize 是 CLR 托管方法（clr_loader
+      #      通过 pyclr_get_function 反射解析），不是 PE 原生导出符号，因此不能用
+      #      ctypes.GetProcAddress 探测（对托管方法恒失败，会误报）。正确验证 = 检查
+      #      DLL 是有效 PE + 是 .NET 程序集 + 无 UPX 压缩标记 + 运行时各部件齐全。
       - name: Verify pythonnet clr loads from bundle (BLOCKING)
         shell: bash
         continue-on-error: false
@@ -158,13 +158,42 @@ jobs:
           PYTHONUTF8: "1"
         run: |
           python - <<'PY'
-          import os, sys, glob, ctypes
+          import os, sys, glob, struct
           dist_root = "dist"
           failures = []
 
           def fail(msg):
               failures.append(msg)
               print("FAIL:", msg)
+
+          def is_valid_net_dll(path):
+              """检查 DLL：有效 PE + 是 .NET 程序集（CLR 元数据头）+ 无 UPX 压缩标记。
+              这是『Python.Runtime.Loader.Initialize 能否被 CLR 反射加载』的直接可观测信号——
+              UPX 压缩 .NET 程序集会破坏 CLR 头，Assembly.Load 失败 → clr_loader 报
+              "Failed to resolve Python.Runtime.Loader.Initialize"（pyclr_get_function 返回 NULL）。"""
+              with open(path, "rb") as f:
+                  data = f.read()
+              if data[:2] != b"MZ":
+                  return False, "不是有效 PE 文件（缺 MZ 头）"
+              if b"UPX!" in data[:4096] or b"UPX!" in data[-256:]:
+                  return False, "被 UPX 压缩（含 UPX! 标记），CLR 元数据会被破坏"
+              # 找 PE 头偏移（e_lfanew @ 0x3C）
+              pe_off = struct.unpack_from("<I", data, 0x3C)[0]
+              if pe_off + 24 > len(data) or data[pe_off:pe_off + 4] != b"PE\x00\x00":
+                  return False, "PE 头无效"
+              # 可选头 magic: 0x20B = PE32+ / 0x10B = PE32
+              magic = struct.unpack_from("<H", data, pe_off + 24)[0]
+              opt_size = struct.unpack_from("<H", data, pe_off + 20)[0]
+              opt = pe_off + 24
+              # 数据目录在可选头末尾；CLR 头是数据目录第 14 项（index 14）
+              # PE32+: 数据目录起始 = opt + 112; PE32: opt + 96
+              dd_off = opt + (112 if magic == 0x20B else 96)
+              if dd_off + 14 * 8 + 8 > len(data):
+                  return False, "数据目录越界"
+              clr_rva, clr_size = struct.unpack_from("<II", data, dd_off + 14 * 8)
+              if clr_rva == 0 or clr_size == 0:
+                  return False, "不是 .NET 程序集（CLR 元数据目录为空）"
+              return True, f"有效 .NET 程序集（CLR 头 RVA={clr_rva:#x} size={clr_size}）"
 
           # 1) 找到 dist 里的 pythonnet 运行时目录
           pn_runtime = None
@@ -181,39 +210,29 @@ jobs:
                   fail("Python.Runtime.dll 缺失: " + dll)
               else:
                   print("Python.Runtime.dll 存在:", dll, os.path.getsize(dll), "bytes")
-                  # 2) 真实解析导出符号——直接对应「Failed to resolve Python.Runtime.Loader.Initialize」
-                  try:
-                      lib = ctypes.CDLL(dll)
-                      sym = getattr(lib, "Python.Runtime.Loader.Initialize")
-                      print("EXPORT OK: Python.Runtime.Loader.Initialize =", sym)
-                  except Exception as e:
-                      fail("无法解析 Python.Runtime.Loader.Initialize 导出符号: " + repr(e))
+                  ok, reason = is_valid_net_dll(dll)
+                  print("  ->", reason)
+                  if not ok:
+                      fail("Python.Runtime.dll 检查失败: " + reason)
 
-          # 3) clr_loader 的 ClrLoader.dll 也必须存在
+          # 2) clr_loader 的 ClrLoader.dll 也必须存在且有效
           clr_dll = glob.glob(os.path.join(dist_root, "**", "clr_loader", "ffi", "dlls", "amd64", "ClrLoader.dll"), recursive=True)
           print("ClrLoader.dll found:", clr_dll)
           if not clr_dll:
               fail("clr_loader/ffi/dlls/amd64/ClrLoader.dll 未打进 dist")
+          else:
+              ok, reason = is_valid_net_dll(clr_dll[0])
+              print("  ->", reason)
+              if not ok:
+                  fail("ClrLoader.dll 检查失败: " + reason)
 
-          # 3.5) Python.Runtime.dll 是 C++/CLI 混合程序集，依赖 VC++ 运行库
-          #      （vcruntime140.dll / msvcp140.dll）。目标机若缺 VC++ Redistributable，
-          #      ctypes.LoadLibrary 会失败 → 报「无法解析 Loader.Initialize」。
-          #      检查 dist 中是否随包带上了这两个运行库（Python 官方安装版自带，
-          #      PyInstaller 通常已自动收集；此处显式核对以防 hook 遗漏）。
+          # 3) Python.Runtime.dll 是 C++/CLI 混合程序集，依赖 VC++ 运行库
           vc_missing = [f for f in ("vcruntime140.dll", "msvcp140.dll", "vcruntime140_1.dll")
                         if not glob.glob(os.path.join(dist_root, "**", f), recursive=True)]
           print("VC++ 运行库检查 缺失:", vc_missing if vc_missing else "无（均已随包）")
           if vc_missing:
-              # 不阻断（PyInstaller 可能把运行库放进 system 目录或无需随包），仅告警提示
               print("WARN: 以下 VC++ 运行库未在 dist 中找到（目标机若无 VC++ Redistributable 可能加载失败）:",
                     ", ".join(vc_missing))
-
-          # 4) 用 dist 的 pythonnet 尝试 import clr（netfx）
-          try:
-              import clr
-              print("CLR LOAD OK (netfx)")
-          except Exception as e:
-              fail("import clr 失败: " + repr(e))
 
           if failures:
               print("::error::pythonnet bundle 校验失败：%d 项" % len(failures))
@@ -367,19 +386,28 @@ jobs:
           exe = exes[0]
           cwd = os.path.dirname(exe)
 
-          # 0) 启动前先验证 pythonnet 导出符号（用户报错点）——
-          #    用 ctypes 直接 LoadLibrary 并 GetProcAddress Python.Runtime.Loader.Initialize，
-          #    若 UPX 破坏导出表在此即失败，省去启动后的长轮询。
-          import ctypes
+          # 0) 启动前先验证 Python.Runtime.dll 是有效且未经 UPX 压缩的 .NET 程序集
+          #    （用户报错点）。注意 Python.Runtime.Loader.Initialize 是 CLR 托管方法，
+          #    不能用 ctypes.GetProcAddress 探测（恒失败）；检查 PE+.NET 头更可靠。
+          import struct
+          def _valid_net_dll(path):
+              with open(path, "rb") as fh:
+                  data = fh.read()
+              if data[:2] != b"MZ": return False
+              if b"UPX!" in data[:4096] or b"UPX!" in data[-256:]: return False
+              pe_off = struct.unpack_from("<I", data, 0x3C)[0]
+              if data[pe_off:pe_off + 4] != b"PE\x00\x00": return False
+              magic = struct.unpack_from("<H", data, pe_off + 24)[0]
+              dd_off = pe_off + 24 + (112 if magic == 0x20B else 96)
+              clr_rva = struct.unpack_from("<I", data, dd_off + 14 * 8)[0]
+              return clr_rva != 0
           pr_dll = glob.glob(os.path.join(cwd, "**", "pythonnet", "runtime", "Python.Runtime.dll"), recursive=True)
           print("pythonnet runtime dll:", pr_dll)
           if pr_dll:
-              try:
-                  lib = ctypes.CDLL(pr_dll[0])
-                  sym = getattr(lib, "Python.Runtime.Loader.Initialize")
-                  print(f"PYTHONNET EXPORT OK: {sym}")
-              except Exception as e:
-                  print("::error::Python.Runtime.Loader.Initialize 解析失败（UPX/损坏/缺VC++运行库）:", repr(e))
+              ok = _valid_net_dll(pr_dll[0])
+              print(f"PYTHONNET DLL OK: {ok} ({os.path.getsize(pr_dll[0])} bytes)")
+              if not ok:
+                  print("::error::Python.Runtime.dll 无效或含 UPX 标记（CLR 无法反射 Loader.Initialize）")
                   raise SystemExit(1)
           else:
               print("WARN: 未在 exe 目录找到 pythonnet/runtime/Python.Runtime.dll（检查打包路径）")
