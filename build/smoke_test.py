@@ -10,7 +10,7 @@ sys.path.insert(0, "src")
 def main():
     import engine
 
-    e = engine.QcEngine()
+    e = engine.RuleEngine()
     sample = "Chest CT: no acute findings."
     findings = e.run(sample, {})  # meta 用空字典即可，引擎内部全部走 .get()
     fixed, n_fix, n_manual, _ = e.auto_fix(sample, findings)

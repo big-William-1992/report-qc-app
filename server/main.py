@@ -432,6 +432,234 @@ def ris_fetch_reports(req: RisConfigReq, limit: int = Query(50, ge=1, le=200),
     return _envelope(True, "OK", {"items": items, "count": len(items)})
 
 
+# ----------------------------- RIS 主动轮询质检（P0：发现即质控闭环） -----------------------------
+# 后台守护线程按 interval_min 周期性拉取 RIS 新报告 → 自动质控 → 结果入库样本库 + 进待质控队列。
+# 配置与「已处理去重指纹」持久化在 appdata/ris_poll.json，重启不丢失、不重复处理。
+_POLL_PATH = None
+
+
+def _poll_path() -> str:
+    global _POLL_PATH
+    if _POLL_PATH is None:
+        _POLL_PATH = os.path.join(_appdata_dir(), "ris_poll.json")
+    return _POLL_PATH
+
+
+_POLL_DEFAULT = {
+    "enabled": False,          # 轮询总开关
+    "interval_min": 30,        # 拉取间隔（分钟）
+    "limit": 50,               # 每次最多拉取条数
+    "auto_qc": True,           # 拉取后自动质控入库
+    "auto_enqueue": True,      # 同时进待质控队列（医师复核）
+    "last_run": "",            # 上次成功运行时间（ISO）
+    "last_count": 0,           # 上次新增数量
+    "last_error": "",          # 最近一次错误信息
+    "seen": [],                # 已处理报告正文 MD5 指纹（去重）
+}
+
+
+def _poll_config() -> dict:
+    cfg = dict(_POLL_DEFAULT)
+    cfg["seen"] = list(cfg["seen"])
+    try:
+        with open(_poll_path(), encoding="utf-8") as fh:
+            data = json.load(fh) or {}
+        for k in _POLL_DEFAULT:
+            if k in data:
+                cfg[k] = data[k]
+    except Exception:
+        pass
+    return cfg
+
+
+def _save_poll_config(cfg: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(_poll_path()), exist_ok=True)
+        with open(_poll_path(), "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+class RisPollConfigReq(BaseModel):
+    enabled: Optional[bool] = None
+    interval_min: Optional[int] = None
+    limit: Optional[int] = None
+    auto_qc: Optional[bool] = None
+    auto_enqueue: Optional[bool] = None
+
+
+@app.get("/api/v1/ris/poll-status")
+def ris_poll_status(emp: str = Depends(require_emp_local)):
+    cfg = _poll_config()
+    return _envelope(True, "OK", {
+        "enabled": cfg.get("enabled", False),
+        "interval_min": cfg.get("interval_min", 30),
+        "limit": cfg.get("limit", 50),
+        "auto_qc": cfg.get("auto_qc", True),
+        "auto_enqueue": cfg.get("auto_enqueue", True),
+        "last_run": cfg.get("last_run", ""),
+        "last_count": cfg.get("last_count", 0),
+        "last_error": cfg.get("last_error", ""),
+        "seen_count": len(cfg.get("seen") or []),
+    })
+
+
+@app.put("/api/v1/ris/poll-config")
+def ris_poll_config_put(req: RisPollConfigReq, emp: str = Depends(require_emp_local)):
+    cfg = _poll_config()
+    if req.enabled is not None:
+        cfg["enabled"] = bool(req.enabled)
+    if req.interval_min is not None:
+        cfg["interval_min"] = max(5, min(int(req.interval_min), 1440))
+    if req.limit is not None:
+        cfg["limit"] = max(5, min(int(req.limit), 200))
+    if req.auto_qc is not None:
+        cfg["auto_qc"] = bool(req.auto_qc)
+    if req.auto_enqueue is not None:
+        cfg["auto_enqueue"] = bool(req.auto_enqueue)
+    _save_poll_config(cfg)
+    return _envelope(True, "OK", ris_poll_status(emp), "轮询配置已保存")
+
+
+@app.post("/api/v1/ris/poll-now")
+def ris_poll_now(emp: str = Depends(require_emp_local)):
+    """手动立即触发一次轮询（不依赖 enabled 开关，便于配置后首跑验证）。"""
+    try:
+        result = _ris_poll_once(manual=True)
+        return _envelope(True, "OK", result)
+    except Exception as exc:
+        return _envelope(False, "POLL_ERR", {"error": str(exc)}, f"轮询失败：{exc}")
+
+
+def _ris_poll_once(manual: bool = False) -> dict:
+    """执行一次轮询：拉取 RIS → 质控 → 入库 + 入队。返回统计。"""
+    cfg = _poll_config()
+    config = ris.load_config()
+    if not config.get("host"):
+        raise RuntimeError("RIS 连接未配置，请在 RIS 直连页填写并测试连接")
+    reports = ris.fetch_reports(config, limit=int(cfg.get("limit", 50)))
+    new_reports = []
+    if not reports:
+        new_count = 0
+    else:
+        seen = set(cfg.get("seen") or [])
+        new_reports = []
+        for r in reports:
+            norm = "".join((r.get("report_text") or "").split())
+            if not norm:
+                continue
+            h = hashlib.md5(norm.encode("utf-8", "ignore")).hexdigest()
+            if h in seen:
+                continue
+            seen.add(h)
+            new_reports.append(r)
+        cfg["seen"] = list(seen)[-5000:]   # 仅保留最近 5000 指纹，防无限膨胀
+        new_count = len(new_reports)
+        emp_id = "ris-poll"
+        if cfg.get("auto_qc"):
+            for r in new_reports:
+                try:
+                    qc = _run_qc(r.get("report_text") or "", {
+                        "patient": r.get("patient", ""), "gender": r.get("gender", ""),
+                        "age": r.get("age", ""), "modality": r.get("modality", ""),
+                        "applied_site": r.get("applied_site", ""),
+                    }, False)
+                    findings = []
+                    for f in qc.get("findings") or []:
+                        findings.append(engine.Finding(
+                            rule_id=f.get("rule_id", ""), error_type=f.get("error_type", ""),
+                            severity=f.get("severity", "low"), message=f.get("message", ""),
+                            snippet=f.get("snippet", ""),
+                            span=tuple(f.get("span", (-1, -1))),
+                            suggestion=f.get("suggestion", "")))
+                    samplelib.save_sample(
+                        r.get("report_text") or "",
+                        {"patient": r.get("patient", ""), "gender": r.get("gender", ""),
+                         "age": r.get("age", ""), "modality": r.get("modality", ""),
+                         "applied_site": r.get("applied_site", "")},
+                        findings, qc.get("score") or {},
+                        anonymize=False, user_id=emp_id)
+                except Exception:
+                    continue
+        if cfg.get("auto_enqueue"):
+            for r in new_reports:
+                try:
+                    _queue_add_text(r.get("report_text") or "",
+                                    {"patient": r.get("patient", ""),
+                                     "gender": r.get("gender", ""),
+                                     "age": r.get("age", ""),
+                                     "modality": r.get("modality", ""),
+                                     "applied_site": r.get("applied_site", "")},
+                                    source="RIS轮询")
+                except Exception:
+                    continue
+    cfg["last_run"] = datetime_now_iso()
+    cfg["last_count"] = new_count
+    cfg["last_error"] = ""
+    _save_poll_config(cfg)
+    return {"count": new_count, "total_seen": len(cfg.get("seen") or []),
+            "last_run": cfg["last_run"], "new_reports": new_reports[:5]}
+
+
+def datetime_now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now().isoformat(timespec="seconds")
+
+
+def _queue_add_text(text: str, meta: dict, source: str = "RIS轮询"):
+    """复用 queue 去重逻辑（正文 MD5）。返回条目 id 或 None。"""
+    norm = "".join((text or "").split())
+    if not norm:
+        return None
+    h = hashlib.md5(norm.encode("utf-8", "ignore")).hexdigest()
+    items = _load_queue()
+    for it in items:
+        if it.get("hash") == h:
+            return it.get("id")
+    item = {
+        "id": _uuid.uuid4().hex[:8], "hash": h,
+        "patient": (meta or {}).get("patient", "").strip(),
+        "site": (meta or {}).get("applied_site", "").strip(),
+        "text": text, "source": source,
+        "ts": time.strftime("%Y-%m-%d %H:%M"), "meta": meta or {},
+    }
+    items.append(item)
+    _save_queue(items)
+    return item["id"]
+
+
+def _ris_poll_loop(stop_event: threading.Event):
+    """后台守护线程：按 interval_min 周期轮询。sleep 分片避免阻塞退出。"""
+    while not stop_event.is_set():
+        try:
+            cfg = _poll_config()
+            if cfg.get("enabled"):
+                _ris_poll_once(manual=False)
+        except Exception:
+            # 记录最近错误，供前端展示；不崩溃线程
+            try:
+                cfg = _poll_config()
+                cfg["last_error"] = str(sys.exc_info()[1])[:300]
+                cfg["last_run"] = datetime_now_iso()
+                _save_poll_config(cfg)
+            except Exception:
+                pass
+        # 分片 sleep（每 5s 检查一次停止事件），interval 在循环内实时读取
+        for _i in range(12):
+            if stop_event.is_set():
+                return
+            time.sleep(5)
+
+
+# 模块加载即启动轮询守护线程（daemon，进程退出自动终止）
+_RIS_POLL_STOP = threading.Event()
+_RIS_POLL_THREAD = threading.Thread(target=_ris_poll_loop,
+                                    args=(_RIS_POLL_STOP,), daemon=True)
+_RIS_POLL_THREAD.name = "ris-poll-loop"
+_RIS_POLL_THREAD.start()
+
+
 # ----------------------------- 账号（责任到人） -----------------------------
 @app.post("/api/v1/accounts")
 def account_create(req: AccountCreate,
@@ -693,12 +921,84 @@ def sample_delete(sid: int, emp: str = Depends(require_emp_local)):
 
 @app.post("/api/v1/samples/export")
 def sample_export(req: SampleExportReq, emp: str = Depends(require_emp_local)):
-    """导出样本库为 CSV / JSON（修正 Flask 版把输出路径误传为库路径参数的问题）。"""
+    """导出样本库为 CSV / JSON / DOCX / PDF（修正 Flask 版把输出路径误传为库路径参数的问题）。"""
     try:
-        result_path = samplelib.export_samples(out_path=req.path or None, fmt=req.fmt)
-        return _envelope(True, "OK", {"path": result_path})
+        fmt = (req.fmt or "csv").lower()
+        if fmt not in ("csv", "json", "docx", "pdf"):
+            raise HTTPException(400, "fmt 仅支持 csv/json/docx/pdf")
+        result_path = samplelib.export_samples(out_path=req.path or None, fmt=fmt)
+        return _envelope(True, "OK", {"path": result_path, "fmt": fmt})
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(500, str(exc))
+
+
+class SampleReportExportReq(BaseModel):
+    """单份质控报告单导出请求。fmt: docx | pdf"""
+    fmt: str = "docx"
+
+
+class QcReportExportReq(BaseModel):
+    """当前工作区质控结果直接导出报告单（无需入库）。"""
+    report: str = ""
+    meta: Dict[str, str] = {}
+    findings: List[dict] = []
+    scores: Dict[str, Any] = {}
+    fmt: str = "docx"
+
+
+@app.post("/api/v1/qc/export-report")
+def qc_report_export(req: QcReportExportReq, emp: str = Depends(require_emp_local)):
+    """把当前质控结果直接导出为质控报告单（PDF/Word），无需先入库。"""
+    if not req.report.strip():
+        raise HTTPException(400, "report 不能为空")
+    fmt = (req.fmt or "docx").lower()
+    if fmt not in ("docx", "pdf"):
+        raise HTTPException(400, "fmt 仅支持 docx/pdf")
+    try:
+        path = samplelib.export_qc_report(
+            req.report, req.meta, req.findings or [],
+            req.scores or {}, fmt=fmt)
+        return _envelope(True, "OK", {"path": path, "fmt": fmt})
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+
+@app.post("/api/v1/samples/{sid}/export-report")
+def sample_report_export(sid: int, req: SampleReportExportReq,
+                         emp: str = Depends(require_emp_local)):
+    """导出单份样本的质控报告单（PDF/Word）：标题、检查部位、原报告、质控发现、建议修正。"""
+    s = samplelib.get_sample(sid)
+    if not s:
+        raise HTTPException(404, "样本不存在")
+    fmt = (req.fmt or "docx").lower()
+    try:
+        if fmt == "pdf":
+            path = samplelib.export_report_pdf(s)
+        else:
+            path = samplelib.export_report_docx(s)
+        return _envelope(True, "OK", {"path": path, "fmt": fmt})
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+
+@app.get("/api/v1/files/download")
+def file_download(file: str = Query(...), emp: str = Depends(require_emp_local)):
+    """下载服务端生成的导出文件（按 basename 限定到导出目录，防任意路径读取）。
+
+    前端把导出接口返回的 path 的 basename 传回即可拿到文件流。
+    """
+    from fastapi.responses import FileResponse
+    name = os.path.basename(file or "")
+    if not name or name in (".", ".."):
+        raise HTTPException(400, "无效的文件名")
+    # 限定在样本库所在目录 / 临时导出目录，防路径穿越
+    export_dir = os.path.dirname(samplelib.db_path())
+    full = os.path.join(export_dir, name)
+    if not os.path.exists(full):
+        raise HTTPException(404, "文件不存在或已被清理")
+    return FileResponse(full, filename=name)
 
 
 @app.post("/api/v1/samples/import")
@@ -745,6 +1045,20 @@ def stats_error_types(emp: str = Depends(require_emp_local)):
 @app.get("/api/v1/stats/trend")
 def stats_trend(emp: str = Depends(require_emp_local)):
     return _envelope(True, "OK", samplelib.stats_by_date())
+
+
+@app.get("/api/v1/stats/report")
+def stats_report(start: Optional[str] = None, end: Optional[str] = None,
+                 emp: str = Depends(require_emp_local)):
+    """质控问题分类统计报表（时间段筛选 + 问题类型 TOP 榜 + 科室/医生排行榜）。
+
+    start / end 格式 YYYY-MM-DD，缺省不限。
+    """
+    try:
+        data = samplelib.stats_report(start=start, end=end)
+        return _envelope(True, "OK", data)
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
 
 
 @app.get("/api/v1/samples/stats/dashboard")
@@ -1273,6 +1587,103 @@ def qc_rules_learn_typo(req: LearnTypoReq, emp: str = Depends(require_emp_local)
     if not ok:
         raise HTTPException(400, "无效的错字对（为空或已存在反向冲突）")
     return _envelope(True, "OK", None, f"已学习错字对：{req.wrong}→{req.correct}")
+
+
+# ----------------------------- 错别字词库可视化维护（P0：增删改/批量导入/启停单条） -----------------------------
+class TypoItemReq(BaseModel):
+    wrong: str = ""
+    correct: str = ""
+
+
+class TypoBatchImportReq(BaseModel):
+    """批量导入：items 为 [[错词, 正确词], ...] 或 [{wrong, correct}, ...]"""
+    items: list = []
+
+
+@app.post("/api/v1/qc/rules/typos")
+def qc_rules_typo_add(req: TypoItemReq, emp: str = Depends(require_emp_local)):
+    """新增单条错字对（若已存在则更新正确词并自动启用）。"""
+    ok = engine.learn_typo(req.wrong, req.correct)
+    if not ok:
+        raise HTTPException(400, "无效的错字对（为空、过长或含非中文）")
+    # 新增时自动从停用列表移除（新维护的词默认启用）
+    cfg = engine.load_rules_config()
+    disabled = cfg.get("disabled_typos") or []
+    if req.wrong.strip() in disabled:
+        cfg["disabled_typos"] = [d for d in disabled if d != req.wrong.strip()]
+        engine.save_rules_config(cfg)
+    return _envelope(True, "OK", None, f"已新增错字对：{req.wrong}→{req.correct}")
+
+
+@app.post("/api/v1/qc/rules/typos/toggle")
+def qc_rules_typo_toggle(req: TypoItemReq, emp: str = Depends(require_emp_local)):
+    """启用/停用单条错字：enabled=false 时把错词加入 disabled_typos，true 时移出。"""
+    wrong = (req.wrong or "").strip()
+    if not wrong:
+        raise HTTPException(400, "缺少错词")
+    enabled = (req.correct or "").lower() not in ("0", "false", "off", "停用")
+    cfg = engine.load_rules_config()
+    disabled = set(cfg.get("disabled_typos") or [])
+    if enabled:
+        disabled.discard(wrong)
+        msg = "已启用"
+    else:
+        disabled.add(wrong)
+        msg = "已停用"
+    cfg["disabled_typos"] = sorted(disabled)
+    engine.save_rules_config(cfg)
+    return _envelope(True, "OK", {"wrong": wrong, "enabled": enabled}, f"{msg}错字词条「{wrong}」")
+
+
+@app.post("/api/v1/qc/rules/typos/delete")
+def qc_rules_typo_delete(req: TypoItemReq, emp: str = Depends(require_emp_local)):
+    """删除单条错字（同时从停用列表移除）。"""
+    wrong = (req.wrong or "").strip()
+    if not wrong:
+        raise HTTPException(400, "缺少错词")
+    cfg = engine.load_rules_config()
+    typos = cfg.get("typos") or {}
+    if wrong not in typos:
+        raise HTTPException(404, f"错词「{wrong}」不存在")
+    typos.pop(wrong, None)
+    cfg["typos"] = typos
+    cfg["disabled_typos"] = [d for d in (cfg.get("disabled_typos") or []) if d != wrong]
+    engine.save_rules_config(cfg)
+    return _envelope(True, "OK", None, f"已删除错字词条「{wrong}」")
+
+
+@app.post("/api/v1/qc/rules/typos/batch-import")
+def qc_rules_typo_batch_import(req: TypoBatchImportReq, emp: str = Depends(require_emp_local)):
+    """批量导入错字对：自动跳过无效/反向冲突项，返回成功与失败数。"""
+    cfg = engine.load_rules_config()
+    typos = cfg.get("typos") or {}
+    disabled = set(cfg.get("disabled_typos") or [])
+    ok_n = bad_n = 0
+    bad_items = []
+    for it in (req.items or []):
+        if isinstance(it, dict):
+            wrong, correct = (it.get("wrong") or "").strip(), (it.get("correct") or "").strip()
+        elif isinstance(it, (list, tuple)) and len(it) >= 2:
+            wrong, correct = str(it[0]).strip(), str(it[1]).strip()
+        else:
+            bad_n += 1
+            continue
+        if not wrong or not correct or wrong == correct or len(wrong) > 10 or len(correct) > 10:
+            bad_n += 1
+            bad_items.append([wrong, correct])
+            continue
+        if typos.get(correct) == wrong:   # 反向冲突保护
+            bad_n += 1
+            bad_items.append([wrong, correct])
+            continue
+        typos[wrong] = correct
+        disabled.discard(wrong)
+        ok_n += 1
+    cfg["typos"] = typos
+    cfg["disabled_typos"] = sorted(disabled)
+    engine.save_rules_config(cfg)
+    return _envelope(True, "OK", {"ok": ok_n, "bad": bad_n, "bad_items": bad_items[:20]},
+                     f"批量导入完成：成功 {ok_n} 条，跳过 {bad_n} 条")
 
 
 @app.post("/api/v1/qc/rules/scan-reports")

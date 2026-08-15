@@ -28,6 +28,7 @@ PyYAML>=6.0                   # rapidocr 配置加载
 six>=1.16                     # rapidocr 兼容层
 cryptography>=41.0            # 离线激活码(Ed25519)校验必需：license_utils 在验证激活码时懒加载，运行期必须使用
 pypinyin>=0.50                # R19 读音相似错字检测：把文本转拼音，与高频词组库读音比对（未装则 R19 自动降级关闭，不影响 R8 词典）
+reportlab>=4.0                # 质控报告单 PDF 导出（Word/DOCX 导出为纯标准库零依赖；PDF 缺失此包时接口返回明确安装提示）
 
 # 可选：RIS/PACS 数据库直连驱动（按你对接的医院库类型，装对应一项即可；不装则 RIS 面板不可用）
 # pyodbc>=5.0           # SQL Server（需另装 Microsoft ODBC Driver 18 for SQL Server）

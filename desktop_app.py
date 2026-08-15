@@ -64,12 +64,44 @@ if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
                 os.add_dll_directory(_dd)
             except Exception:
                 pass
+    def _diag_clr_dll():
+        """定位 pythonnet 的 Python.Runtime.dll 并做导出符号探测，返回 (路径, 诊断文本)。
+        直接对应用户报错「Failed to resolve Python.Runtime.Loader.Initialize」——
+        若 DLL 被 UPX 压缩破坏导出表，ctypes 能 LoadLibrary 但 GetProcAddress 失败。"""
+        cands = [
+            os.path.join(ROOT, "_internal", "pythonnet", "runtime", "Python.Runtime.dll"),
+            os.path.join(ROOT, "pythonnet", "runtime", "Python.Runtime.dll"),
+            os.path.join(ROOT, "_internal", "Python.Runtime.dll"),
+            os.path.join(ROOT, "Python.Runtime.dll"),
+        ]
+        for p in cands:
+            if os.path.isfile(p):
+                msgs = [f"Python.Runtime.dll 存在：{p}（{os.path.getsize(p)} bytes）"]
+                try:
+                    import ctypes as _ct
+                    _lib = _ct.CDLL(p)
+                    try:
+                        _sym = getattr(_lib, "Python.Runtime.Loader.Initialize")
+                        msgs.append(f"导出符号 Python.Runtime.Loader.Initialize 可解析：{_sym}")
+                    except Exception as _ge:
+                        msgs.append("导出符号 Python.Runtime.Loader.Initialize 解析失败！"
+                                    "典型原因：.NET 程序集被 UPX 压缩破坏导出表（本版已修复，"
+                                    "请从最新 Release 重新下载）。")
+                except Exception as _le:
+                    msgs.append(f"ctypes 加载 DLL 失败：{_le}。"
+                                "可能缺少 VC++ 运行库（vcruntime140/msvcp140）或 .NET Framework 4.8。")
+                return p, " | ".join(msgs)
+        return None, "未找到 Python.Runtime.dll（打包缺失？请重新下载最新版）"
+
     try:
         # 预探测 netfx 能否加载 pythonnet；失败则切 coreclr 再试。
         os.environ["PYTHONNET_RUNTIME"] = "netfx"
         import clr  # noqa: F401
         _pn_runtime = "netfx"
-    except Exception:
+    except Exception as _nfx_err:
+        _diag_path, _diag_txt = _diag_clr_dll()
+        print(f"[clr] netfx 加载失败：{_nfx_err!r}")
+        print(f"[clr] 诊断：{_diag_txt}")
         try:
             os.environ["PYTHONNET_RUNTIME"] = "coreclr"
             import clr  # noqa: F401
@@ -78,6 +110,8 @@ if getattr(sys, "frozen", False) and sys.platform.startswith("win"):
             # 记录最终失败原因，供 fallback 诊断；保持环境变量为 coreclr
             # （pywebview 的 winforms/edgechromium import clr 失败时会自己重试 coreclr）
             os.environ["PYTHONNET_RUNTIME"] = "coreclr"
+            print("[clr] coreclr 也加载失败：%r" % (_ce,))
+            print(f"[clr] 诊断：{_diag_txt}")
             print("[clr] pythonnet 加载失败（netfx 与 coreclr 均不可用）→ 将降级浏览器模式")
     print(f"[clr] pythonnet 运行时模式 = {_pn_runtime}")
     # 标记 pythonnet 是否可用，供 main() 决定是否跳过 pywebview 直接降级浏览器

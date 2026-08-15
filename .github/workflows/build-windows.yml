@@ -140,22 +140,33 @@ jobs:
       - name: Package portable zip
         run: Compress-Archive -Path "dist/报告质控软件/*" -DestinationPath "report-qc-portable.zip" -Force
 
-      # ---- 阻断闸：打包产物里 pythonnet/clr 必须可加载（Windows 桌面壳关键） ----
+      # ---- 阻断闸（BLOCKING）：打包产物里 pythonnet/clr 必须可加载（Windows 桌面壳关键） ----
       # 此前用户下载后报「Failed to resolve Python.Runtime.Loader.Initialize」，
       # 根因：.NET DLL 被 UPX 压缩破坏 + runtime 目录层级不对。此步在打包机
       # （自带 .NET Framework）上直接 import dist 里的 clr，验证 netfx 能加载。
-      # 注意：这里用 dist 内收集的 pythonnet/clr_loader，若收集不全必然失败。
-      - name: Verify pythonnet clr loads from bundle
+      # 注意：
+      #   1) 必须为阻断闸（fail-fast）：若 clr 加载/导出符号解析失败，构建直接失败，
+      #      不允许把「下载即崩」的坏包发布到 Release（历史教训：continue-on-error 导致坏包流出）。
+      #   2) 除 import clr 外，还要用 ctypes 真实解析 Python.Runtime.Loader.Initialize
+      #      导出符号——这正是用户报错的那一行；UPX 压缩后 DLL 能 LoadLibrary 但
+      #      GetProcAddress 失败，仅靠 import clr 可能不报错（符号延迟解析），必须显式探测。
+      - name: Verify pythonnet clr loads from bundle (BLOCKING)
         shell: bash
-        continue-on-error: true
+        continue-on-error: false
         env:
           PYTHONNET_RUNTIME: "netfx"
           PYTHONUTF8: "1"
         run: |
           python - <<'PY'
-          import os, sys, glob
-          # 找到 dist 里的 pythonnet 运行时目录
+          import os, sys, glob, ctypes
           dist_root = "dist"
+          failures = []
+
+          def fail(msg):
+              failures.append(msg)
+              print("FAIL:", msg)
+
+          # 1) 找到 dist 里的 pythonnet 运行时目录
           pn_runtime = None
           for root, dirs, files in os.walk(dist_root):
               if os.path.basename(root) == "runtime" and "pythonnet" in root:
@@ -163,22 +174,50 @@ jobs:
                   break
           print("pythonnet runtime dir:", pn_runtime)
           if not pn_runtime:
-              print("FAIL: pythonnet/runtime 未打进 dist"); sys.exit(1)
-          dll = os.path.join(pn_runtime, "Python.Runtime.dll")
-          if not os.path.exists(dll):
-              print("FAIL: Python.Runtime.dll 缺失:", dll); sys.exit(1)
-          print("Python.Runtime.dll 存在:", dll, os.path.getsize(dll), "bytes")
-          # clr_loader 的 ClrLoader.dll 也必须存在
+              fail("pythonnet/runtime 未打进 dist")
+          else:
+              dll = os.path.join(pn_runtime, "Python.Runtime.dll")
+              if not os.path.exists(dll):
+                  fail("Python.Runtime.dll 缺失: " + dll)
+              else:
+                  print("Python.Runtime.dll 存在:", dll, os.path.getsize(dll), "bytes")
+                  # 2) 真实解析导出符号——直接对应「Failed to resolve Python.Runtime.Loader.Initialize」
+                  try:
+                      lib = ctypes.CDLL(dll)
+                      sym = getattr(lib, "Python.Runtime.Loader.Initialize")
+                      print("EXPORT OK: Python.Runtime.Loader.Initialize =", sym)
+                  except Exception as e:
+                      fail("无法解析 Python.Runtime.Loader.Initialize 导出符号: " + repr(e))
+
+          # 3) clr_loader 的 ClrLoader.dll 也必须存在
           clr_dll = glob.glob(os.path.join(dist_root, "**", "clr_loader", "ffi", "dlls", "amd64", "ClrLoader.dll"), recursive=True)
           print("ClrLoader.dll found:", clr_dll)
           if not clr_dll:
-              print("FAIL: clr_loader/ffi/dlls/amd64/ClrLoader.dll 未打进 dist"); sys.exit(1)
-          # 用 dist 的 pythonnet 尝试 import clr（netfx）
+              fail("clr_loader/ffi/dlls/amd64/ClrLoader.dll 未打进 dist")
+
+          # 3.5) Python.Runtime.dll 是 C++/CLI 混合程序集，依赖 VC++ 运行库
+          #      （vcruntime140.dll / msvcp140.dll）。目标机若缺 VC++ Redistributable，
+          #      ctypes.LoadLibrary 会失败 → 报「无法解析 Loader.Initialize」。
+          #      检查 dist 中是否随包带上了这两个运行库（Python 官方安装版自带，
+          #      PyInstaller 通常已自动收集；此处显式核对以防 hook 遗漏）。
+          vc_missing = [f for f in ("vcruntime140.dll", "msvcp140.dll", "vcruntime140_1.dll")
+                        if not glob.glob(os.path.join(dist_root, "**", f), recursive=True)]
+          print("VC++ 运行库检查 缺失:", vc_missing if vc_missing else "无（均已随包）")
+          if vc_missing:
+              # 不阻断（PyInstaller 可能把运行库放进 system 目录或无需随包），仅告警提示
+              print("WARN: 以下 VC++ 运行库未在 dist 中找到（目标机若无 VC++ Redistributable 可能加载失败）:",
+                    ", ".join(vc_missing))
+
+          # 4) 用 dist 的 pythonnet 尝试 import clr（netfx）
           try:
               import clr
               print("CLR LOAD OK (netfx)")
           except Exception as e:
-              print("FAIL: import clr 失败:", repr(e)); sys.exit(1)
+              fail("import clr 失败: " + repr(e))
+
+          if failures:
+              print("::error::pythonnet bundle 校验失败：%d 项" % len(failures))
+              sys.exit(1)
           print("PYTHONNET_BUNDLE_OK")
           PY
 
@@ -327,6 +366,23 @@ jobs:
           assert exes, "未找到 dist 内的 报告质控软件.exe"
           exe = exes[0]
           cwd = os.path.dirname(exe)
+
+          # 0) 启动前先验证 pythonnet 导出符号（用户报错点）——
+          #    用 ctypes 直接 LoadLibrary 并 GetProcAddress Python.Runtime.Loader.Initialize，
+          #    若 UPX 破坏导出表在此即失败，省去启动后的长轮询。
+          import ctypes
+          pr_dll = glob.glob(os.path.join(cwd, "**", "pythonnet", "runtime", "Python.Runtime.dll"), recursive=True)
+          print("pythonnet runtime dll:", pr_dll)
+          if pr_dll:
+              try:
+                  lib = ctypes.CDLL(pr_dll[0])
+                  sym = getattr(lib, "Python.Runtime.Loader.Initialize")
+                  print(f"PYTHONNET EXPORT OK: {sym}")
+              except Exception as e:
+                  print("::error::Python.Runtime.Loader.Initialize 解析失败（UPX/损坏/缺VC++运行库）:", repr(e))
+                  raise SystemExit(1)
+          else:
+              print("WARN: 未在 exe 目录找到 pythonnet/runtime/Python.Runtime.dll（检查打包路径）")
 
           # 真实启动打包产物（cwd 必须是 exe 所在目录：冻结版按 exe 位置找资源）
           proc = subprocess.Popen([exe], cwd=cwd)

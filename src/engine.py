@@ -759,7 +759,8 @@ def default_rules_config() -> dict:
     """出厂默认规则配置（恢复默认用）。"""
     return {"typos": dict(TYPO_MAP_DEFAULT), "conflicts": [],
             "ignores": [], "template": dict(DEFAULT_TEMPLATE),
-            "enable_r19": True, "r19_sensitivity": "medium"}
+            "enable_r19": True, "r19_sensitivity": "medium",
+            "disabled_typos": []}
 
 
 def load_rules_config(path: str = RULES_CONFIG_PATH) -> dict:
@@ -773,6 +774,8 @@ def load_rules_config(path: str = RULES_CONFIG_PATH) -> dict:
         cfg.setdefault("template", dict(DEFAULT_TEMPLATE))
         cfg.setdefault("r19_sensitivity", "medium")
         cfg.setdefault("enable_r19", True)
+        # 启用/停用单条错字：disabled_typos 为「停用的错词」列表（P0 词库可视化管理）
+        cfg.setdefault("disabled_typos", [])
         # typos 升级合并：默认错字表的新增词自动并入（用户自定义映射优先保留），
         # 避免老用户升级后缺失新版本内置的错字识别能力。
         _u_typos = cfg.get("typos") or {}
@@ -1015,13 +1018,15 @@ class RuleEngine:
                    if self.rules_config.get("enable_r16") else []))
 
     def auto_fix(self, text: str, findings: List[Finding]):
-        """自动修正：仅确定性错别字(R8)可安全替换；矛盾/规范/缺失类错误无法判定正确值，不改文本。
+        """自动修正：确定性错别字（R8 词典 / R19 读音推导）可安全替换；
+        矛盾/规范/缺失类错误无法判定正确值，不改文本（返回建议修正文本供人工参考）。
         返回 (修正后文本, 已修正错别字数, 需人工确认的问题数, 改动明细列表)。
         改动明细每项：{start, end, wrong, correct, snippet, message} —— 供前端预览逐条确认。"""
         fixes = []
         manual = 0
         for fd in findings:
-            if fd.rule_id == "R8-TYPO":
+            # 确定性错别字：R8 词典命中 / R19 读音推导（两者都带 suggestion=正确词）
+            if fd.rule_id in ("R8-TYPO", "R19-HOMOPHONE"):
                 s, e = fd.span
                 sug = getattr(fd, "suggestion", "")
                 if s >= 0 and e > s and sug:
@@ -1033,7 +1038,7 @@ class RuleEngine:
                 # 非错别字类（性别矛盾/左右混淆/描述-结论矛盾/部位不符等）需人工判定，不自动改
                 if fd.severity in ("high", "medium", "low"):
                     manual += 1
-        # 区间已由 _r8_typo 去重，无重叠；从右往左替换以规避位置偏移
+        # 区间已由引擎去重，无重叠；从右往左替换以规避位置偏移
         fixes.sort(key=lambda x: x["start"], reverse=True)
         fixed = text
         for fx in fixes:
@@ -1359,9 +1364,13 @@ class RuleEngine:
         if not text:
             return out
         typo_map = self.rules_config.get("typos", {}) or {}
+        # 停用单条错字：disabled_typos 中列出的错词跳过（词库可视化维护的「停用」动作）
+        disabled = set(self.rules_config.get("disabled_typos") or [])
         seen = set()
         # 按错词长度降序匹配，优先命中更长的错写（如"淋巴结解"先于"结解"），避免重复告警
         for wrong in sorted(typo_map.keys(), key=len, reverse=True):
+            if wrong in disabled:
+                continue  # 用户已停用该词条
             if wrong == typo_map.get(wrong):
                 continue  # 自映射无意义项
             correct = typo_map[wrong]

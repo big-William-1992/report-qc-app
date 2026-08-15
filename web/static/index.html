@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>星衍AI放射质控</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=20260811a" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260815a" />
 </head>
 <body>
 
@@ -264,6 +264,8 @@
             </button>
             <button class="btn btn-outline" onclick="clearInput()">🗑 清空</button>
             <button class="btn btn-outline" onclick="pasteAndSplit()" title="一次复制报告全文（含描述+诊断），自动按标题分栏填入并立即质控">📋 粘贴全文并质控</button>
+            <button class="btn btn-outline" onclick="applyAllFixes()" title="自动修正所有确定性错别字（R8/R19），并重新质控">✨ 一键采纳修正</button>
+            <button class="btn btn-outline" onclick="exportQcReport()" title="把当前质控结果导出为质控报告单（Word/PDF）">📄 导出报告单</button>
             <button class="btn btn-outline" onclick="saveToLibrary()">💾 入库</button>
             <button class="btn btn-outline" onclick="openOcrModal()">📷 框选设置</button>
             <button class="btn btn-primary" onclick="ocrOneClick()" title="用已保存的框位一键抓屏识别并质控（Ctrl+Shift+O）">⚡ 一键识别</button>
@@ -327,6 +329,7 @@
                 <button class="sev-filter" data-sev="high" onclick="setSevFilter('high')">⛔ 严重</button>
                 <button class="sev-filter" data-sev="medium" onclick="setSevFilter('medium')">⚠ 警告</button>
                 <button class="sev-filter" data-sev="low" onclick="setSevFilter('low')">ℹ 提示</button>
+                <button class="btn btn-xs apply-fix-btn" onclick="applyAllFixes()" title="批量应用全部确定性错别字修正">✨ 全部采纳</button>
               </div>
               <span class="card-header-action" id="findingCount">0 条</span>
             </div>
@@ -467,6 +470,48 @@
           </div>
         </div>
       </div>
+
+      <!-- 第三排：质控问题分类统计报表（时间段筛选 + 问题类型 TOP 榜 + 医生排行榜） -->
+      <div class="card" style="margin-top:20px;">
+        <div class="card-header">
+          <h3><span class="icon">📋</span> 质控问题分类统计报表</h3>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <select id="reportRange" class="card-header-action" style="border:1px solid var(--border-color);border-radius:6px;padding:4px 8px;font-size:11px;" onchange="loadStatsReport()">
+              <option value="7d">近 7 天</option>
+              <option value="30d" selected>近 30 天</option>
+              <option value="quarter">本季度</option>
+              <option value="all">全部时间</option>
+            </select>
+            <button class="btn btn-outline btn-sm" onclick="loadStatsReport()">🔄 刷新</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;" id="statsReportGrid">
+            <!-- 左：问题类型 TOP 榜 -->
+            <div>
+              <div class="report-sub-title">🔝 问题类型 TOP 榜</div>
+              <div id="reportErrTop" class="report-block"><div class="muted" style="font-size:13px;">加载中...</div></div>
+            </div>
+            <!-- 中：规则命中 TOP 榜 -->
+            <div>
+              <div class="report-sub-title">🧩 规则命中 TOP 榜</div>
+              <div id="reportRuleTop" class="report-block"><div class="muted" style="font-size:13px;">加载中...</div></div>
+            </div>
+            <!-- 右：医生排行榜 -->
+            <div>
+              <div class="report-sub-title">👨‍⚕️ 医生排行榜（按问题数）</div>
+              <div id="reportDoctorRank" class="report-block"><div class="muted" style="font-size:13px;">加载中...</div></div>
+            </div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:24px;align-items:center;font-size:12px;color:var(--text-muted);">
+            <span>统计区间：<b id="reportPeriod">—</b></span>
+            <span>报告数：<b id="reportTotal">—</b></span>
+            <span class="report-sev critical">⛔ 严重 <b id="reportCrit">0</b></span>
+            <span class="report-sev warning">⚠ 警告 <b id="reportWarn">0</b></span>
+            <span class="report-sev info">ℹ 提示 <b id="reportInfo">0</b></span>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- ========== 页面3：RIS 直连 ========== -->
@@ -520,6 +565,36 @@
               <button class="btn btn-success" onclick="fetchRisReports()">📥 拉取报告</button>
             </div>
             <div class="ris-progress" id="risProgress"><div class="ris-progress-fill"></div></div>
+
+            <!-- P0 主动轮询质检：后台定时拉取新报告 → 自动质控 → 入库 + 进队列 -->
+            <div style="margin-top:18px;border-top:1px dashed var(--border-color);padding-top:14px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                <b style="font-size:13px;">⏰ 主动轮询质检（发现即质控）</b>
+                <span class="conn-status" id="pollStatus"><span class="led"></span> 未知</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+                <label class="switch-row" title="开启后按下方间隔自动拉取 RIS 新报告并质控入库">
+                  <input type="checkbox" id="pollEnabled" onchange="savePollConfig()" /> <span>启用轮询</span>
+                </label>
+                <div class="form-group" style="margin:0;">
+                  <label>间隔（分钟）</label>
+                  <input id="pollInterval" type="number" min="5" max="1440" value="30" style="width:100%;"
+                         onchange="savePollConfig()" title="5~1440 分钟" />
+                </div>
+                <div class="form-group" style="margin:0;">
+                  <label>每次拉取上限</label>
+                  <input id="pollLimit" type="number" min="5" max="200" value="50" style="width:100%;"
+                         onchange="savePollConfig()" title="5~200 条" />
+                </div>
+              </div>
+              <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;align-items:center;">
+                <label class="switch-row"><input type="checkbox" id="pollAutoQc" onchange="savePollConfig()" /> <span>拉取后自动质控入库</span></label>
+                <label class="switch-row"><input type="checkbox" id="pollAutoEnqueue" onchange="savePollConfig()" /> <span>同时进待质控队列</span></label>
+                <div style="flex:1"></div>
+                <button class="btn btn-outline btn-sm" onclick="runPollNow()" title="立即触发一次轮询（无需等待）">⚡ 立即轮询</button>
+              </div>
+              <div id="pollMeta" style="margin-top:10px;font-size:12px;color:var(--text-muted);"></div>
+            </div>
           </div>
         </div>
 
@@ -656,6 +731,72 @@
               </select>
             </label>
             <span style="font-size:12px;color:var(--text-muted);">配置写入 rules_config.json，桌面端与 Web 端共用。</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- P0 错别字词库可视化管理：搜索 / 新增 / 启停 / 删除 / 批量导入 -->
+      <div class="card" style="margin-top:20px;">
+        <div class="card-header">
+          <h3><span class="icon">📖</span> 错别字词库管理（R8）</h3>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input id="typoSearch" placeholder="🔍 搜索错词/正词..." class="cfg-textarea"
+                   style="width:200px;min-height:0;height:30px;padding:2px 10px;"
+                   oninput="renderTypoTable()" />
+            <button class="btn btn-primary btn-sm" onclick="openTypoAddModal()">＋ 新增</button>
+            <button class="btn btn-outline btn-sm" onclick="openTypoImportModal()">📥 批量导入</button>
+            <span id="typoCount" style="font-size:12px;color:var(--text-muted);">0 条</span>
+          </div>
+        </div>
+        <div class="card-body">
+          <div style="max-height:300px;overflow:auto;border:1px solid var(--border-color);border-radius:8px;">
+            <table class="data-table" id="typoTable" style="margin:0;">
+              <thead><tr>
+                <th style="width:32px;">状态</th><th>错词</th><th>正词</th><th>操作</th>
+              </tr></thead>
+              <tbody id="typoTableBody"></tbody>
+            </table>
+          </div>
+          <div style="margin-top:10px;font-size:12px;color:var(--text-muted);">
+            💡 停用的词条不参与错字检测；新增/批量导入的词条默认启用并立即生效（保存写入 rules_config.json）。
+          </div>
+        </div>
+      </div>
+
+      <!-- 新增错字对模态 -->
+      <div class="modal-overlay" id="typoAddModal" style="display:none;">
+        <div class="modal" style="max-width:420px;">
+          <div class="modal-header">
+            <h3>新增错字词条</h3>
+            <button class="modal-close" onclick="closeTypoAddModal()">×</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group"><label>错词（误写的写法）</label>
+              <input id="typoAddWrong" class="cfg-textarea" style="min-height:0;height:34px;" placeholder="例：肋膜" /></div>
+            <div class="form-group" style="margin-top:10px;"><label>正词（正确写法）</label>
+              <input id="typoAddCorrect" class="cfg-textarea" style="min-height:0;height:34px;" placeholder="例：胸膜" /></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeTypoAddModal()">取消</button>
+            <button class="btn btn-primary" onclick="addTypoItem()">保存</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 批量导入模态 -->
+      <div class="modal-overlay" id="typoImportModal" style="display:none;">
+        <div class="modal" style="max-width:520px;">
+          <div class="modal-header">
+            <h3>批量导入错字对</h3>
+            <button class="modal-close" onclick="closeTypoImportModal()">×</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group"><label>每行一条 <code>错词=正词</code>（自动跳过无效/反向冲突项）</label>
+              <textarea id="typoImportText" rows="10" class="cfg-textarea" placeholder="肋膜=胸膜&#10;园形=圆形&#10;结解=结节"></textarea></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeTypoImportModal()">取消</button>
+            <button class="btn btn-primary" onclick="importTypoItems()">导入</button>
           </div>
         </div>
       </div>
@@ -817,6 +958,44 @@
   </div>
 </div>
 
+<!-- ========== 导出格式选择模态（pywebview 不支持 prompt，用按钮选择） ========== -->
+<div class="modal-overlay" id="exportFmtModal" style="display:none">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-header">
+      <h3 id="exportFmtTitle">选择导出格式</h3>
+      <button class="modal-close" onclick="closeExportFmtModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="exportFmtDesc" style="font-size:13px;color:var(--text-secondary);margin-bottom:14px;"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <button class="export-fmt-card" onclick="pickExportFmt('docx')">
+          <div class="export-fmt-ico">📄</div>
+          <div class="export-fmt-name">Word（DOCX）</div>
+          <div class="export-fmt-desc">零依赖 · 推荐；Word/WPS 直接打开</div>
+        </button>
+        <button class="export-fmt-card" onclick="pickExportFmt('pdf')">
+          <div class="export-fmt-ico">📑</div>
+          <div class="export-fmt-name">PDF</div>
+          <div class="export-fmt-desc">需已安装 reportlab；适合打印归档</div>
+        </button>
+        <button class="export-fmt-card" id="exportFmtCsv" onclick="pickExportFmt('csv')">
+          <div class="export-fmt-ico">📊</div>
+          <div class="export-fmt-name">CSV</div>
+          <div class="export-fmt-desc">Excel 打开，UTF-8 BOM（批量样本导出）</div>
+        </button>
+        <button class="export-fmt-card" id="exportFmtJson" onclick="pickExportFmt('json')">
+          <div class="export-fmt-ico">🗂</div>
+          <div class="export-fmt-name">JSON</div>
+          <div class="export-fmt-desc">原样结构化数据，便于程序处理（批量样本导出）</div>
+        </button>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeExportFmtModal()">取消</button>
+    </div>
+  </div>
+</div>
+
 <!-- ========== 样本详情模态 ========== -->
 <div class="modal-overlay" id="sampleModal" style="display:none">
   <div class="modal" style="max-width:760px">
@@ -828,6 +1007,8 @@
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeSampleModal()">关闭</button>
       <button class="btn btn-outline" id="sampleLoadBtn">↩ 载入工作区</button>
+      <button class="btn btn-outline" id="sampleExportWordBtn" title="导出质控报告单（Word 格式，无需额外依赖）">📄 导出 Word</button>
+      <button class="btn btn-outline" id="sampleExportPdfBtn" title="导出质控报告单（PDF，需已安装 reportlab）">📑 导出 PDF</button>
       <button class="btn btn-danger" id="sampleDelBtn">🗑 删除样本</button>
     </div>
   </div>
@@ -836,6 +1017,6 @@
 <!-- Toast 容器 -->
 <div class="toast-container" id="toastContainer"></div>
 
-<script src="/static/js/app.js?v=20260811a"></script>
+<script src="/static/js/app.js?v=20260815a"></script>
 </body>
 </html>

@@ -76,6 +76,7 @@ function switchPage(pageName, navEl) {
   if (pageName === 'rules') { loadRules(); loadRulesConfig(true); }
   if (pageName === 'queue') loadQueue();
   if (pageName === 'users') loadUsers();
+  if (pageName === 'ris') loadPollStatus();  // P0：轮询状态
 }
 
 // ==================== 角色 UI 适配 + 用户管理 ====================
@@ -460,21 +461,34 @@ function _renderFindingList() {
   if (countEl) countEl.textContent = filtered.length + ' / ' + findings.length + ' 条';
   if (!listEl) return;   // 非质控页：渲染结果留给下次进入质控页时展示
   if (emptyEl) emptyEl.style.display = 'none';
-  listEl.innerHTML = filtered.map(f => {
+  // 遍历全量 findings 保证 i 为 _qcAllFindings 全局索引（供 applyFindingFix 定位）；
+  // 未通过严重度筛选的项用 display:none 隐藏（不影响按钮回调）。
+  listEl.innerHTML = findings.map((f, i) => {
+    if (_qcSevFilter !== 'all' && (f.severity || 'low') !== _qcSevFilter) return '';
     const m = SEV_META[f.severity] || SEV_META.low;
-    // R8 同音错别字：提供「采纳修正」——把错词→正确词写入规则库，下次自动识别（P0 修正反馈闭环）
-    const isTypo = f.rule_id === 'R8-TYPO';
-    const learnBtn = isTypo ? `
-      <button class="btn btn-xs learn-btn" onclick="learnTypoFromFinding(this)"
-        data-wrong="${escapeHtml(f.snippet || '')}" data-correct="${escapeHtml(f.suggestion || '')}"
-        title="把「${escapeHtml(f.snippet || '')}」→「${escapeHtml(f.suggestion || '')}」写入规则库，以后自动识别">✅ 采纳修正</button>` : '';
+    // 确定性错别字（R8 词典 / R19 读音推导）：提供「应用修正」——直接把 suggestion 替换进
+    // 报告文本（span 定位）并重新质控；同时保留「记入词库」——写入规则库供下次自动识别。
+    // 非错别字规则：若引擎给 suggestion 则展示「建议修正」供人工参考；否则不提供按钮。
+    const isTypo = f.rule_id === 'R8-TYPO' || f.rule_id === 'R19-HOMOPHONE';
+    const hasSug = !!f.suggestion && f.suggestion !== f.snippet;
+    let fixBtns = '';
+    if (isTypo && hasSug) {
+      fixBtns = `
+        <button class="btn btn-xs apply-fix-btn" onclick="applyFindingFix(${i})"
+          title="把报告中的「${escapeHtml(f.snippet || '')}」改为「${escapeHtml(f.suggestion || '')}」并重新质控">✏️ 应用修正</button>
+        <button class="btn btn-xs learn-btn" onclick="learnTypoFromFinding(this)"
+          data-wrong="${escapeHtml(f.snippet || '')}" data-correct="${escapeHtml(f.suggestion || '')}"
+          title="把「${escapeHtml(f.snippet || '')}」→「${escapeHtml(f.suggestion || '')}」写入规则库，以后自动识别">📚 记入词库</button>`;
+    } else if (hasSug) {
+      fixBtns = `<span class="sug-text" title="建议修正文本">建议：${escapeHtml(f.suggestion)}</span>`;
+    }
     return `
     <li class="finding-item">
       <span class="severity-dot ${f.severity}"></span>
       <span class="sev-badge ${m.cls}">${m.icon} ${m.label}</span>
       <div>
         <div class="finding-text ${m.cls}">${escapeHtml(f.message)}</div>
-        <div class="finding-meta">${f.rule_id} · ${escapeHtml(f.category || '')}${learnBtn}</div>
+        <div class="finding-meta">${f.rule_id} · ${escapeHtml(f.category || '')}${fixBtns}</div>
       </div>
     </li>`;
   }).join('');
@@ -1007,9 +1021,10 @@ async function loadDashboard() {
   } catch (err) {
     console.error('Dashboard load error:', err);
   }
-  // 错误类型分布 + 趋势（独立失败不影响主卡片）
+  // 错误类型分布 + 趋势 + 分类统计报表（独立失败不影响主卡片）
   loadErrorTypes();
   loadTrend();
+  loadStatsReport();
 }
 
 // ---------- 错误类型分布（接 /api/v1/stats/error-types） ----------
@@ -1090,6 +1105,93 @@ async function loadTrend() {
     </svg>`;
   } catch (e) {
     box.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><p>加载失败</p></div>';
+  }
+}
+
+// ---------- 质控问题分类统计报表（时间段 + TOP 榜 + 医生排行榜） ----------
+function _rangeStart(range) {
+  const now = new Date();
+  if (range === '7d') { const d = new Date(now); d.setDate(d.getDate() - 7); return d; }
+  if (range === '30d') { const d = new Date(now); d.setDate(d.getDate() - 30); return d; }
+  if (range === 'quarter') {
+    const q = Math.floor(now.getMonth() / 3);
+    return new Date(now.getFullYear(), q * 3, 1);
+  }
+  return null;   // all
+}
+
+async function loadStatsReport() {
+  const rangeEl = document.getElementById('reportRange');
+  const range = rangeEl ? rangeEl.value : '30d';
+  const start = _rangeStart(range);
+  const q = [];
+  if (start) q.push('start=' + start.toISOString().slice(0, 10));
+  try {
+    const res = await fetch('/api/v1/stats/report' + (q.length ? '?' + q.join('&') : ''));
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '加载失败');
+    renderStatsReport(data.data || {});
+  } catch (e) {
+    ['reportErrTop', 'reportRuleTop', 'reportDoctorRank'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = '<div class="muted" style="font-size:13px;">加载失败: ' + escapeHtml(e.message) + '</div>';
+    });
+  }
+}
+
+function renderStatsReport(st) {
+  const p = st.period || {};
+  const setTxt = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
+  setTxt('reportPeriod', (p.start || '最早') + ' ~ ' + (p.end || '至今'));
+  setTxt('reportTotal', p.total || 0);
+  setTxt('reportCrit', p.critical || 0);
+  setTxt('reportWarn', p.warning || 0);
+  setTxt('reportInfo', p.info || 0);
+
+  // 问题类型 TOP 榜（横向条形）
+  const et = (st.error_type_top || []).slice(0, 8);
+  const errBox = document.getElementById('reportErrTop');
+  if (!errBox) return;
+  if (!et.length) { errBox.innerHTML = '<div class="empty-state"><div class="empty-icon">✅</div><p>该区间无质控问题</p></div>'; }
+  else {
+    const max = Math.max(...et.map(e => e.count), 1);
+    const colors = ['#e5484d', '#e8941a', '#f5b50a', '#2d6cdf', '#1fa971', '#7c6cf0', '#0ea5e9', '#db2777'];
+    errBox.innerHTML = et.map((e, i) => `
+      <div class="errbar-row">
+        <span class="errbar-name" title="${escapeHtml(e.name)}">${escapeHtml(e.name)}</span>
+        <span class="errbar-track"><span class="errbar-fill" style="width:${Math.max(4, (e.count / max) * 100)}%;background:${colors[i % colors.length]}"></span></span>
+        <span class="errbar-val">${e.count}</span>
+      </div>`).join('');
+  }
+
+  // 规则命中 TOP 榜
+  const rt = (st.rule_top || []).slice(0, 8);
+  const ruleBox = document.getElementById('reportRuleTop');
+  if (!ruleBox) return;
+  if (!rt.length) { ruleBox.innerHTML = '<div class="empty-state"><div class="empty-icon">✅</div><p>该区间无规则命中</p></div>'; }
+  else {
+    const max = Math.max(...rt.map(e => e.count), 1);
+    ruleBox.innerHTML = rt.map(e => `
+      <div class="errbar-row">
+        <span class="errbar-name" style="font-family:monospace;font-size:11px;" title="${escapeHtml(e.rule_id)}">${escapeHtml(e.rule_id)}</span>
+        <span class="errbar-track"><span class="errbar-fill" style="width:${Math.max(4, (e.count / max) * 100)}%;background:var(--primary)"></span></span>
+        <span class="errbar-val">${e.count}</span>
+      </div>`).join('');
+  }
+
+  // 医生排行榜
+  const dr = (st.doctor_rank || []).slice(0, 8);
+  const drBox = document.getElementById('reportDoctorRank');
+  if (!drBox) return;
+  if (!dr.length) { drBox.innerHTML = '<div class="empty-state"><div class="empty-icon">👨‍⚕️</div><p>该区间无医生质控记录</p></div>'; }
+  else {
+    const max = Math.max(...dr.map(d => d.findings), 1);
+    drBox.innerHTML = dr.map((d, i) => `
+      <div class="errbar-row">
+        <span class="errbar-name" title="${escapeHtml(d.user_id)}">${i + 1}. ${escapeHtml(d.name || d.user_id)} <span class="muted" style="font-size:11px;">(${d.samples} 份报告)</span></span>
+        <span class="errbar-track"><span class="errbar-fill" style="width:${Math.max(4, (d.findings / max) * 100)}%;background:#7c6cf0"></span></span>
+        <span class="errbar-val">${d.findings} 问题</span>
+      </div>`).join('');
   }
 }
 
@@ -1223,6 +1325,8 @@ async function viewSample(sid) {
     `;
     document.getElementById('sampleLoadBtn').onclick = () => { loadSampleToWorkspace(s); };
     document.getElementById('sampleDelBtn').onclick = () => { closeSampleModal(); deleteSample(s.id); };
+    document.getElementById('sampleExportWordBtn').onclick = () => { exportSampleReport(s.id, 'docx'); };
+    document.getElementById('sampleExportPdfBtn').onclick = () => { exportSampleReport(s.id, 'pdf'); };
     document.getElementById('sampleModal').style.display = 'flex';
   } catch (e) { toast('读取样本失败: ' + e.message, 'error'); }
 }
@@ -1256,18 +1360,237 @@ async function deleteSample(sid) {
 }
 
 async function exportSamples() {
+  // 让用户选择导出格式：CSV(Excel友好) / JSON(原样) / DOCX(Word报告) / PDF
+  const fmt = await _pickExportFormat();
+  if (!fmt) return;
   try {
+    toast(`正在导出 ${fmt.toUpperCase()} 样本库...`, 'info');
     const res = await fetch('/api/v1/samples/export', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ fmt: 'csv' })
+      body: JSON.stringify({ fmt })
     });
     const data = await res.json();
-    toast(data.ok ? '导出成功: ' + (data.data.path||'') : '导出失败: '+data.message, data.ok?'success':'error');
-  } catch(e) { toast('导出请求失败', 'error'); }
+    if (!data.ok) {
+      toast('导出失败: ' + (data.message || data.detail || ''), 'error');
+      return;
+    }
+    const p = data.data.path || '';
+    // 同时尝试触发浏览器下载（桌面 WebView / 浏览器均可）
+    downloadExportedFile(p);
+    toast('导出成功: ' + p, 'success');
+  } catch(e) { toast('导出请求失败: ' + e.message, 'error'); }
+}
+
+/** 弹出导出格式选择（模态框，兼容 pywebview）。返回 'csv'|'json'|'docx'|'pdf' 或 null */
+let _exportFmtResolve = null;
+function _pickExportFormat() {
+  return new Promise(resolve => {
+    _exportFmtResolve = resolve;
+    const t = document.getElementById('exportFmtTitle');
+    if (t) t.textContent = '选择导出格式';
+    const d = document.getElementById('exportFmtDesc');
+    if (d) d.textContent = '导出整个样本库为以下格式：';
+    const csv = document.getElementById('exportFmtCsv');
+    const json = document.getElementById('exportFmtJson');
+    if (csv) csv.style.display = 'grid';
+    if (json) json.style.display = 'grid';
+    const m = document.getElementById('exportFmtModal');
+    if (m) m.style.display = 'flex';
+    else resolve('docx');   // 元素缺失兜底：默认 Word
+  });
+}
+
+/** 质控报告单格式选择（模态框）。返回 'docx'|'pdf' 或 null */
+function _pickReportFormat() {
+  return new Promise(resolve => {
+    _exportFmtResolve = resolve;
+    const t = document.getElementById('exportFmtTitle');
+    if (t) t.textContent = '导出质控报告单';
+    const d = document.getElementById('exportFmtDesc');
+    if (d) d.textContent = '把当前质控结果（原报告 + 发现 + 评分）导出为报告单：';
+    const csv = document.getElementById('exportFmtCsv');
+    const json = document.getElementById('exportFmtJson');
+    if (csv) csv.style.display = 'none';
+    if (json) json.style.display = 'none';
+    const m = document.getElementById('exportFmtModal');
+    if (m) m.style.display = 'flex';
+    else resolve('docx');
+  });
+}
+
+function closeExportFmtModal() {
+  const m = document.getElementById('exportFmtModal');
+  if (m) m.style.display = 'none';
+  if (_exportFmtResolve) { _exportFmtResolve(null); _exportFmtResolve = null; }
+}
+
+function pickExportFmt(fmt) {
+  const m = document.getElementById('exportFmtModal');
+  if (m) m.style.display = 'none';
+  if (_exportFmtResolve) { _exportFmtResolve(fmt); _exportFmtResolve = null; }
+}
+
+/** 让浏览器/WebView 下载服务端生成的导出文件（GET /files/download） */
+function downloadExportedFile(path) {
+  const name = (path || '').split(/[\\/]/).pop();
+  if (!name) return;
+  const a = document.createElement('a');
+  a.href = '/api/v1/files/download?file=' + encodeURIComponent(name);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => a.remove(), 500);
+}
+
+/** 当前工作区质控结果直接导出质控报告单（无需入库） */
+async function exportQcReport() {
+  const fEl = document.getElementById('findingsText');
+  const iEl = document.getElementById('impressionText');
+  if (!fEl || !iEl) return;
+  const report = [fEl.value, iEl.value].filter(Boolean).join('\n');
+  if (!report.trim()) { toast('请先输入报告内容再导出', 'warn'); return; }
+  const fmt = await _pickReportFormat();
+  if (!fmt) return;
+  // 复用最近一次质控发现与评分（若尚未质控则自动跑一遍）
+  let findings = _qcAllFindings || [];
+  let scores = null;
+  try { scores = JSON.parse(document.getElementById('scoreAcc').textContent === '--' ? 'null' : '{}'); } catch (e) {}
+  if (!findings.length) {
+    toast('正在运行质控以获取发现...', 'info');
+    const ok = await runQC();
+    if (!ok) return;
+    findings = _qcAllFindings || [];
+  }
+  // 从界面读取当前评分（仅展示用途，后端导出兼容 dict/score 两种结构）
+  const scoreObj = {};
+  const sids = { scoreAcc: '准确性', scoreComp: '完整性', scoreNorm: '规范性', scoreTime: '及时性' };
+  for (const [elId, cn] of Object.entries(sids)) {
+    const el = document.getElementById(elId);
+    if (el && el.textContent !== '--') scoreObj[cn] = { score: parseFloat(el.textContent) || 0, deductions: [] };
+  }
+  try {
+    const res = await fetch('/api/v1/qc/export-report', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ report, meta: currentQcMeta(), findings, scores: scoreObj, fmt })
+    });
+    const data = await res.json();
+    if (!data.ok) { toast('导出失败: ' + (data.message || data.detail || ''), 'error'); return; }
+    const p = data.data.path || '';
+    downloadExportedFile(p);
+    toast('质控报告单已导出: ' + p, 'success');
+  } catch (e) { toast('导出失败: ' + e.message, 'error'); }
+}
+
+/** 质控报告单格式选择。返回 'docx'|'pdf' 或 null */
+function _pickReportFormat() {
+  return new Promise(resolve => {
+    const fmt = prompt('选择报告单格式：\n  1 = Word（DOCX，零依赖，推荐）\n  2 = PDF（需 reportlab）\n\n输入数字 1-2（取消=放弃）：', '1');
+    if (fmt === null) return resolve(null);
+    const m = { '1': 'docx', '2': 'pdf' }[String(fmt).trim()];
+    if (!m) { toast('格式编号无效，已取消', 'warn'); return resolve(null); }
+    resolve(m);
+  });
+}
+
+/** 样本详情：导出质控报告单（Word） */
+async function exportSampleReport(sid, fmt) {
+  if (!sid) { toast('样本 ID 无效', 'error'); return; }
+  try {
+    toast(`正在生成质控报告单（${fmt === 'pdf' ? 'PDF' : 'Word'}）...`, 'info');
+    const res = await fetch(`/api/v1/samples/${sid}/export-report`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fmt })
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      toast('导出失败: ' + (data.message || data.detail || ''), 'error');
+      return;
+    }
+    const p = data.data.path || '';
+    downloadExportedFile(p);
+    toast('质控报告单已导出: ' + p, 'success');
+  } catch (e) { toast('导出失败: ' + e.message, 'error'); }
 }
 
 // ==================== 规则词表维护（R8 错别字 / R9 矛盾对 / 忽略词 / R10 模板） ====================
+
+/** P0 一键采纳修正闭环：把某条确定性错别字的 suggestion 应用进报告文本并重新质控。
+ *  实现：报告全文 = 描述+结论 拼接（与 /api/v1/qc/check 的 report 一致），span 直接定位替换，
+ *  替换后按段重新分栏填入输入框，再自动跑一遍质控刷新结果。
+ *  注意：其他发现（矛盾/缺失类）无安全替换值，不做自动改动。 */
+async function applyFindingFix(findIdx) {
+  const f = (_qcAllFindings || [])[findIdx];
+  if (!f) { toast('未找到该发现', 'error'); return; }
+  const span = Array.isArray(f.span) ? f.span : [-1, -1];
+  const sug = (f.suggestion || '').trim();
+  const wrong = (f.snippet || '').trim();
+  if (span[0] < 0 || span[1] <= span[0] || !sug || !wrong) {
+    toast('该问题无安全修正值，请人工修改', 'warn');
+    return;
+  }
+  // 报告全文必须以最新输入框内容为准（用户可能改过）
+  const fEl = document.getElementById('findingsText');
+  const iEl = document.getElementById('impressionText');
+  if (!fEl || !iEl) return;
+  const full = [fEl.value, iEl.value].filter(Boolean).join('\n');
+  if (span[1] > full.length) { toast('原文已变化，请重新运行质控', 'warn'); return; }
+  const fixedText = full.slice(0, span[0]) + sug + full.slice(span[1]);
+  // 分栏回填：splitReportSections 兼容描述在前/诊断在后两种顺序
+  const parts = splitReportSections(fixedText);
+  fEl.value = parts.findings;
+  iEl.value = parts.impression;
+  const fc = document.getElementById('findingsCount');
+  const ic = document.getElementById('impressionCount');
+  if (fc) fc.textContent = parts.findings.length + ' 字';
+  if (ic) ic.textContent = parts.impression.length + ' 字';
+  toast(`已应用修正：「${wrong}」→「${sug}」，正在重新质控...`, 'success');
+  await runQC();
+}
+
+/** 一键采纳全部修正：调用引擎 auto_fix 批量应用所有确定性错别字修正并重新质控。 */
+async function applyAllFixes() {
+  const fEl = document.getElementById('findingsText');
+  const iEl = document.getElementById('impressionText');
+  if (!fEl || !iEl) return;
+  const report = [fEl.value, iEl.value].filter(Boolean).join('\n');
+  if (!report.trim()) { toast('请输入报告内容', 'warn'); return; }
+  try {
+    const res = await fetch('/api/v1/qc/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ report, meta: currentQcMeta(), auto_fix: true })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '执行失败');
+    const fixed = data.data.fixed;
+    if (!fixed || !fixed.fixed_text || fixed.fixed_text === report) {
+      toast('没有可自动修正的错别字', 'info');
+      return;
+    }
+    const parts = splitReportSections(fixed.fixed_text);
+    fEl.value = parts.findings;
+    iEl.value = parts.impression;
+    const fc = document.getElementById('findingsCount');
+    const ic = document.getElementById('impressionCount');
+    if (fc) fc.textContent = parts.findings.length + ' 字';
+    if (ic) ic.textContent = parts.impression.length + ' 字';
+    toast(`已自动修正 ${fixed.n_fixed} 处错别字${fixed.n_manual ? '，另有 ' + fixed.n_manual + ' 处需人工确认' : ''}，正在重新质控...`, 'success');
+    await runQC();
+  } catch (e) {
+    toast('应用修正失败: ' + e.message, 'error');
+  }
+}
+
+/** 收集当前元信息（供 auto_fix 请求复用，与 runQC 的 meta 保持一致） */
+function currentQcMeta() {
+  const el = id => { const e = document.getElementById(id); return e ? e.value : ''; };
+  return {
+    patient: el('mPatient'), gender: el('mGender'), age: el('mAge'),
+    modality: el('mModality'), applied_site: el('mSite'),
+    laterality: effectiveLaterality(), user_id: el('mUser'),
+  };
+}
 
 /** P0 修正反馈闭环：QC 结果里点「采纳修正」→ 错词→正确词写入规则库 */
 async function learnTypoFromFinding(btn) {
@@ -1391,7 +1714,10 @@ async function loadRulesConfig(silent = false) {
       conflicts: document.getElementById('cfgConflicts').value,
       ignores: document.getElementById('cfgIgnores').value,
     };
+    _typoCache = Object.assign({}, typos);
+    _typoDisabled = new Set(cfg.disabled_typos || []);
     updateCfgStats();   // 统计规则条数
+    renderTypoTable();  // 可视化词库表
     if (!silent) toast('规则配置已载入', 'success');
   } catch (e) {
     if (!silent) toast('载入规则配置失败: ' + e.message, 'error');
@@ -1467,7 +1793,8 @@ async function saveRulesConfig() {
   try {
     const res = await fetch('/api/v1/qc/rules/config', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ typos, conflicts, ignores, template: tpl, enable_r19, r19_sensitivity })
+      body: JSON.stringify({ typos, conflicts, ignores, template: tpl, enable_r19, r19_sensitivity,
+                             disabled_typos: Array.from(_typoDisabled) })
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '保存失败');
@@ -1482,6 +1809,133 @@ async function saveRulesConfig() {
   } catch (e) {
     toast('保存失败: ' + e.message, 'error');
   }
+}
+
+// ==================== 错别字词库可视化维护（R8：搜索/新增/启停/删除/批量导入） ====================
+let _typoDisabled = new Set();
+let _typoCache = {};   // {wrong: correct}
+
+function renderTypoTable() {
+  const tbody = document.getElementById('typoTableBody');
+  const cntEl = document.getElementById('typoCount');
+  if (!tbody) return;
+  const kw = (document.getElementById('typoSearch').value || '').trim();
+  const keys = Object.keys(_typoCache).sort((a, b) => a.localeCompare(b, 'zh'));
+  const rows = keys.filter(k => !kw || k.includes(kw) || _typoCache[k].includes(kw));
+  if (cntEl) cntEl.textContent = `${rows.length} / ${keys.length} 条`;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:16px;">'
+      + (keys.length ? '没有匹配的词条' : '词库为空，点「＋ 新增」或「📥 批量导入」添加') + '</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(k => {
+    const on = !_typoDisabled.has(k);
+    return `<tr>
+      <td><span class="typo-status ${on ? 'on' : 'off'}" title="${on ? '已启用' : '已停用'}"></span></td>
+      <td>${escapeHtml(k)}</td>
+      <td>${escapeHtml(_typoCache[k] || '')}</td>
+      <td style="white-space:nowrap;">
+        <button class="btn btn-xs ${on ? 'typoff-btn' : 'apply-fix-btn'}" onclick="toggleTypoItem('${escapeHtml(k)}', ${on})">${on ? '停用' : '启用'}</button>
+        <button class="btn btn-xs danger-outline" onclick="deleteTypoItem('${escapeHtml(k)}')">删除</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function openTypoAddModal() {
+  document.getElementById('typoAddWrong').value = '';
+  document.getElementById('typoAddCorrect').value = '';
+  document.getElementById('typoAddModal').style.display = 'flex';
+}
+function closeTypoAddModal() { document.getElementById('typoAddModal').style.display = 'none'; }
+
+async function addTypoItem() {
+  const wrong = document.getElementById('typoAddWrong').value.trim();
+  const correct = document.getElementById('typoAddCorrect').value.trim();
+  if (!wrong || !correct || wrong === correct) { toast('错词与正词均必填且不能相同', 'warn'); return; }
+  try {
+    const res = await fetch('/api/v1/qc/rules/typos', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wrong, correct })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '新增失败');
+    _typoCache[wrong] = correct;
+    _typoDisabled.delete(wrong);
+    renderTypoTable();
+    closeTypoAddModal();
+    _refreshCfgTextarea();
+    toast(data.message || '已新增', 'success');
+  } catch (e) { toast('新增失败: ' + e.message, 'error'); }
+}
+
+async function toggleTypoItem(wrong, currentOn) {
+  try {
+    const res = await fetch('/api/v1/qc/rules/typos/toggle', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wrong, correct: currentOn ? '0' : '1' })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '操作失败');
+    if (currentOn) _typoDisabled.add(wrong); else _typoDisabled.delete(wrong);
+    renderTypoTable();
+    toast(data.message || '已更新', 'success');
+  } catch (e) { toast('操作失败: ' + e.message, 'error'); }
+}
+
+async function deleteTypoItem(wrong) {
+  if (!confirm(`确定删除错字词条「${wrong}」吗？`)) return;
+  try {
+    const res = await fetch('/api/v1/qc/rules/typos/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ wrong })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '删除失败');
+    delete _typoCache[wrong];
+    _typoDisabled.delete(wrong);
+    renderTypoTable();
+    _refreshCfgTextarea();
+    toast(data.message || '已删除', 'success');
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
+}
+
+function openTypoImportModal() {
+  document.getElementById('typoImportText').value = '';
+  document.getElementById('typoImportModal').style.display = 'flex';
+}
+function closeTypoImportModal() { document.getElementById('typoImportModal').style.display = 'none'; }
+
+async function importTypoItems() {
+  const raw = document.getElementById('typoImportText').value;
+  const items = raw.split('\n').map(s => s.trim()).filter(Boolean).map(line => {
+    const i = line.indexOf('=');
+    if (i <= 0) return null;
+    return [line.slice(0, i).trim(), line.slice(i + 1).trim()];
+  }).filter(Boolean);
+  if (!items.length) { toast('请输入至少一条 错词=正词', 'warn'); return; }
+  try {
+    const res = await fetch('/api/v1/qc/rules/typos/batch-import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items })
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '导入失败');
+    for (const [w, c] of items) { if (c) { _typoCache[w] = c; _typoDisabled.delete(w); } }
+    renderTypoTable();
+    closeTypoImportModal();
+    _refreshCfgTextarea();
+    toast(data.message || `成功 ${data.data.ok} 条`, 'success');
+  } catch (e) { toast('导入失败: ' + e.message, 'error'); }
+}
+
+/** 词库变更后，同步更新左侧 textarea（保持两种维护方式一致） */
+function _refreshCfgTextarea() {
+  const ta = document.getElementById('cfgTypos');
+  if (!ta) return;
+  ta.value = Object.keys(_typoCache).sort((a, b) => a.localeCompare(b, 'zh'))
+    .map(k => `${k}=${_typoCache[k]}`).join('\n');
+  updateCfgStats();
 }
 
 // 恢复默认规则库（内置出厂配置），操作前需确认
@@ -1523,6 +1977,71 @@ async function importSamples() {
 }
 
 // ==================== RIS 直连 ====================
+// ---------- P0 主动轮询质检（后台定时线程：拉取→质控→入库+入队） ----------
+async function loadPollStatus() {
+  try {
+    const res = await fetch('/api/v1/ris/poll-status');
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '加载失败');
+    const st = data.data || {};
+    const on = !!st.enabled;
+    const stEl = document.getElementById('pollStatus');
+    if (stEl) {
+      stEl.className = 'conn-status ' + (on ? 'connected' : 'disconnected');
+      stEl.innerHTML = `<span class="led"></span> ${on ? '轮询中' : '已关闭'}`;
+    }
+    const cb = document.getElementById('pollEnabled'); if (cb) cb.checked = on;
+    const iv = document.getElementById('pollInterval'); if (iv) iv.value = st.interval_min || 30;
+    const lim = document.getElementById('pollLimit'); if (lim) lim.value = st.limit || 50;
+    const aq = document.getElementById('pollAutoQc'); if (aq) aq.checked = st.auto_qc !== false;
+    const ae = document.getElementById('pollAutoEnqueue'); if (ae) ae.checked = st.auto_enqueue !== false;
+    const meta = document.getElementById('pollMeta');
+    if (meta) {
+      meta.innerHTML = (st.last_run ? `上次运行：${st.last_run} · ` : '') +
+        `上次新增 ${st.last_count || 0} 份 · 已去重指纹 ${st.seen_count || 0}` +
+        (st.last_error ? `<br/><span style="color:#e53e3e;">最近错误：${escapeHtml(st.last_error)}</span>` : '');
+    }
+  } catch (e) { /* 页面可能未加载完成，静默 */ }
+}
+
+async function savePollConfig() {
+  const cb = document.getElementById('pollEnabled');
+  const iv = document.getElementById('pollInterval');
+  const lim = document.getElementById('pollLimit');
+  const aq = document.getElementById('pollAutoQc');
+  const ae = document.getElementById('pollAutoEnqueue');
+  const body = {
+    enabled: cb ? cb.checked : false,
+    interval_min: iv ? parseInt(iv.value) || 30 : 30,
+    limit: lim ? parseInt(lim.value) || 50 : 50,
+    auto_qc: aq ? aq.checked : true,
+    auto_enqueue: ae ? ae.checked : true,
+  };
+  try {
+    const res = await fetch('/api/v1/ris/poll-config', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '保存失败');
+    loadPollStatus();
+    toast('轮询配置已保存' + (body.enabled ? '，轮询已启动' : ''), 'success');
+  } catch (e) { toast('保存轮询配置失败: ' + e.message, 'error'); }
+}
+
+async function runPollNow() {
+  toast('正在执行一次 RIS 轮询...', 'info');
+  try {
+    const res = await fetch('/api/v1/ris/poll-now', { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) { toast('轮询失败: ' + (data.message || data.detail || ''), 'error'); loadPollStatus(); return; }
+    const r = data.data || {};
+    toast(`轮询完成：新增 ${r.count || 0} 份报告，累计指纹 ${r.total_seen || 0}`, 'success');
+    loadPollStatus();
+    if ((r.count || 0) > 0) { loadQueue(); loadSamples(); loadDashboard(); }
+  } catch (e) { toast('轮询请求失败: ' + e.message, 'error'); }
+}
+
 async function testRisConnection() {
   const statusEl = document.getElementById('connStatus');
   statusEl.className = 'conn-status disconnected';

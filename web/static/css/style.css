@@ -1205,3 +1205,45 @@ mark.anno-info { background: rgba(122, 134, 153, 0.14); color: var(--text-second
   border-radius: 6px; padding: 6px 8px; color: #2b6cb0; overflow-x: auto;
 }
 [data-theme="dark"] .errbar-track { background: #11182a; }
+
+/* ==================== 质控问题分类统计报表 ==================== */
+.report-sub-title { font-size: 13px; font-weight: 700; color: var(--text-primary); margin-bottom: 10px; }
+.report-block { min-height: 120px; }
+.report-sev { display: inline-flex; align-items: center; gap: 4px; }
+.report-sev.critical { color: #e53e3e; }
+.report-sev.warning { color: #dd6b20; }
+.report-sev.info { color: var(--text-muted); }
+
+/* ==================== 一键采纳修正（应用修正 / 记入词库） ==================== */
+.apply-fix-btn {
+  border: 1px solid var(--primary, #2b6cb0); color: var(--primary, #2b6cb0);
+  background: transparent; cursor: pointer;
+}
+.apply-fix-btn:hover { background: rgba(43, 108, 176, 0.08); }
+.learn-btn { border: 1px dashed #38a169; color: #2f855a; background: transparent; cursor: pointer; }
+.learn-btn:hover { background: rgba(56, 161, 105, 0.08); }
+.learn-btn.done { border-color: #38a169; background: #f0fff4; color: #276749; cursor: default; }
+.sug-text { font-size: 11px; color: #2f855a; background: rgba(56,161,105,.08); border-radius: 4px; padding: 1px 6px; margin-left: 6px; }
+.btn-xs { padding: 2px 8px; font-size: 11px; border-radius: 6px; margin-left: 4px; }
+
+/* ==================== 错别字词库可视化维护 ==================== */
+.typo-status { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+.typo-status.on { background: #38a169; box-shadow: 0 0 0 2px rgba(56,161,105,.18); }
+.typo-status.off { background: #cbd5e0; }
+.typoff-btn { border: 1px solid #cbd5e0; color: var(--text-muted); background: transparent; cursor: pointer; }
+.typoff-btn:hover { background: rgba(0,0,0,.04); }
+.danger-outline { border: 1px solid #e53e3e; color: #e53e3e; background: transparent; cursor: pointer; }
+.danger-outline:hover { background: rgba(229,62,62,.08); }
+#typoTable td { padding: 5px 10px; vertical-align: middle; }
+
+/* ==================== 导出格式选择卡片 ==================== */
+.export-fmt-card {
+  border: 1.5px solid var(--border-color); border-radius: 10px; padding: 14px;
+  background: transparent; cursor: pointer; text-align: left;
+  display: flex; flex-direction: column; gap: 2px;
+  transition: border-color .15s, background .15s, transform .1s;
+}
+.export-fmt-card:hover { border-color: var(--primary); background: rgba(43,108,176,.05); transform: translateY(-1px); }
+.export-fmt-ico { font-size: 22px; }
+.export-fmt-name { font-weight: 700; font-size: 13px; margin-top: 4px; }
+.export-fmt-desc { font-size: 11px; color: var(--text-muted); }

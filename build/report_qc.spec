@@ -12,6 +12,13 @@
 # 产物： dist\报告质控软件\报告质控软件.exe （单目录，含 server/web/assets/src）
 import os
 
+# TOC：PyInstaller 的构建数据结构（list 子类），Analysis 的 binaries/datas 均为其实例。
+# 下面「从 a.binaries 剥离 .NET DLL 改挂 datas」需要用它构造新 TOC。
+try:
+    from PyInstaller.building.datastruct import TOC
+except Exception:
+    TOC = list   # 极老版本兜底：退化为普通 list
+
 block_cipher = None
 # 项目根目录（build/ 的上一级）。
 # PyInstaller 在运行 spec 时会注入 SPECPATH；旧版本则用 __file__，做兼容回退。
@@ -41,6 +48,18 @@ try:
     _extra_hiddenimports += _rh
 except Exception as _e:  # collect_all 失败不应阻断构建，仅告警
     print("WARNING: collect_all('rapidocr_onnxruntime') failed:", _e)
+
+# ---- 质控报告单 PDF 导出（reportlab，含其中文字体注册机制）----
+# reportlab 纯 Python + 少量二进制，collect_all 收齐 platypus/pdfbase 等子模块，
+# 确保 PDF 导出接口在冻结环境可用（缺失时引擎已有明确降级提示，不影响 DOCX/CSV 导出）。
+try:
+    from PyInstaller.utils.hooks import collect_all as _rl_collect
+    _rlb, _rld, _rlh = _rl_collect("reportlab")
+    _extra_binaries += _rlb
+    _extra_datas += _rld
+    _extra_hiddenimports += _rlh
+except Exception as _e:
+    print("WARNING: collect_all('reportlab') failed:", _e)
 
 # ---- WebView（pywebview）依赖全量收集 ----
 # pywebview 在 Windows 上按平台动态载入 webview.platforms.edgechrome 等子模块，
@@ -175,6 +194,43 @@ a = Analysis(
     excludes=["pynput"],
     cipher=block_cipher,
 )
+
+# ---- 根治：hook-pythonnet 收集的 .NET DLL 也会进 binaries 被 UPX 压缩 ----
+# PyInstaller 内置 hook-pythonnet.py 用 collect_dynamic_libs 把 pythonnet 的全部
+# DLL（Python.Runtime.dll / ClrLoader.dll 等）收集进 binaries；这些在
+# COLLECT(upx=True) 时会被 UPX 压缩，破坏 .NET 混合程序集的导出表——
+# 具体表现为 clr_loader 报：
+#   RuntimeError: Failed to resolve Python.Runtime.Loader.Initialize
+# 因此必须在 Analysis 之后、COLLECT 之前，把 a.binaries 中所有 pythonnet /
+# clr_loader 的 DLL 摘除，改挂到 a.datas（datas 原样复制、不经过 UPX）。
+# 若摘除后 datas 已含同 dest 文件则跳过（collect_all 的 datas 兜底已足够）。
+def _is_clr_binary(entry):
+    """判断 binaries 条目是否属于 pythonnet / clr_loader 的 .NET DLL。"""
+    _src = os.path.normpath(entry[0]).replace("\\", "/")
+    _low = _src.lower()
+    _parts = _low.split("/")
+    return ("pythonnet" in _parts or "clr_loader" in _parts
+            or os.path.basename(_low) in ("python.runtime.dll", "clrloader.dll"))
+
+
+if a.binaries:
+    _clr_entries = [b for b in a.binaries if _is_clr_binary(b)]
+    if _clr_entries:
+        print(f"[pythonnet] 从 binaries 剥离 {len(_clr_entries)} 个 .NET DLL（规避 UPX 破坏导出表）：")
+        _have_dests = {os.path.normpath(d) for (_, d) in a.datas}
+        _new_datas = []
+        for _b in _clr_entries:
+            _b_src, _b_dest = _b[0], _b[1]
+            _print_name = os.path.basename(_b_src)
+            if os.path.normpath(_b_dest) in _have_dests:
+                print("   - 跳过(已在 datas):", _print_name)
+                continue
+            _new_datas.append(_b)
+            _have_dests.add(os.path.normpath(_b_dest))
+            print("   - 移入 datas:", _print_name)
+        if _new_datas:
+            a.datas = a.datas + TOC(_new_datas)
+        a.binaries = TOC(b for b in a.binaries if not _is_clr_binary(b))
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
