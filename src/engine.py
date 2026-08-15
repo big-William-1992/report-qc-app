@@ -699,6 +699,20 @@ TYPO_MAP_DEFAULT = {
     "曾强": "增强", "造形": "造影",
     "覆查": "复查", "随防": "随访",
     "坐肺": "左肺",
+    # —— P2 形近字错字（五笔/形码/OCR 误识别：形近但不同音）——
+    "未梢": "末梢", "末见": "未见", "已见": "未见",
+    "结节边绿": "结节边缘", "边绿": "边缘",
+    "末分化": "未分化", "己经": "已经", "巳经": "已经",
+    "主干增租": "主干增粗", "末见明确": "未见明确", "末见异常": "未见异常",
+    # —— P2 输入法常见错（拼音重码）——
+    "费部": "肺部", "费纹理": "肺纹理", "费门": "肺门",
+    "双废纹理": "双肺纹理", "废纹理": "肺纹理", "纵阁": "纵隔", "临门": "肺门",
+    "实便": "实变", "便变": "实变",
+    "曩肿": "囊肿", "曩性": "囊性", "曩壁": "囊壁",
+    "低回升": "低回声", "高回升": "高回声", "回升区": "回声区",
+    "强升": "强回声",
+    "腺体曾生": "腺体增生", "曾生": "增生",
+    "边缘毛皂": "边缘毛糙", "毛皂": "毛糙",
 }
 
 # 规则配置文件路径（与 samples.db 同目录：assets/rules_config.json）
@@ -745,7 +759,7 @@ def default_rules_config() -> dict:
     """出厂默认规则配置（恢复默认用）。"""
     return {"typos": dict(TYPO_MAP_DEFAULT), "conflicts": [],
             "ignores": [], "template": dict(DEFAULT_TEMPLATE),
-            "enable_r19": True}
+            "enable_r19": True, "r19_sensitivity": "medium"}
 
 
 def load_rules_config(path: str = RULES_CONFIG_PATH) -> dict:
@@ -754,11 +768,20 @@ def load_rules_config(path: str = RULES_CONFIG_PATH) -> dict:
     try:
         with open(path, encoding="utf-8") as fh:
             cfg = json.load(fh)
-        cfg.setdefault("typos", dict(TYPO_MAP_DEFAULT))
         cfg.setdefault("conflicts", [])
         cfg.setdefault("ignores", [])
         cfg.setdefault("template", dict(DEFAULT_TEMPLATE))
+        cfg.setdefault("r19_sensitivity", "medium")
         cfg.setdefault("enable_r19", True)
+        # typos 升级合并：默认错字表的新增词自动并入（用户自定义映射优先保留），
+        # 避免老用户升级后缺失新版本内置的错字识别能力。
+        _u_typos = cfg.get("typos") or {}
+        if isinstance(_u_typos, dict):
+            _merged = dict(TYPO_MAP_DEFAULT)
+            _merged.update(_u_typos)   # 用户映射优先（同错词以用户为准）
+            cfg["typos"] = _merged
+        else:
+            cfg.setdefault("typos", dict(TYPO_MAP_DEFAULT))
         return cfg
     except Exception:
         return defaults
@@ -1381,10 +1404,25 @@ class RuleEngine:
             for m in re.finditer(re.escape(w), text):
                 covered.append((m.start(), m.end()))
         covered.sort()
+        # P4 敏感度：设置页可调（low=仅同音 / medium=近音 / high=含形近）
+        sensitivity = str(self.rules_config.get("r19_sensitivity", "medium")).lower()
+        if sensitivity not in ("low", "medium", "high"):
+            sensitivity = "medium"
         def _in_covered(s, e):
             return any(ms <= s and e <= me for ms, me in covered)
         def _in_seen(s, e):
             return any(ms <= s < me or ms < e <= me for ms, me in seen_spans)
+        # P0 上下文消歧：疑似错字片段若被某个更长的白名单词组完全包含
+        # （如「未见明显异常」覆盖切出的「见明」），视为合法组合，豁免。
+        def _inside_covered(s, e, cov):
+            if not cov:
+                return False
+            import bisect
+            idx = bisect.bisect_right([c[0] for c in cov], s) - 1
+            if idx < 0:
+                return False
+            ms, me = cov[idx]
+            return ms <= s and e <= me
         cjk = re.compile(r"[\u4e00-\u9fff]+")
         for m in cjk.finditer(text):
             s0 = m.start()
@@ -1398,15 +1436,26 @@ class RuleEngine:
                     if _in_seen(s, e):
                         continue
                     seg = run[i:i + ln]
-                    hit, cand = _hf_segment_candidates(seg)
+                    hit, cand = _hf_segment_candidates(seg, sensitivity)
                     if hit and cand:
                         best, cat, sim = cand[0]
-                        if sim >= 0.98 and not _in_covered(s, e):
-                            reason = ("同音" if sim == 1.0 else "近音")
+                        if not _in_covered(s, e):
+                            # P0 上下文消歧：命中疑似错字但位于更长白名单词组
+                            # 内部（如「未见明显异常」切出「见明」）→ 豁免，
+                            # 消除『切词切出伪词』的误报。
+                            if _inside_covered(s, e, covered):
+                                continue
+                            # 判定错字类型：形近（sim==0.9 来自形近表）vs 同/近音
+                            if sim < 0.98:
+                                reason = "形近"
+                            elif sim == 1.0:
+                                reason = "同音"
+                            else:
+                                reason = "近音"
                             out.append(Finding(
-                                "R19-HOMOPHONE", "读音相似错字", "low",
-                                f"「{seg}」读音与高频词「{best}」（{cat}）{reason}，"
-                                f"疑为语音录入误写，请核对",
+                                "R19-HOMOPHONE", "读音/形近错字", "low",
+                                f"「{seg}」{reason}与高频词「{best}」（{cat}）相近，"
+                                f"疑为语音或输入法录入误写，请核对",
                                 seg, (s, e), best))
                             seen_spans.add((s, e))
                             break

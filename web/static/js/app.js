@@ -1379,9 +1379,12 @@ async function loadRulesConfig(silent = false) {
     document.getElementById('cfgIgnores').value = ignores.map(String).sort((a, b) => a.localeCompare(b, 'zh')).join('\n');
     const tpl = cfg.template || {};
     document.getElementById('cfgTplFollowup').checked = !!tpl.require_followup;
-    // R19 读音相似错字（高频词组锚定）；默认开启
+    // R19 错字检测（读音相似 + 形近字，高频词组锚定）；默认开启
     const r19El = document.getElementById('cfgR19');
     if (r19El) r19El.checked = cfg.enable_r19 !== false;
+    // R19 灵敏度（低/中/高）
+    const sensEl = document.getElementById('cfgR19Sens');
+    if (sensEl) sensEl.value = ['low', 'medium', 'high'].includes(cfg.r19_sensitivity) ? cfg.r19_sensitivity : 'medium';
     // 快照：供「恢复默认/撤销编辑」使用
     _cfgSnapshot = {
       typos: document.getElementById('cfgTypos').value,
@@ -1459,10 +1462,12 @@ async function saveRulesConfig() {
   const tpl = { require_followup: document.getElementById('cfgTplFollowup').checked };
   const r19El = document.getElementById('cfgR19');
   const enable_r19 = r19El ? r19El.checked : true;
+  const sensEl = document.getElementById('cfgR19Sens');
+  const r19_sensitivity = (sensEl && ['low', 'medium', 'high'].includes(sensEl.value)) ? sensEl.value : 'medium';
   try {
     const res = await fetch('/api/v1/qc/rules/config', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ typos, conflicts, ignores, template: tpl, enable_r19 })
+      body: JSON.stringify({ typos, conflicts, ignores, template: tpl, enable_r19, r19_sensitivity })
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '保存失败');
