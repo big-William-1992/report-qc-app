@@ -71,6 +71,12 @@ import ocr_provider
 from version import APP_VERSION
 from server import db  # SQLAlchemy 统一数据层（users/departments/queue/settings）
 
+# E2E 测试隔离：QC_DB_OVERRIDE 指向临时 sqlite 路径时，账号/队列等全部落该临时库，
+# 避免污染真实数据（accounts._DB_OVERRIDE 在每次建表前被消费）。
+_qc_db_override = os.environ.get("QC_DB_OVERRIDE", "").strip()
+if _qc_db_override:
+    accounts._DB_OVERRIDE = os.path.abspath(_qc_db_override)
+
 # 启动时确保表就绪（多用户/科室自托管核心表）
 db.init_db()
 
@@ -1107,12 +1113,18 @@ import uuid as _uuid
 
 
 def _appdata_dir() -> str:
-    """跨平台数据目录（与 src/app.py 的 _appdata_dir 保持完全一致，实现队列互通）。"""
-    ap = os.path.expandvars("%APPDATA%")
-    if ap and os.path.isabs(ap):
-        base = os.path.join(ap, "MedicalReportQC")
+    """跨平台数据目录（与 src/app.py 的 _appdata_dir 保持完全一致，实现队列互通）。
+
+    QC_APPDATA 环境变量可覆盖数据目录（E2E 测试隔离用，生产不设置则用默认路径）。"""
+    override = os.environ.get("QC_APPDATA", "").strip()
+    if override:
+        base = os.path.abspath(override)
     else:
-        base = os.path.join(os.path.expanduser("~"), ".medical_report_qc")
+        ap = os.path.expandvars("%APPDATA%")
+        if ap and os.path.isabs(ap):
+            base = os.path.join(ap, "MedicalReportQC")
+        else:
+            base = os.path.join(os.path.expanduser("~"), ".medical_report_qc")
     os.makedirs(base, exist_ok=True)
     return base
 

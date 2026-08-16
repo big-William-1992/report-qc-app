@@ -34,9 +34,30 @@ web_dir = os.path.join(root, "web")
 _extra_binaries = []
 _extra_datas = []
 _extra_hiddenimports = []
+
+# 2026-08-16 打包瘦身：OCR 仅用 CPU 推理，裁剪 onnxruntime 的 GPU provider DLL
+# （cuda/tensorrt/dml/openvino 等），显著减小体积。保留 CPU 核心与 shared provider。
+_ORT_GPU_PROVIDERS = (
+    "onnxruntime_providers_cuda.dll", "onnxruntime_providers_tensorrt.dll",
+    "onnxruntime_providers_dml.dll", "onnxruntime_providers_openvino.dll",
+    "onnxruntime_providers_shared.dll",
+)
+
+
+def _ocr_cpu_trim(_bins, _datas, _hides):
+    """过滤 rapidocr 收集结果中的 onnxruntime GPU provider DLL，仅保留 CPU。"""
+    _bn = []
+    for _b in _bins:
+        _name = os.path.basename(_b[0]).lower()
+        if _name in _ORT_GPU_PROVIDERS:
+            continue
+        _bn.append(_b)
+    return _bn, _datas, _hides
+
+
 try:
     from PyInstaller.utils.hooks import collect_all
-    _rb, _rd, _rh = collect_all("rapidocr_onnxruntime")
+    _rb, _rd, _rh = _ocr_cpu_trim(*collect_all("rapidocr_onnxruntime"))
     _extra_binaries += _rb
     _extra_datas += _rd
     _extra_hiddenimports += _rh
@@ -58,9 +79,31 @@ except Exception as _e:
 # ---- WebView（pywebview）依赖全量收集 ----
 # pywebview 在 Windows 上按平台动态载入 webview.platforms.edgechrome 等子模块，
 # PyInstaller 静态分析抓不到，用 collect_all 把整个包（含各平台实现）收进来。
+#
+# 2026-08-16 打包瘦身：Windows 打包时裁剪掉 macOS(cocoa)/Linux(gtk/qt/cef) 等
+# 非目标平台的实现，只保留 Windows 用的 edgechromium(WebView2) 与 winforms(pythonnet)。
+# （macOS/Linux 打包时可调 _WEBVIEW_DROP 集合。）
+
+# 需排除的 pywebview 平台模块名（Windows 目标）
+_WEBVIEW_DROP = ("cocoa", "gtk", "qt", "cef", "wox", "phantomjs")
+
+
+def _webview_trim(_bins, _datas, _hides):
+    """按目标平台过滤 webview 收集结果：排除 _WEBVIEW_DROP 中的非目标平台实现。"""
+    def _bad(_p):
+        _p = _p.replace("\\", "/").lower()
+        return any(("/platforms/" + x) in _p for x in _WEBVIEW_DROP)
+    _bn = [_b for _b in _bins if not _bad(_b[1])]
+    _dn = [_d for _d in _datas if not _bad(_d[1])]
+    _hn = [h for h in _hides
+           if not (h.startswith("webview.platforms.")
+                   and h.split(".")[-1] in _WEBVIEW_DROP)]
+    return _bn, _dn, _hn
+
+
 try:
     from PyInstaller.utils.hooks import collect_all as _collect_all
-    _wb, _wd, _wh = _collect_all("webview")
+    _wb, _wd, _wh = _webview_trim(*_collect_all("webview"))
     _extra_binaries += _wb
     _extra_datas += _wd
     _extra_hiddenimports += _wh
@@ -117,12 +160,36 @@ except Exception as _e:
 # 仅靠 `from sqlalchemy import create_engine` 的静态分析在冻结时常漏整包，
 # 导致 exe 启动报 ModuleNotFoundError: No module named 'sqlalchemy'。
 # 用 collect_all 把「包 + C 扩展 + 全部方言」一并打进 exe，确保导入链完整。
+#
+# 2026-08-16 打包瘦身：项目仅用 SQLite（server/db.py 默认 sqlite，且无远端 DB），
+# 裁剪掉 MySQL/Postgres/Oracle/MSSQL 等非 sqlite 方言，显著减小打包体积。
+_SQLA_EXCLUDE_DIALECTS = ("postgresql", "mysql", "oracle", "mssql", "sybase", "firebird")
+
+
+def _sqlalchemy_trim(_bins, _datas, _hides):
+    """过滤 sqlalchemy 收集结果，仅保留 sqlite 方言（项目唯一使用）。"""
+    _bn = []
+    for _b in _bins:
+        _dl = _b[1].replace("\\", "/").lower()
+        if any("/dialects/" + d in _dl for d in _SQLA_EXCLUDE_DIALECTS):
+            continue
+        _bn.append(_b)
+    _dn = [d for d in _datas
+           if not any("/dialects/" + x in d[1].replace("\\", "/").lower()
+                      for x in _SQLA_EXCLUDE_DIALECTS)]
+    _hn = [h for h in _hides
+           if not (h.startswith("sqlalchemy.dialects.")
+                   and any(h.split(".")[-1] == x for x in _SQLA_EXCLUDE_DIALECTS))]
+    return _bn, _dn, _hn
+
+
 try:
     from PyInstaller.utils.hooks import collect_all as _ca
-    _sb_, _sd_, _sh_ = _ca("sqlalchemy")
+    _sb_, _sd_, _sh_ = _sqlalchemy_trim(*_ca("sqlalchemy"))
     _extra_binaries += _sb_
     _extra_datas += _sd_
     _extra_hiddenimports += _sh_
+    print("  [sqlalchemy] 裁剪非 sqlite 方言完成")
 except Exception as _e:
     print("WARNING: collect_all('sqlalchemy') failed:", _e)
 

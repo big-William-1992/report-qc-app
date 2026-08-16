@@ -61,3 +61,9 @@ crash.log
 # UIA 真机自检证据（tools/uia_selfcheck.py 生成，可能含报告文本片段，涉及患者隐私，不入库）
 uia_evidence/
 # 星衍影像云.spec 已由上方 *.spec 规则忽略（属独立项目，不纳入质控软件仓库）
+
+# ---------- 前端 E2E（Playwright）生成物 ----------
+node_modules/
+playwright-report/
+test-results/
+blob-report/

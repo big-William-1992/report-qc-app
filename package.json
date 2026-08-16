@@ -1,0 +1,14 @@
+{
+  "name": "report-qc-app-e2e",
+  "version": "1.0.0",
+  "description": "前端 E2E 测试（Playwright）——覆盖授权闸门、报告质控、样本库等核心流程",
+  "private": true,
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.46.0"
+  }
+}

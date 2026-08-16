@@ -1888,12 +1888,18 @@ class ReportQcApp(tk.Tk):
 
     # -------------------- 待质控队列（持久化真实工作流数据） --------------------
     def _appdata_dir(self):
-        """跨平台数据目录：Windows 用 %APPDATA%，其余（macOS/Linux）用 ~/.medical_report_qc。"""
-        ap = os.path.expandvars("%APPDATA%")
-        if ap and os.path.isabs(ap):
-            base = os.path.join(ap, "MedicalReportQC")
+        """跨平台数据目录：Windows 用 %APPDATA%，其余（macOS/Linux）用 ~/.medical_report_qc。
+
+        QC_APPDATA 环境变量可覆盖（E2E 测试隔离用）。"""
+        override = os.environ.get("QC_APPDATA", "").strip()
+        if override:
+            base = os.path.abspath(override)
         else:
-            base = os.path.join(os.path.expanduser("~"), ".medical_report_qc")
+            ap = os.path.expandvars("%APPDATA%")
+            if ap and os.path.isabs(ap):
+                base = os.path.join(ap, "MedicalReportQC")
+            else:
+                base = os.path.join(os.path.expanduser("~"), ".medical_report_qc")
         os.makedirs(base, exist_ok=True)
         return base
 
