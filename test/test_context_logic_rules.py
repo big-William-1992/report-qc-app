@@ -60,12 +60,14 @@ class TestR1GenderSection(unittest.TestCase):
 
 
 class TestR11Context(unittest.TestCase):
-    def test_side_mismatch_left_info_right_text(self):
+    def test_side_only_contralateral_no_flag(self):
+        # 回归：信息框侧别为左，但报告只提右侧（本侧未描述）——
+        # 本侧可能正常未提及，属『未涉及』而非矛盾，不再误报 R11-SIDE。
         text = ("检查所见：\n右侧胸腔见少量积液。\n"
                 "诊断印象：\n右侧胸腔积液。\n")
         out = _run(text, {"laterality": "左"})
         ids = [f.rule_id for f in out]
-        self.assertIn("R11-SIDE", ids)
+        self.assertNotIn("R11-SIDE", ids)
 
     def test_side_no_mismatch_when_consistent(self):
         text = ("检查所见：\n左侧胸腔见少量积液。\n"
@@ -106,6 +108,45 @@ class TestR12Sentence(unittest.TestCase):
                 "诊断印象：\n右肺上叶结节。\n")
         out = _run(text, {})
         self.assertNotIn("R12-SENTENCE", [f.rule_id for f in out])
+
+
+class TestFalsePositiveRegression(unittest.TestCase):
+    """上下文一致性误报回归测试：确保正常/鉴别的标准报告表述不再被误报。"""
+
+    def test_r9_no_visible_mass_no_flag(self):
+        # 回归 R9：『未见占位性病变』是标准阴性表述，『未见』+『占位』同现不应判为互斥矛盾。
+        text = ("检查所见：\n双肺纹理清晰，未见占位性病变。\n"
+                "诊断印象：\n双肺未见明确异常。\n")
+        out = _run(text, {})
+        self.assertNotIn("R9-CONFLICT", [f.rule_id for f in out])
+
+    def test_r9_benign_malignant_differentiation_no_flag(self):
+        # 回归 R9：『良恶性待定』『不除外恶性』是正常鉴别表达，『良性』『恶性』同现不应误报。
+        text = ("检查所见：\n右肺上叶见一结节，性质待定，需鉴别良恶性。\n"
+                "诊断印象：\n结节，考虑良性可能，但不除外恶性。\n")
+        out = _run(text, {})
+        self.assertNotIn("R9-CONFLICT", [f.rule_id for f in out])
+
+    def test_r12_different_region_symmetric_no_flag(self):
+        # 回归 R12：同一句内不同部位『右肺结节 + 左肺正常』是对称描述，不判为自相矛盾。
+        text = ("检查所见：\n右肺见一结节，左肺正常。\n"
+                "诊断印象：\n右肺结节。\n")
+        out = _run(text, {})
+        self.assertNotIn("R12-SENTENCE", [f.rule_id for f in out])
+
+    def test_r12_same_region_conflict_still_detected(self):
+        # 保障 R12：同一部位『左肺正常 + 左肺结节』仍是真矛盾，应保留告警。
+        text = ("检查所见：\n左肺正常，但左肺见一结节。\n"
+                "诊断印象：\n左肺结节。\n")
+        out = _run(text, {})
+        self.assertIn("R12-SENTENCE", [f.rule_id for f in out])
+
+    def test_r5_negative_impression_no_flag(self):
+        # 回归 R5：描述有结节、印象段对相应器官给出阴性/概括结论（未见异常/良性），不再误报 R5。
+        text = ("检查所见：\n右肺上叶见一结节。\n"
+                "诊断印象：\n右肺未见明显异常。\n")
+        out = _run(text, {})
+        self.assertNotIn("R5-CONSISTENCY", [f.rule_id for f in out])
 
 
 if __name__ == "__main__":

@@ -302,7 +302,7 @@ async function runQC() {
           modality:   document.getElementById('mModality').value,
           applied_site: document.getElementById('mSite').value,
           laterality: effectiveLaterality(),
-          user_id:    document.getElementById('mUser').value,
+          user_id:    (document.getElementById('mUser') || {}).value || APP_SETTINGS.emp_id,
         }
       })
     });
@@ -594,10 +594,10 @@ async function saveToLibrary() {
           modality:     document.getElementById('mModality').value,
           applied_site: document.getElementById('mSite').value,
           laterality:   effectiveLaterality(),
-          user_id:      document.getElementById('mUser').value,
+          user_id:      (document.getElementById('mUser') || {}).value || APP_SETTINGS.emp_id,
         },
         anonymize: !!APP_SETTINGS.anonymize,
-        user_id:   document.getElementById('mUser').value || APP_SETTINGS.emp_id,
+        user_id:   (document.getElementById('mUser') || {}).value || APP_SETTINGS.emp_id,
       })
     });
     const data = await res.json();
@@ -1604,7 +1604,7 @@ function currentQcMeta() {
   return {
     patient: el('mPatient'), gender: el('mGender'), age: el('mAge'),
     modality: el('mModality'), applied_site: el('mSite'),
-    laterality: effectiveLaterality(), user_id: el('mUser'),
+    laterality: effectiveLaterality(), user_id: el('mUser') || APP_SETTINGS.emp_id,
   };
 }
 

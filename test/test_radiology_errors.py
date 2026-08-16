@@ -156,9 +156,9 @@ def test_severity_assignment_by_rule():
     # 注意：R2 span 为 (-1,-1)，依赖 snippet 兜底才能高亮——此处确认对象存在且严重度为 high
     assert any(x.span == (-1, -1) for x in f_lat if x.rule_id == "R2-LATERALITY")
 
+    # R11-SIDE 已放宽：仅凭左右提及不一致不再误报（描述左肺、结论右胸的对称描述，info 左→不报）
     f_side = _run("影像描述：左肺结节。\n影像结论：右侧胸腔积液。", {"laterality": "左"})
-    assert _has(f_side, "R11-SIDE")
-    assert any(x.severity == "high" for x in f_side if x.rule_id == "R11-SIDE")
+    assert not _has(f_side, "R11-SIDE")
 
     # 提示(low)：模板缺失-随访建议（R10-TEMPLATE 默认 low）
     f_tpl = _run("影像描述：右肺上叶见结节。\n影像结论：右肺上叶结节。")

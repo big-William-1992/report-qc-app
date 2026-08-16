@@ -203,18 +203,44 @@ def _load_pinyin() -> Optional[object]:
 _PY = _load_pinyin()
 
 
+# 放射语境多音字优先读音（2026-08-16 增强）：lazy_pinyin 对多音字取默认读音，
+# 部分放射术语中的读音与其默认读音不同，这里在 _word_pinyin 中按字覆盖。
+_RAD_POLYPHONE: Dict[str, str] = {
+    "咽": "yan",        # 咽部（yān）
+    "骨": "gu",         # 骨质 / 骨（gǔ）
+    "脏": "zang",       # 内脏（zàng）
+    "血": "xue",        # 血液（xuè）
+    "椎": "zhui",       # 椎体（zhuī）
+    "隔": "ge",         # 纵隔（gé）
+    "横": "heng",       # 横隔（héng）
+    "结": "jie",        # 结节（jié）
+    "冠": "guan",       # 冠脉（guān）
+    "尿": "niao",       # 尿（niào）
+    "窦": "dou",        # 上颌窦（dòu）
+    "给": "gei",        # 供血（gěi）
+    "颈": "jing",       # 颈部（jǐng）
+    "膀": "pang",       # 膀胱（páng）
+}
+
+
 def _word_pinyin(word: str) -> str:
     """把词组转成『声母-韵母拼接』的紧凑拼音串，供比对。
-    多音字取第一个读音（放射语境常用读音优先，见下方注）。"""
+    多音字优先按放射语境读音覆盖（_RAD_POLYPHONE）。"""
     if _PY is None:
         return ""
     cached = _WORD_PINYIN.get(word)
     if cached is not None:
         return cached
     try:
-        parts = _PY.lazy_pinyin(word, errors="ignore")
-        # 取首读音，全部小写，去掉空白
-        py = "".join(parts).lower()
+        # 逐字取读音（errors="default" 非汉字原样返回，保证一字一音对齐），
+        # 再对放射多音字做语境覆盖。
+        from pypinyin import pinyin, Style
+        parts = pinyin(word, style=Style.NORMAL, errors="default")
+        py_parts = []
+        for ch, plist in zip(word, parts):
+            base = plist[0].lower() if plist else ""
+            py_parts.append(_RAD_POLYPHONE.get(ch, base))
+        py = "".join(py_parts)
     except Exception:
         py = ""
     _WORD_PINYIN[word] = py
@@ -358,6 +384,26 @@ _SHAPE_GROUPS = [
     "密蜜", "寂寥", "寇冠", "寄奇", "宿缩", "密蜜", "寒塞", "富福", "尊遵",
     "嫩懒", "熔溶", "寰环", "糠康", "徽微", "衡衍", "豁割", "辫辨", "籍藉",
     "籍籍", "饕餐", "齑齐",
+    # ---------- 放射专业形近字组（2026-08-16 增强）----------
+    # 每个组内为互形近的单字集合（左右/上下结构、偏旁相近、仅一笔之差），供逐字形近比对。
+    "膈隔", "膈格", "隔膈",                       # 膈肌/纵隔（膈↔隔↔格）
+    "肋胸", "胸肋", "胸脑", "肋胁", "胸脑",       # 胸廓/肋骨/胁
+    "胰腺", "胰脾", "脾胰", "胰脏", "脏胰",       # 胰腺/腺体
+    "肝胆", "肝脾", "肝胃", "胆肝",               # 肝脏/胆
+    "肾胃", "肾腰", "肾胜",                       # 肾/胃/腰/胜
+    "腔空", "腔龛",                               # 胸腔/空腔
+    "窦实", "实窦",                               # 上颌窦/实性
+    "椎锥", "椎骶", "骶底",                       # 椎体/骶骨
+    "骨肾", "骨甲",                               # 骨质/肾/甲
+    "肺脾", "脾肺", "肺肿",                       # 肺/脾/肿
+    "髂骼",                                       # 髂骨/骼
+    "贲喷",                                       # 贲门/喷
+    "盲肓", "盲育", "肓盲",                       # 盲肠/肓/育
+    "憩憨",                                       # 憩室/憨
+    "痔痦",                                       # 痔/痦
+    "腕碗", "踝裸", "裸踝",                       # 腕/踝/裸
+    "股肱", "股骨",                               # 股骨/肱
+    "胰液",                                       # 胰液/腺
 ]
 
 # 展开为 字 → 形近字集合（双向）
@@ -421,6 +467,14 @@ def segment_candidates(seg: str,
             return False, []
     min_sim = SENSITIVITY_MIN_SIM.get(sensitivity, 0.98)
     cand = [c for c in find_homophone_suggestions(seg) if c[2] >= min_sim]
+    # 形近候选（相似度记 0.9）来自人工精选形近字组（膈/隔、肋/胸、末/未…），
+    # 误报风险低；medium/high 敏感度下均纳入（仅 low 只报同音，避免误报）。
+    if sensitivity != "low":
+        _shape_only = [c for c in find_homophone_suggestions(seg)
+                       if c[2] == 0.9 and c not in cand]
+        if _shape_only:
+            cand.extend(_shape_only)
+            cand.sort(key=lambda t: -t[2])
     if cand:
         return True, cand
     return False, []

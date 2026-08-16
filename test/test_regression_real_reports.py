@@ -134,9 +134,10 @@ def test_reg_site_mismatch_r6():
 
 
 def test_reg_info_laterality_r11():
-    # 信息框侧别『左』但正文仅提右侧 → 上下文左右矛盾
+    # 信息框侧别『左』但正文仅提右侧（本侧未描述）——本侧可能正常未提及，属『未涉及』，
+    # 不再误报 R11-SIDE（左右矛盾交由 R17 逐部位精确比对）。
     f = _run("检查所见：右肺见结节。\n诊断印象：右肺结节。", {"laterality": "左"})
-    assert _has(f, "R11-SIDE")
+    assert not _has(f, "R11-SIDE")
 
 
 def test_reg_normal_chinese_no_false_positive():

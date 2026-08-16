@@ -89,6 +89,23 @@ ANATOMY_SYNONYMS = {
     "左肾": "L-kidney", "右肾": "R-kidney",
 }
 
+
+def _r5_fam(canonical):
+    """从 canonical 提取器官族（用于 R5 描述-结论一致性归组）。
+
+    canonical 编码规则：
+      - 『L-kidney』/『R-femoral-head』等以 L-/R- 开头 → 取连字符后部分为器官族。
+      - 肺叶编码『LUL/RUL/LUUL/RUUL/LLL/RLL 等』（以 UL/LL 结尾）→ 统一归为 lung。
+    其余原样返回。返回 None 表示无法归组（跳过该实体）。
+    """
+    if not canonical:
+        return None
+    if canonical.startswith(("L-", "R-")):
+        return canonical.split("-", 1)[-1]
+    if canonical.endswith(("UL", "LL")):
+        return "lung"
+    return canonical
+
 # 部位归一化（用于登记部位不符：申请部位词 → 规范部位族）
 SITE_NORM = {
     # 头颈
@@ -153,6 +170,10 @@ _NEG_PREFIXES = ("未见", "未见明显", "未见明确", "未见确切", "未�
 # 明确的『正常/未见异常』声明（用于矛盾判定；不把『正常』二字单独算，避免误伤『形态正常』等）
 NORMAL_CLAIM = ["未见异常", "未见明显异常", "无明显异常", "无异常", "未见异常征象",
                 "未见明显异常征象", "未见占位", "未见占位性病变", "未见明确异常", "未见异常改变"]
+
+# R19 空格/标点容忍：移除中文之间的空格/标点（如『磨 玻 璃』→『磨玻璃』），
+# 使带空格的词也能被读音比对识别。仅保留两端的汉字。
+_R19_NORM_RE = re.compile(r"([\u4e00-\u9fff])\s*[·\．\.\s，,、；;]+\s*([\u4e00-\u9fff])")
 
 # 常见解剖部位/区域词（用于精准识别『部位+正常』的正常声明，避免『形态正常』『结构正常』误报）
 # 仅当『正常』紧跟这些部位/区域词时才判为正常声明；与 NORMAL_CLAIM 互补覆盖
@@ -436,6 +457,13 @@ def _region_assertions_in_section(text: str, spans):
     for (_k, _s, _st, _en) in spans:
         after = text[_en: _en + 5]
         after_big = text[_en: _en + 16]
+        # 句边界保护：窗口内遇句号/分号/换行则截断，避免跨句吞入相邻部位阳性征
+        # （如『右肺见结节，左肺正常。』后 16 字窗口不能吞掉下一句的阳性征）。
+        for _bnd in ("。", "；", ";", "\n"):
+            _bi = after_big.find(_bnd)
+            if 0 < _bi < len(after_big):
+                after_big = after_big[:_bi]
+                break
         is_normal = ("正常" in after[:2]) or ("未见异常" in after_big) \
                     or ("未见明显异常" in after_big) or ("未见占位" in after_big) \
                     or ("未见明确异常" in after_big)
@@ -593,6 +621,61 @@ def _has_positive(text: str) -> bool:
             if not any(pre.endswith(neg) for neg in _NEG_PREFIXES):
                 return True
             idx = text.find(k, idx + 1)
+    return False
+
+
+def _word_effectively_present(target: str, word: str) -> bool:
+    """word 在 target 中是否有『未被否定前缀修饰』的出现（即真正积极出现）。
+
+    用于 R9 矛盾检测豁免：『未见占位』中『占位』被『未见』否定，不算真正出现，
+    故『未见 vs 占位』矛盾对不触发（正常阴性描述）。与 _has_positive 的否定语义一致。
+    """
+    if not word:
+        return False
+    idx = target.find(word)
+    while idx != -1:
+        pre = target[max(0, idx - 5): idx]
+        if not any(pre.endswith(neg) for neg in _NEG_PREFIXES):
+            return True
+        idx = target.find(word, idx + 1)
+    return False
+
+
+def _r12_same_region(sent: str) -> bool:
+    """R12 句级矛盾辅助：判断句中『部位+正常』与阳性征是否指向同一部位。
+
+    - 相同部位（如『左肺见结节，左肺正常』）→ 真自相矛盾，返回 True。
+    - 不同部位（如『右肺见结节，左肺正常』的对称描述）→ 不判矛盾，返回 False。
+    对每个阳性征，取其之前最近的部位提及与『部位+正常』的提及比对。
+    """
+    m = _REGION_NORMAL_RE.search(sent)
+    if not m:
+        return False
+    norm_s, norm_e = m.start(), m.end()          # 『部位正常』区间
+    region_spans = _region_spans_in_text(sent)   # [(key, side, start, end)]
+    # 正常声明所对应的部位提及
+    normal_spans = [sp for sp in region_spans if sp[2] >= norm_s and sp[3] <= norm_e]
+    # 收集未被否定的阳性征位置
+    pos_idx = []
+    for k in POSITIVE_STRONG:
+        i = sent.find(k)
+        while i != -1:
+            pre = sent[max(0, i - 5): i]
+            if not any(pre.endswith(neg) for neg in _NEG_PREFIXES):
+                pos_idx.append(i)
+            i = sent.find(k, i + 1)
+    if not pos_idx:
+        return False
+    for pi in pos_idx:
+        before = [sp for sp in region_spans if sp[3] <= pi]
+        if not before:
+            # 无部位限定词：若句内确有部位+正常声明，保守视为同部位（维持判矛盾）
+            if normal_spans:
+                return True
+            continue
+        nearest = max(before, key=lambda sp: sp[3])   # 阳性征前最近的部位
+        if any(sp[0] == nearest[0] and sp[1] == nearest[1] for sp in normal_spans):
+            return True
     return False
 
 
@@ -1128,17 +1211,24 @@ class RuleEngine:
         for e in ents:
             if e.label != "anatomy" or e.section != "findings" or not e.canonical:
                 continue
-            fam = e.canonical.split("-", 1)[-1]
+            fam = _r5_fam(e.canonical)
+            if not fam:
+                continue
             seg = f_txt[max(0, (e.start - f0) - 20): (e.end - f0) + 20]
             if any(k in seg for k in POSITIVE_MARKERS):
                 fam_mk.setdefault(fam, e.text)
         for fam, name in fam_mk.items():
             # 印象段是否就该器官族给出结论（任一含该器官族同义词的实体 + 结论词）
-            fam_organs = {w for w, c in ANATOMY_SYNONYMS.items() if c.split("-", 1)[-1] == fam}
+            fam_organs = {w for w, c in ANATOMY_SYNONYMS.items() if _r5_fam(c) == fam}
             mentioned = any(o in i_txt for o in fam_organs)
             concluded = any(k in i_txt for k in
                             ["占位", "结节", "癌", "瘤", "恶性", "病变", "异常",
-                             "增大", "扩张", "囊肿", "结石", "水肿", "出血"])
+                             "增大", "扩张", "囊肿", "结石", "水肿", "出血",
+                             # 阴性/概括性结论：印象段已对该器官族给出结论（未见异常/正常/良性等），
+                             # 视为"已结论"，避免『描述有结节 + 印象称未见异常』被 R5 误报
+                             # （此类矛盾交由 R17 逐部位精确比对处理）
+                             "未见异常", "未见明显异常", "正常", "未见占位", "良性",
+                             "未见明确异常", "未见确切异常"])
             if mentioned and concluded:
                 continue
             out.append(Finding("R5-CONSISTENCY", "描述-结论矛盾", "medium",
@@ -1275,6 +1365,13 @@ class RuleEngine:
                     f"称「肿块」但测量最大径约 {cm:.1f}cm（<1cm），按放射科口径应称「结节」，"
                     f"请核对描述或测量是否一致",
                     m.group(0), (-1, -1)))
+            # 数字/单位错字（2026-08-16 增强）：换算后最大径明显超出人体合理范围
+            # （如结节写 30cm，多为 mm 误写为 cm），提示单位可能误写。
+            if cm > 10.0:
+                out.append(Finding("R22-UNIT", "尺寸单位疑似误写", "low",
+                    f"测量最大径约 {cm:.1f}cm，超出常见病灶量级，疑为长度单位误写"
+                    f"（mm 误写为 cm）或数值录入有误，请核对",
+                    m.group(0), (-1, -1)))
         return out
 
     # R20 模板完整性校验：按检查类型（从登记部位/检查方式推断）校验必查要素缺项。
@@ -1397,11 +1494,20 @@ class RuleEngine:
             return out
         if not text:
             return out
+        # 空格/标点容忍（2026-08-16 增强）：移除中文之间的空格/标点，使
+        # 『磨 玻 璃』『磨．玻．璃』等 OCR/录入带空格的词能被识别为『磨玻璃』。
+        # 仅用于 R19 读音比对（R19 为 low 级提示，位置偏移对使用影响极小）。
+        norm_text = text
+        while True:
+            _nxt = _R19_NORM_RE.sub(lambda m: m.group(1) + m.group(2), norm_text)
+            if _nxt == norm_text:
+                break
+            norm_text = _nxt
         # R8 已标记区间：R19 不重复报（同音异字由 R19 补漏）
         r8_spans = set()
         typo_map = self.rules_config.get("typos", {}) or {}
         for wrong in typo_map:
-            for m in re.finditer(re.escape(wrong), text):
+            for m in re.finditer(re.escape(wrong), norm_text):
                 r8_spans.add((m.start(), m.end()))
         seen_spans: Set[Tuple[int, int]] = set(r8_spans)
         # 切词：先按高频白名单最长匹配切出已知正确词（跳过不查），
@@ -1410,7 +1516,7 @@ class RuleEngine:
         # 标记白名单覆盖区间
         covered = []
         for w, _c in hf:
-            for m in re.finditer(re.escape(w), text):
+            for m in re.finditer(re.escape(w), norm_text):
                 covered.append((m.start(), m.end()))
         covered.sort()
         # P4 敏感度：设置页可调（low=仅同音 / medium=近音 / high=含形近）
@@ -1433,7 +1539,7 @@ class RuleEngine:
             ms, me = cov[idx]
             return ms <= s and e <= me
         cjk = re.compile(r"[\u4e00-\u9fff]+")
-        for m in cjk.finditer(text):
+        for m in cjk.finditer(norm_text):
             s0 = m.start()
             run = m.group()
             # 对 run 内每个可能起点做滑窗
@@ -1493,6 +1599,7 @@ class RuleEngine:
             f_txt, i_txt = secs["findings"], secs["impression"]
             note = rule.get("note", "")
             hit = False
+            target = text   # 默认正文；各分支按需覆盖，供豁免检查使用
             if scope == "描述段":
                 target = f_txt
                 hit = bool(target) and a in target and b in target
@@ -1503,6 +1610,7 @@ class RuleEngine:
                 # 同一句内 A、B 同现（按句切分，逐句判断）
                 for sent in _split_sentences(f_txt + "\n" + i_txt):
                     if a in sent and b in sent:
+                        target = sent
                         hit = True
                         break
             elif scope == "描述vs结论":
@@ -1511,6 +1619,14 @@ class RuleEngine:
             else:   # 正文（默认）
                 hit = a in text and b in text
             if hit:
+                # 豁免1：否定前缀——若 a/b 中任一词被否定修饰（如『未见占位』中『占位』被『未见』
+                # 否定），则该词不算真正出现，互斥不成立（正常阴性描述，不报）。
+                if not _word_effectively_present(target, a) or not _word_effectively_present(target, b):
+                    continue
+                # 豁免2：鉴别/软化语境——『良性 vs 恶性』『未见 vs 占位』等若处于鉴别诊断表达
+                # （良恶性待定/不除外恶性/需除外…/鉴别…），同现属正常鉴别，不报。
+                if any(w in target for w in ("待定", "不除外", "鉴别", "除外")):
+                    continue
                 msg = (f"检出互斥冲突：『{a}』与『{b}』在[{scope}]内同时出现，应互斥"
                        + (f"（{note}）" if note else ""))
                 out.append(Finding("R9-CONFLICT", "自定义互斥冲突", sev, msg, a, (-1, -1)))
@@ -1548,14 +1664,16 @@ class RuleEngine:
                 sides = _detect_side_in_text(seg)
                 if not sides or "bilateral" in sides:
                     continue
-                if info_side == "left" and "right" in sides and "left" not in sides:
-                    out.append(Finding("R11-SIDE", "上下文逻辑错误-左右矛盾", "high",
-                        f"患者基础信息侧别为『左』，但{label}中仅提及『右侧』（未见左侧），方位不一致",
-                        seg[:24], (-1, -1)))
-                elif info_side == "right" and "left" in sides and "right" not in sides:
-                    out.append(Finding("R11-SIDE", "上下文逻辑错误-左右矛盾", "high",
-                        f"患者基础信息侧别为『右』，但{label}中仅提及『左侧』（未见右侧），方位不一致",
-                        seg[:24], (-1, -1)))
+                # 放宽（消除误报）：R11-SIDE 原在『报告只提对侧、未提本侧』时误报为左右矛盾，
+                # 但本侧可能正常未描述，属『未涉及』而非矛盾。现改为：
+                #   - 本侧未提及（info_side 不在 sides）→ 未涉及，不报；
+                #   - 本侧被提及（info_side 在 sides）→ 与信息框侧别一致，不报。
+                # 即仅凭单侧/双侧的“提及”不再判定左右矛盾（真正矛盾交由 R17 逐部位精确比对）。
+                if info_side == "left" and "left" not in sides:
+                    continue
+                if info_side == "right" and "right" not in sides:
+                    continue
+                # 本侧已被提及：一致，不报（双侧均描述也不构成矛盾）
         # R11-2 描述异常 → 结论正常 矛盾：已下放到 R17 逐部位精确比对
         # （按器官+侧别精确到同一部位；无法归属具体部位时由 R17 段级兜底保持原语义）。
         # R11-3 信息框性别 vs 正文解析性别 矛盾（上下文不一致）
@@ -1583,9 +1701,11 @@ class RuleEngine:
                     sent[:30], (-1, -1)))
                 continue
             # 2) 同一句内既称某部位正常又描述该部位阳性征（真正的自相矛盾）。
-            #    仅当『正常』是『部位+正常』（region-specific）时才判矛盾，避免
-            #    『右肺上叶见结节，余两肺未见异常』这类标准报告被误报（2026-08-05 加固）
+            #    仅当『正常』与阳性征指向同一部位时才判，避免『右肺见结节，左肺正常』
+            #    这类不同部位的对称描述被误报（2026-08-05 已加固『余两肺未见异常』）。
             if _REGION_NORMAL_RE.search(sent) and _has_positive(sent):
+                if not _r12_same_region(sent):
+                    continue
                 out.append(Finding("R12-SENTENCE", "同一句话逻辑错误", "high",
                     f"同一句话内既称『未见异常』又描述阳性征（自相矛盾）：『{sent[:30]}…』",
                     sent[:30], (-1, -1)))
