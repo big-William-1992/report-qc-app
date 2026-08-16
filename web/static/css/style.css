@@ -123,6 +123,20 @@ input, select, textarea {
   transition: transform 0.3s ease;
 }
 
+/* 汉堡按钮：默认隐藏，≤1024px 窄屏显示，用于展开折叠的侧边栏 */
+.sidebar-toggle-btn {
+  display: none;
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  align-items: center; justify-content: center;
+  background: var(--body-bg); color: var(--text-secondary);
+  font-size: 17px; cursor: pointer;
+  transition: all 0.15s;
+}
+.sidebar-toggle-btn:hover { background: var(--primary); color: #fff; }
+/* 侧边栏折叠遮罩（≤1024px 时显示于断点内） */
+.sidebar-backdrop { display: none; }
+
 /* 品牌区（竖排：名 + 副标题） */
 .sidebar-brand {
   padding: 22px 18px 14px;
@@ -575,6 +589,7 @@ textarea.qc-textarea:focus {
 /* 操作按钮条 */
 .action-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   padding: 14px 20px;
@@ -748,6 +763,13 @@ mark.anno-info { background: rgba(122, 134, 153, 0.14); color: var(--text-second
   width: 100%;
   border-collapse: collapse;
 }
+/* 多列表格横向滚动容器：窄屏出现横向滚动条而非被静默裁切 */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+/* 样库 11 列表格：设最小宽度保证窄屏横向滚动而非挤压换行 */
+#samplesTable { min-width: 900px; }
 .data-table th {
   text-align: left;
   padding: 10px 14px;
@@ -977,19 +999,44 @@ mark.anno-info { background: rgba(122, 134, 153, 0.14); color: var(--text-second
   100% { background-position: -200% 0; }
 }
 
-/* 响应式 */
+/* 响应式：分层断点覆盖真实适配区间（pywebview min_size 1024，重点 1024~1280px） */
+/* 1366px 以下：内容 padding 收窄，双栏右栏适度收窄 */
+@media (max-width: 1366px) {
+  .content { padding: 20px 22px; }
+  .qc-layout { grid-template-columns: 1fr 380px; }
+}
+/* 1200px 以下：患者信息降 4 列、看板卡片降 2 列 */
 @media (max-width: 1200px) {
   .qc-layout { grid-template-columns: 1fr 360px; }
   .stat-cards { grid-template-columns: repeat(2, 1fr); }
+  .meta-grid { grid-template-columns: repeat(4, 1fr); }
 }
-@media (max-width: 900px) {
+/* 1024px 以下（桌面最小宽）：质控单栏、患者信息降 2 列、侧边栏折叠为抽屉、看板卡片降 1 列 */
+@media (max-width: 1024px) {
   .qc-layout { grid-template-columns: 1fr; }
   .qc-result-col { position: static; }
   .meta-grid { grid-template-columns: repeat(2, 1fr); }
   .form-grid { grid-template-columns: 1fr; }
+  .stat-cards { grid-template-columns: 1fr; }
   .sidebar { transform: translateX(-100%); }
   .main-area { margin-left: 0; }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-backdrop {
+    display: block;
+    position: fixed; inset: 0; z-index: 90;
+    background: rgba(8, 15, 30, 0.5); opacity: 0;
+    pointer-events: none; transition: opacity 0.3s ease;
+  }
+  .sidebar-backdrop.show { opacity: 1; pointer-events: auto; }
+  .sidebar-toggle-btn { display: inline-flex; }
+  /* 内联 grid 降级：多列网格窄屏降为单列，避免挤压 */
+  .resp-grid { grid-template-columns: 1fr !important; }
+}
+/* 900px 以下（浏览器窄窗兜底） */
+@media (max-width: 900px) {
+  .meta-grid { grid-template-columns: repeat(2, 1fr); }
   .stat-cards { grid-template-columns: 1fr; }
+  .resp-grid { grid-template-columns: 1fr !important; }
 }
 
 /* ============ 框选 OCR 模态 ============ */

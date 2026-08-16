@@ -55,7 +55,23 @@ const SEV_META = {
   low:    { icon: 'ℹ', label: '提示', cls: 'info' },
 };
 
+// 窄屏（≤1024px）侧边栏抽屉：展开/收起 + 遮罩
+function toggleSidebar() {
+  const sb = document.querySelector('.sidebar');
+  const bd = document.querySelector('.sidebar-backdrop');
+  const open = sb.classList.toggle('open');
+  if (bd) bd.classList.toggle('show', open);
+}
+function closeSidebar() {
+  const sb = document.querySelector('.sidebar');
+  const bd = document.querySelector('.sidebar-backdrop');
+  if (sb) sb.classList.remove('open');
+  if (bd) bd.classList.remove('show');
+}
+
 function switchPage(pageName, navEl) {
+  // 窄屏折叠下切换页面后自动收起侧边栏
+  closeSidebar();
   // 切换导航高亮
   document.querySelectorAll('.nav-cell').forEach(el => el.classList.remove('active'));
   if (navEl) navEl.classList.add('active');

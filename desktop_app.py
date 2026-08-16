@@ -569,6 +569,49 @@ def _wait_ready(timeout: int = 20) -> bool:
     return False
 
 
+def _get_screen_work_area():
+    """跨平台获取屏幕工作区（排除任务栏）尺寸，返回 (w, h) 逻辑像素；失败返回 None。
+
+    - Windows：用 ctypes Win32 取工作区物理像素，并校正 DPI 缩放（125%/150% 等）为逻辑像素，
+      pywebview 的 width/height 是逻辑像素，需这样换算窗口才不会超出屏幕。
+    - macOS / Linux：用 tkinter 的 winfo_screenwidth/screenheight。
+    任何一步失败都返回 None，由调用方回退到默认窗口尺寸，保证不影响启动。
+    """
+    try:
+        if sys.platform.startswith("win"):
+            import ctypes
+            # 优先按显示器启用 DPI 感知，确保 GetSystemMetrics 返回真实物理像素；
+            # 重复调用幂等无害（与 pywebview 内部设置兼容）。
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+            except Exception:
+                try:
+                    ctypes.windll.user32.SetProcessDPIAware()
+                except Exception:
+                    pass
+            u32 = ctypes.windll.user32
+            phys_w = u32.GetSystemMetrics(0x30)  # SM_CXWORKAREA
+            phys_h = u32.GetSystemMetrics(0x31)  # SM_CYWORKAREA
+            scale = 1.0
+            try:
+                dpi = u32.GetDpiForSystem()
+                scale = dpi / 96.0 if dpi > 0 else 1.0
+            except Exception:
+                pass
+            return phys_w / scale, phys_h / scale
+        else:
+            import tkinter as tk
+            r = tk.Tk()
+            r.withdraw()
+            try:
+                w, h = r.winfo_screenwidth(), r.winfo_screenheight()
+            finally:
+                r.destroy()
+            return w, h
+    except Exception:
+        return None
+
+
 def main():
     # Windows 冻结（PyInstaller）下需尽早调用，避免子进程/线程相关异常。
     try:
@@ -643,8 +686,20 @@ def main():
         # 剪贴板监听（复制即质控）：默认关闭，由前端设置页开关控制
         threading.Thread(target=_clipwatch_loop, daemon=True).start()
         try:
-            _wv.create_window("星衍AI放射质控", url, width=1280, height=860,
-                              min_size=(1024, 700), js_api=Bridge())
+            # 自适应窗口尺寸：检测屏幕工作区，避免在小屏 / 高 DPI 缩放下窗口超屏导致功能被裁切。
+            win_w, win_h = 1280, 860
+            min_w, min_h = 1024, 700
+            area = _get_screen_work_area()
+            if area:
+                aw, ah = area
+                # 窗口不超过工作区，留边距避开任务栏/窗口边框；下限保护避免 UI 不可用。
+                max_w, max_h = int(aw * 0.96), int(ah * 0.92)
+                win_w = max(min(win_w, max_w), 800)
+                win_h = max(min(win_h, max_h), 600)
+                min_w = max(min(min_w, win_w), 640)
+                min_h = max(min(min_h, win_h), 560)
+            _wv.create_window("星衍AI放射质控", url, width=win_w, height=win_h,
+                              min_size=(min_w, min_h), js_api=Bridge())
             _wv.start()
         except Exception as e:  # noqa: BLE001
             # WebView2 / Edge 运行时缺失、pythonnet(clr) 打包问题等导致原生窗口创建失败：
