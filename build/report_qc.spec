@@ -11,6 +11,7 @@
 # 在 Windows 上执行： pyinstaller build\report_qc.spec
 # 产物： dist\报告质控软件\报告质控软件.exe （单目录，含 server/web/assets/src）
 import os
+import sys
 
 block_cipher = None
 # 项目根目录（build/ 的上一级）。
@@ -153,6 +154,31 @@ _server_hidden = [
     # 双保险：即使上面 collect_all 因环境差异未生效，也显式让 sqlalchemy 进入冻结包
     "sqlalchemy",
 ]
+
+# ---- 显式收集 VC++ 运行库（根治「Failed to load Python DLL: python312.dll」）----
+# python312.dll 是 MSVC 编译的 Python 运行时，运行时依赖 VC++ 运行库
+# （vcruntime140.dll / msvcp140.dll 等）。若目标机未安装 VC++ 2015-2022
+# Redistributable，LoadLibrary('python312.dll') 会报「找不到指定的模块」。
+# 这里从 System32 收集这些 DLL，放到 _internal 根目录（与 python312.dll 同级），
+# 使绿色版自带运行库、任何电脑无需额外安装。
+def _collect_vcruntime():
+    """收集 VC++ 运行库 DLL 到 _internal 根目录，返回 [(src, '.')] 列表；非 Windows 返回空。"""
+    if not sys.platform.startswith("win"):
+        return []
+    sys32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    names = [
+        "vcruntime140.dll", "vcruntime140_1.dll",
+        "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
+        "concrt140.dll", "vccorlib140.dll",
+    ]
+    out = []
+    for _n in names:
+        _p = os.path.join(sys32, _n)
+        if os.path.exists(_p):
+            out.append((_p, "."))   # '.' 即 _internal 根目录
+    return out
+
+_extra_binaries += _collect_vcruntime()
 
 a = Analysis(
     [os.path.join(root, "desktop_app.py")],
