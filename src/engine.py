@@ -362,12 +362,13 @@ def _region_assertions_in_section(text: str, spans):
 
 
 def _is_segment_global_normal(text: str, spans):
-    """段级『全局正常』判定：仅当该段无阳性征、含 NORMAL_CLAIM 短语、且【不含任何具体部位提及】
+    """段级『全局正常』判定：仅当该段无阳性征、含 NORMAL_CLAIM 短语或否定式阴性声明
+    （如『未见实质性病变』，见 _is_negative_claim）、且【不含任何具体部位提及】
     时才视为覆盖全段（可扩展至所有部位）。若段内已点名某部位（如『小脑正常』『余两肺未见异常』），
     则该正常声明是『部位级/局部』的，不得外溢到其它部位，避免『左侧小脑正常』被误判为『右侧小脑也正常』。"""
     if not text or _has_positive(text):
         return False
-    if not any(k in text for k in NORMAL_CLAIM):
+    if not any(k in text for k in NORMAL_CLAIM) and not _is_negative_claim(text):
         return False
     if spans:
         return False
@@ -492,18 +493,46 @@ def _claims_normal(text: str) -> bool:
     return bool(_REGION_NORMAL_RE.search(text))
 
 
-def _has_positive(text: str) -> bool:
-    """文本是否包含强阳性征（异常表现）。
-    注：中文无词边界，采用子串匹配；POSITIVE_STRONG 均为强特异性词（占位/结节/癌…），
-    误命中风险低。『未见/未见明显/无/不伴…』等否定前缀后的阳性征词不算异常，
-    避免『未见明显炎症』『无增生』被误判（参考 _NEG_PREFIXES）。如需更严谨可改为句级判定。"""
+# 否定前缀与阳性词之间的判定正则：否定词后允许少量修饰间隔（如『实质性』『明显』），
+# 但不允许跨逗号/句号/分号/顿号/换行（避免把前一分句的『无』错配到后一分句的阳性词）。
+# 修复点（2026-08-18）：旧逻辑用 pre.endswith(neg) 只看紧邻结尾，『未见实质性病变』中
+# 『病变』前 5 字为『未见实质』无法 endswith『未见』→ 误判阳性 → 纯正常报告误报 R17。
+_NEG_BEFORE_POS_RE = re.compile(
+    r"(?:" + "|".join(re.escape(n) for n in sorted(_NEG_PREFIXES, key=len, reverse=True))
+    + r")[^，。；;、\n]{0,8}$"
+)
+
+
+def _is_negative_claim(text: str) -> bool:
+    """文本是否含『否定前缀 + 阳性征词』的阴性声明（如『未见实质性病变』『无占位』『未见明显异常信号』）。
+
+    与 _has_positive 互补：前者找"未被否定的阳性词"（真阳性），本函数找"被否定掉的阳性词"
+    （作者明确声明无该征象）。用于段级『全局正常』判定与 R17 段级兜底，使
+    『描述整段阴性声明 + 结论阳性诊断』能正确报出『描述正常结论异常』矛盾。"""
     if not text:
         return False
     for k in POSITIVE_STRONG:
         idx = text.find(k)
         while idx != -1:
-            pre = text[max(0, idx - 5): idx]
-            if not any(pre.endswith(neg) for neg in _NEG_PREFIXES):
+            pre = text[max(0, idx - 12): idx]
+            if _NEG_BEFORE_POS_RE.search(pre):
+                return True
+            idx = text.find(k, idx + 1)
+    return False
+
+
+def _has_positive(text: str) -> bool:
+    """文本是否包含强阳性征（异常表现）。
+    注：中文无词边界，采用子串匹配；POSITIVE_STRONG 均为强特异性词（占位/结节/癌…），
+    误命中风险低。『未见/未见明显/无/不伴…』等否定前缀后的阳性征词不算异常，
+    避免『未见明显炎症』『未见实质性病变』『无增生』被误判（参考 _NEG_PREFIXES）。"""
+    if not text:
+        return False
+    for k in POSITIVE_STRONG:
+        idx = text.find(k)
+        while idx != -1:
+            pre = text[max(0, idx - 12): idx]
+            if not _NEG_BEFORE_POS_RE.search(pre):
                 return True
             idx = text.find(k, idx + 1)
     return False
@@ -513,14 +542,14 @@ def _word_effectively_present(target: str, word: str) -> bool:
     """word 在 target 中是否有『未被否定前缀修饰』的出现（即真正积极出现）。
 
     用于 R9 矛盾检测豁免：『未见占位』中『占位』被『未见』否定，不算真正出现，
-    故『未见 vs 占位』矛盾对不触发（正常阴性描述）。与 _has_positive 的否定语义一致。
-    """
+    故『未见 vs 占位』矛盾对不触发（正常阴性描述）。与 _has_positive 的否定语义一致
+    （否定前缀 + 允许间隔修饰词 + 不跨标点，见 _NEG_BEFORE_POS_RE）。"""
     if not word:
         return False
     idx = target.find(word)
     while idx != -1:
-        pre = target[max(0, idx - 5): idx]
-        if not any(pre.endswith(neg) for neg in _NEG_PREFIXES):
+        pre = target[max(0, idx - 12): idx]
+        if not _NEG_BEFORE_POS_RE.search(pre):
             return True
         idx = target.find(word, idx + 1)
     return False
@@ -1770,11 +1799,15 @@ class RuleEngine:
         # 注意：必须用严格『段级全局正常』（_is_segment_global_normal），不可用 _claims_normal——
         # 后者会匹配『部位+正常』（如『小脑正常』）而误把局部正常当整段正常外溢。
         if not found:
-            if _has_positive(f_txt) and i_global_normal:
+            # 段级『正常/阴性』口径：全局正常声明，或整段无阳性征但含否定式阴性声明
+            # （如『未见实质性病变』『无占位』，2026-08-18 修复后 _has_positive 已正确判负）。
+            f_neg_normal = f_global_normal or (not _has_positive(f_txt) and _is_negative_claim(f_txt))
+            i_neg_normal = i_global_normal or (not _has_positive(i_txt) and _is_negative_claim(i_txt))
+            if _has_positive(f_txt) and i_neg_normal:
                 out.append(Finding("R17-PERREGION", "上下文逻辑错误-描述结论矛盾", "high",
                     "影像描述提示阳性征（异常表现），但影像结论称『未见异常/正常』，二者矛盾",
                     i_txt[:30], (-1, -1)))
-            elif f_global_normal and _has_positive(i_txt):
+            elif f_neg_normal and _has_positive(i_txt):
                 out.append(Finding("R17-PERREGION", "前后文逻辑错误-描述正常结论异常", "high",
                     "影像描述称『未见异常/正常』，但影像结论给出阳性诊断，结论与描述不符",
                     i_txt[:30], (-1, -1)))

@@ -43,6 +43,14 @@ class TestHelpers(unittest.TestCase):
     def test_has_positive(self):
         self.assertTrue(engine._has_positive("右肺见一结节"))
         self.assertFalse(engine._has_positive("双肺纹理清晰，未见异常"))
+        # 2026-08-18 修复：否定词与阳性词之间隔修饰语（实质性/明显/占位性）也应判负，
+        # 避免『未见实质性病变』等阴性声明被误判为阳性 → 纯正常报告误报 R17-PERREGION。
+        self.assertFalse(engine._has_positive("未见实质性病变"))
+        self.assertFalse(engine._has_positive("未见明显实质性病变"))
+        self.assertFalse(engine._has_positive("未见占位性病变"))
+        self.assertFalse(engine._has_positive("未见明显异常信号"))
+        # 跨逗号不应吞前一分句的否定词：『无明确占位，左肾见小结节』中『小结节』为真阳性
+        self.assertTrue(engine._has_positive("无明确占位，左肾见小结节"))
 
     def test_split_sentences(self):
         s = engine._split_sentences("子宫未见异常。但前列腺增大！建议复查？")
@@ -80,6 +88,30 @@ class TestR11Context(unittest.TestCase):
                 "诊断印象：\n未见异常。\n")
         out = _run(text, {})
         # R17 逐部位精确比对取代整段级 R11-ABNORMAL：按「右肺」同一部位判定描述阳性/结论正常矛盾
+        self.assertIn("R17-PERREGION", [f.rule_id for f in out])
+
+
+class TestR17NegationFix(unittest.TestCase):
+    """2026-08-18 修复回归：_has_positive 对『否定词+间隔修饰语+阳性词』误判阳性
+    （如『未见实质性病变』），导致纯正常报告误报 R17-PERREGION；同时阴性声明未被识别
+    导致『描述正常、结论异常』跨段矛盾漏检。"""
+
+    def test_normal_report_no_false_positive(self):
+        # 纯正常报告：描述『未见实质性病变』（阴性声明）+ 结论正常 → 不得报 R17-PERREGION
+        text = "影像描述：双肺纹理清晰，未见实质性病变。\n影像结论：胸部未见明显异常。"
+        out = _run(text, {})
+        self.assertNotIn("R17-PERREGION", [f.rule_id for f in out])
+
+    def test_findings_negative_claim_impression_positive(self):
+        # 描述整段阴性声明 + 结论阳性诊断 → 应报『描述正常结论异常』（此前漏检）
+        text = "影像描述：双肺纹理清晰，未见实质性病变。\n影像结论：左肺上叶见结节，考虑恶性，建议复查。"
+        out = _run(text, {})
+        self.assertIn("R17-PERREGION", [f.rule_id for f in out])
+
+    def test_findings_positive_impression_normal(self):
+        # 反向：描述阳性 + 结论正常声明 → 仍应报（回归，确保不误伤既有能力）
+        text = "影像描述：右肺上叶见结节，边界清。\n影像结论：胸部未见明显异常。"
+        out = _run(text, {})
         self.assertIn("R17-PERREGION", [f.rule_id for f in out])
 
     def test_no_abnormal_flag_when_impression_positive(self):
