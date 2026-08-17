@@ -141,8 +141,9 @@ class TestR12Sentence(unittest.TestCase):
         text = ("检查所见：\n左肺上叶正常，但见一占位性病变。\n"
                 "诊断印象：\n\n")
         out = _run(text, {})
-        # R9 互斥词对（『未见』vs『占位』）在句内直接捕获，语义等价于 R12-SENTENCE
-        self.assertIn("R9-CONFLICT", [f.rule_id for f in out])
+        # 该句用『正常』+『占位』，不匹配 rules_config 中『未见』vs『占位』的 R9 互斥对；
+        # 引擎经 R12-SENTENCE（同一句内部位正常声明与阳性征矛盾）捕获，为正确规则。
+        self.assertIn("R12-SENTENCE", [f.rule_id for f in out])
 
     def test_clean_sentence_no_flag(self):
         text = ("检查所见：\n右肺上叶见一结节。\n"
