@@ -953,11 +953,16 @@ class RuleEngine:
         self.rules_config = load_rules_config()
 
     def run(self, text: str, meta: dict) -> List[Finding]:
-        # 实际启用规则：R1–R12、R14、R15、R17；R16（随访时限缺失）为可选规则，
-        # 由 rules_config.enable_r16 控制（默认关闭，避免对常规『定期复查』过度告警）。
+        # 实际启用规则：R1、R2、R3、R4、R5、R6、R8、R9、R10、R11、R12、R14、R15、R17、R18、R21、R22；
+        #   R7（描述段男女专属器官混用）已并入 R12-SENTENCE；R20（必查要素漏写）已并入 R18-COVERAGE
+        #   （见 _r18_region_coverage 类型级分支），二者均不再单独启用。
+        # R16（随访时限缺失）、R19（读音/形近错字）为可选规则，分别由 rules_config.enable_r16 / enable_r19 控制（默认关闭/开启）。
         # R13 为预留编号（当前无对应规则），故不调用 _r13_*。
-        # R17 为逐部位精确比对（描述段↔结论段按 器官+侧别 精确到同一部位，承接原 R11-2/R14-1 段级逻辑）。
-        # R18 为检查部位器官漏写（登记区域声明 → 描述段应含该区域器官，承接"胸部、上腹部"漏写上腹部器官等场景）。
+        # R17 为逐部位精确比对（描述段↔结论段按 器官+侧别 精确到同一部位，承接原 R11-2/R14-1 段级逻辑）；
+        #   其段级兜底也已接管原 R11-ABNORMAL / R14-NORMAL（描述-结论一致性矛盾统一由 R17-PERREGION 产出）。
+        # 左右侧跨段矛盾原由 R2（NER 器官族）与 R14-SIDE（文本级兜底）分工，现统一合并至 R2-LATERALITY
+        #   （见 _r2_laterality：NER 分支 + 中英文文本分支 + 器官族去重）；R14 现仅保留 R14-NATURE / R14-COUNT。
+        # R18 为检查部位器官漏写（登记区域声明 → 描述段应含该区域器官）。
         ner = ChineseRadiologyNER()
         ents = ner.extract(text)
         secs = self._split_for_r5(text)
@@ -967,7 +972,6 @@ class RuleEngine:
                 + self._r4_unit(ents)
                 + self._r5_consistency(text, ents)
                 + self._r6_site(text, meta)
-                + self._r7_internal(text, ents)
                 + self._r8_typo(text)
                 + self._r9_conflict(text)
                 + self._r10_template(text)
@@ -977,7 +981,6 @@ class RuleEngine:
                 + self._r15_internal(text)
                 + self._r17_cross_region(text, secs)
                 + self._r18_region_coverage(text, meta)
-                + self._r20_template_completeness(text, meta)
                 + self._r21_gender_site(text, meta)
                 + self._r22_lesion_size(text, self._split_for_r5(text))
                 + (self._r19_homophone(text)
@@ -1035,12 +1038,25 @@ class RuleEngine:
                     f"{src}性别为{_zh(rg)}，但{box}出现{_zh(expect)}性专属器官「{e.text}」"
                     f"（{'男性不应有子宫/卵巢等' if expect=='female' else '女性不应有前列腺/睾丸等'}）",
                     e.text, (e.start, e.end)))
+        # 原 R11-GENDER 维度：信息框性别 vs 正文解析性别不一致（正文无明确异性别器官时兜底，避免与上面器官维度双报）
+        if not out:
+            rg_meta = _norm_gender(meta.get("gender"))
+            rg_text = _parse_gender_from_text(text)
+            if rg_meta and rg_text and rg_meta != rg_text:
+                out.append(Finding("R1-GENDER", "性别矛盾", "high",
+                    f"患者基础信息性别为『{_zh(rg_meta)}』，但报告正文解析出性别『{_zh(rg_text)}』，二者矛盾",
+                    "", (-1, -1)))
         return out
 
     # R2 左右混淆（同一解剖族：描述段 vs 印象段方位互斥）
     def _r2_laterality(self, text, ents) -> List[Finding]:
         out = []
-        # 取带左右前缀的解剖实体（左肾→L-kidney 等），按器官族归组
+        # 跨段（影像描述 ↔ 诊断印象）左右侧矛盾 —— 统一规则 R2-LATERALITY。
+        # 合并原 R2（NER L-/R- 规范实体，器官族级）与原 R14-SIDE（文本级中/英文器官表兜底）：
+        # 二者逻辑一致（同一器官在描述段与结论段方位相反），现统一以 R2-LATERALITY 产出，
+        # 并显式按器官族去重，避免同一错误重复告警（原实现靠「R14 排除 R2_COVERED」的分工
+        # 规避重复，现改为单一规则 + 器官族去重，更直观且消除潜在重叠漏报）。
+        # ---- 分支1：NER 带 L-/R- 前缀的规范解剖实体（器官族级）----
         fam_of = lambda c: (c or "").split("-", 1)[-1] if (c or "").startswith(("L-", "R-")) else None
         fam_sides = {}
         for e in ents:
@@ -1060,6 +1076,47 @@ class RuleEngine:
                 out.append(Finding("R2-LATERALITY", "左右侧混淆", "high",
                     f"同一解剖部位族「{fam}」在影像描述段为{f}侧、诊断印象段为{i}侧，方位矛盾",
                     "", (-1, -1)))
+        ner_fams = set(fam_sides.keys())
+        # ---- 分支2：文本级中/英文器官左右矛盾兜底（覆盖 NER 未可靠侧别化的器官）----
+        secs = self._split_for_r5(text)
+        f_txt, i_txt = secs["findings"], secs["impression"]
+        if not f_txt or not i_txt:
+            return out
+        # 中文器官短名 → NER 器官族（用于与分支1去重对齐）
+        zh_organ_to_fam = {
+            "肺": "lung", "肾上腺": "adrenal", "卵巢": "ovary", "睾丸": "testis",
+            "附件": "ovary", "股骨": "femur", "肱骨": "humerus", "甲状腺": "thyroid",
+            "乳腺": "breast", "腮腺": "parotid", "膝关节": "knee", "髋关节": "hip",
+            "肩关节": "shoulder", "肝": "liver", "输卵管": "tube", "精囊": "testis",
+            "锁骨": "clavicle", "肋骨": "rib",
+        }
+        zh_fired = False
+        for o in ORGAN_SIDE_LIST:
+            fam = zh_organ_to_fam.get(o)
+            if fam and fam in ner_fams:
+                continue  # 该器官族已由 NER 分支覆盖，跳过避免重复告警
+            fs = _organ_sides_in_text(f_txt, o)
+            isd = _organ_sides_in_text(i_txt, o)
+            if len(fs) == 1 and len(isd) == 1 and fs != isd:
+                out.append(Finding("R2-LATERALITY", "左右侧混淆", "high",
+                    f"同一器官「{o}」在影像描述为『{'左' if 'left' in fs else '右'}』侧、"
+                    f"影像结论为『{'左' if 'left' in isd else '右'}』侧，方位前后矛盾",
+                    "", (-1, -1)))
+                zh_fired = True
+                break
+        # 英文报告（MIMIC-CXR / IU-Xray 风格）左右跨段矛盾：与中文分支互斥（取首个命中），
+        # 同样按器官族与 NER 分支去重。
+        if not zh_fired and re.search(r"[A-Za-z]", f_txt + i_txt):
+            for key, aliases in EN_SIDE_ORGANS.items():
+                if key in ner_fams:
+                    continue
+                fs = _organ_sides_en(f_txt, aliases)
+                isd = _organ_sides_en(i_txt, aliases)
+                if len(fs) == 1 and len(isd) == 1 and fs != isd:
+                    out.append(Finding("R2-LATERALITY", "左右侧混淆", "high",
+                        f"同一器官『{key}』在影像描述为『left』、影像结论为『right』，方位前后矛盾（英文报告）",
+                        "", (-1, -1)))
+                    break
         return out
 
     # R3 评分缺失
@@ -1173,6 +1230,20 @@ class RuleEngine:
     # 与 R6(登记部位错配) 互补：R6 抓『申请胸部却写腹部』，R18 抓『申请了上腹部但描述段
     # 对肝/胆/胰/脾/肾等上腹部器官一个都没提』。仅查检查所见段；整段"未见异常"整体声明
     # （不点名器官）视为已覆盖，避免"上腹部CT未见异常"被误报。多区域分别校验、互不牵连。
+    def _infer_exam_type(self, text: str, meta: dict):
+        """推断检查类型（原 R20 逻辑下沉）：优先用登记部位/检查方式，其次用报告正文头部（OCR 场景）。"""
+        applied = (meta.get("applied_site") or "").strip().lower()
+        modality = (meta.get("modality") or "").strip().lower()
+        src = " | ".join([applied, modality]).lower()
+        for tname, kws in _TYPE_KEYWORDS:
+            if any(kw in src for kw in kws):
+                return tname
+        head = text[:200].lower()
+        for tname, kws in _TYPE_KEYWORDS:
+            if any(kw in head for kw in kws):
+                return tname
+        return None
+
     def _r18_region_coverage(self, text, meta) -> List[Finding]:
         out = []
         applied = meta.get("applied_site", "")
@@ -1184,23 +1255,38 @@ class RuleEngine:
         secs = self._split_for_r5(text)
         f_txt = secs["findings"]
         i_txt = secs["impression"]
-        # 防误报：描述段整体为正常声明（含『未见异常』等且不带阳性征）→ 视为各区域已声明
-        # 未见异常，不判漏写（避免『上腹部CT未见异常』因未点名器官被误报）
-        if _claims_normal(f_txt) and not _has_positive(f_txt):
-            return out
-        for region in regions:
-            orgs = REGION_TO_ORGANS.get(region, [])
-            if not orgs:
-                continue
-            # 描述段或结论段任一覆盖该区域器官即视为已描述（结论段常只点名异常器官，
-            # 描述段常写正常所见，两段互补避免漏报；两段都无才判漏写）。
-            hit = any(org in f_txt for org in orgs) or any(org in i_txt for org in orgs)
-            if not hit:
-                sample = "、".join(orgs[:4])
-                out.append(Finding("R18-COVERAGE", "检查部位器官漏写", "medium",
-                    f"检查部位含「{region}」，但影像描述与影像诊断中均未描述{region}"
-                    f"相关器官（如{sample}等），疑似漏写或检查部位登记有误",
-                    region, (-1, -1)))
+        combined = f_txt + "\n" + i_txt
+        # 检查类型推断（原 R20 逻辑下沉）：同区域下优先以更具体的「必查要素」口径报告漏写
+        matched_type = self._infer_exam_type(text, meta)
+        req = REPORT_TYPE_REQUIREMENTS.get(matched_type) if matched_type else None
+        # R18 原防误报：描述段整体为正常声明（含『未见异常』且不带阳性征）→ 视为各区域已声明
+        # 未见异常，不判区域器官漏写（避免『上腹部CT未见异常』因未点名器官被误报）。
+        region_normal = _claims_normal(f_txt) and not _has_positive(f_txt)
+        if not region_normal:
+            for region in regions:
+                orgs = REGION_TO_ORGANS.get(region, [])
+                if not orgs:
+                    continue
+                # 描述段或结论段任一覆盖该区域器官即视为已描述（两段互补避免漏报；两段都无才判漏写）
+                hit = any(org in f_txt for org in orgs) or any(org in i_txt for org in orgs)
+                # 区域器官级漏写：仅当无法推断检查类型时回退（原 R18 口径），
+                # 能推断类型则统一由下方「必查要素」口径输出，避免同一漏写双报。
+                if not hit and req is None:
+                    sample = "、".join(orgs[:4])
+                    out.append(Finding("R18-COVERAGE", "检查部位器官漏写", "medium",
+                        f"检查部位含「{region}」，但影像描述与影像诊断中均未描述{region}"
+                        f"相关器官（如{sample}等），疑似漏写或检查部位登记有误",
+                        region, (-1, -1)))
+        # 检查类型必查要素漏写（原 R20）：独立于区域器官命中，能推断类型即校验要素；
+        # 不豁免正常声明（正常报告也应点名结构，见 R20 原设计），故不套用 region_normal 守卫。
+        if req is not None:
+            elems = req["要素"]
+            missing = [e for e in elems if e not in combined]
+            if missing and not _claims_normal(combined):
+                sample = "、".join(missing[:6])
+                out.append(Finding("R18-COVERAGE", "报告必查要素漏写", "medium",
+                    f"「{matched_type}」报告缺少必查要素：{sample}。{req['提示']}",
+                    matched_type, (-1, -1)))
         return out
 
     # R22 病灶尺寸-术语一致性：称『结节』但测量值 >3cm（应称肿块），或
@@ -1259,44 +1345,9 @@ class RuleEngine:
                     m.group(0), (-1, -1)))
         return out
 
-    # R20 模板完整性校验：按检查类型（从登记部位/检查方式推断）校验必查要素缺项。
-    # 与 R18 互补：R18 查『区域是否有任意器官』，R20 查『该检查类型必查要素是否齐』。
-    # 防误报策略：报告头/描述段整体"未见异常"声明不豁免（与 R18 不同）——
-    # 胸部 CT 即使全部正常也应点名肺纹理/纵隔/胸膜等，故缺项仍提示（medium 级）。
-    def _r20_template_completeness(self, text, meta) -> List[Finding]:
-        out = []
-        applied = (meta.get("applied_site") or "").strip().lower()
-        modality = (meta.get("modality") or "").strip().lower()
-        src = " | ".join([applied, modality]).lower()
-        # 匹配检查类型
-        matched = None
-        for tname, kws in _TYPE_KEYWORDS:
-            if any(kw in src for kw in kws):
-                matched = tname
-                break
-        # 若登记部位无类型信息，尝试从报告正文头部推断（OCR 场景）
-        if not matched:
-            head = text[:200].lower()
-            for tname, kws in _TYPE_KEYWORDS:
-                if any(kw in head for kw in kws):
-                    matched = tname
-                    break
-        if not matched:
-            return out
-        req = REPORT_TYPE_REQUIREMENTS[matched]
-        elems = req["要素"]
-        # 描述段+结论段合并检查（必查要素可能分布在两段）
-        secs = self._split_for_r5(text)
-        combined = secs["findings"] + "\n" + secs["impression"]
-        # 数值/量词噪声过滤：单纯出现『肝』但实际是『肝区不适』之类不适主体？不做过度过滤，
-        # 以子串匹配为准，但排除『未见异常』整体声明对单要素的豁免——正常报告也应点名结构。
-        missing = [e for e in elems if e not in combined]
-        if missing and not _claims_normal(combined):
-            sample = "、".join(missing[:6])
-            out.append(Finding("R20-TEMPLATE", "报告必查要素漏写", "medium",
-                f"「{matched}」报告缺少必查要素：{sample}。{req['提示']}",
-                matched, (-1, -1)))
-        return out
+    # R20 模板完整性校验已并入 R18-COVERAGE（见 _r18_region_coverage：原 R20 的「必查要素」
+    # 下沉为该方法的类型级分支，原 R18 区域器官口径仅在无法推断检查类型时回退）；
+    # R20-TEMPLATE 不再单独产出。
 
     # R21 性别-部位联动（检查类型级）：男性检查乳腺/子宫/卵巢，女性检查前列腺/睾丸。
     # 与 R1(正文出现异性别器官) 互补：R1 抓正文描述，R21 抓『检查部位登记』层面——
@@ -1328,17 +1379,8 @@ class RuleEngine:
         return out
 
     # R7 描述内部矛盾（同一描述段内出现男女专属器官混用 —— 真实自相矛盾）
-    def _r7_internal(self, text, ents) -> List[Finding]:
-        out = []
-        findings_ents = [e for e in ents if e.section == "findings"]
-        g = set()
-        for e in findings_ents:
-            if e.label == "gender_organ":
-                g.add(self.kg.expected_gender_for_organ(e.text))
-        if len(g) > 1:
-            out.append(Finding("R7-INTERNAL", "描述内部矛盾", "medium",
-                f"影像描述段内出现男女专属器官混用{g}（同一患者不可能同时存在）", "", (-1, -1)))
-        return out
+    # R7（原「描述内部矛盾」：影像描述段男女专属器官混用）已并入 R12-SENTENCE（见 _r12_sentence
+    # 分支3 的整段级兜底），避免与 R12 句内男女器官混用重复告警；R7-INTERNAL 不再单独产出。
 
     # R8 同音/近音错别字（多由语音录入产生：词典由 rules_config.json 维护，可在 GUI 增删）
     def _r8_typo(self, text) -> List[Finding]:
@@ -1561,13 +1603,7 @@ class RuleEngine:
                 # 本侧已被提及：一致，不报（双侧均描述也不构成矛盾）
         # R11-2 描述异常 → 结论正常 矛盾：已下放到 R17 逐部位精确比对
         # （按器官+侧别精确到同一部位；无法归属具体部位时由 R17 段级兜底保持原语义）。
-        # R11-3 信息框性别 vs 正文解析性别 矛盾（上下文不一致）
-        rg_meta = _norm_gender(meta.get("gender"))
-        rg_text = _parse_gender_from_text(text)
-        if rg_meta and rg_text and rg_meta != rg_text:
-            out.append(Finding("R11-GENDER", "上下文逻辑错误-性别矛盾", "high",
-                f"患者基础信息性别为『{_zh(rg_meta)}』，但报告正文解析出性别『{_zh(rg_text)}』，二者矛盾",
-                "", (-1, -1)))
+        # R11-3（信息框性别 vs 正文解析性别矛盾）已并入 R1-GENDER（见 _r1_gender 补充维度），此处不再单独产出。
         return out
 
     # R12 同一句话逻辑错误（句级自相矛盾）
@@ -1577,6 +1613,7 @@ class RuleEngine:
         f_txt = secs["findings"]
         if not f_txt:
             return out
+        within_found = False
         for sent in _split_sentences(f_txt):
             # 1) 同一句内男女专属器官混用（如『子宫…前列腺…』）
             s_genders = {g for organ, g in GENDER_ORGANS.items() if organ in sent}
@@ -1584,6 +1621,7 @@ class RuleEngine:
                 out.append(Finding("R12-SENTENCE", "同一句话逻辑错误", "high",
                     f"同一句话内同时出现男女专属器官（自相矛盾）：『{sent[:30]}…』",
                     sent[:30], (-1, -1)))
+                within_found = True
                 continue
             # 2) 同一句内既称某部位正常又描述该部位阳性征（真正的自相矛盾）。
             #    仅当『正常』与阳性征指向同一部位时才判，避免『右肺见结节，左肺正常』
@@ -1594,6 +1632,20 @@ class RuleEngine:
                 out.append(Finding("R12-SENTENCE", "同一句话逻辑错误", "high",
                     f"同一句话内既称『未见异常』又描述阳性征（自相矛盾）：『{sent[:30]}…』",
                     sent[:30], (-1, -1)))
+        # 3) 跨句（整段）男女专属器官混用：原 R7-INTERNAL 的段级逻辑，并入 R12 以避免双规则重复。
+        #    若句内已捕获男女器官混用（within_found），不再重复报整段级；仅当矛盾分散在不同句子时补充。
+        if not within_found:
+            sec_genders = {g for organ, g in GENDER_ORGANS.items() if organ in f_txt}
+            # 并入 NER 识别的 gender_organ 实体（覆盖文本级子串未命中、但 NER 已侧别的器官）
+            for e in ents:
+                if e.label == "gender_organ" and e.section == "findings":
+                    g = self.kg.expected_gender_for_organ(e.text)
+                    if g:
+                        sec_genders.add(g)
+            if len(sec_genders) > 1:
+                out.append(Finding("R12-SENTENCE", "同一句话逻辑错误", "medium",
+                    "影像描述段内出现男女专属器官混用（同一患者不可能同时存在），自相矛盾",
+                    "", (-1, -1)))
         return out
 
     # R14 前后文逻辑错误（描述段 ↔ 结论段 一致性）
@@ -1619,26 +1671,8 @@ class RuleEngine:
             out.append(Finding("R14-COUNT", "前后文逻辑错误-数量不一致", "medium",
                 f"影像描述段提及病灶约 {cf} 枚/个，影像结论段提及约 {ci} 枚/个，数量前后不一致",
                 "", (-1, -1)))
-        # R14-4 同器官左右跨段矛盾（超越 R2 的有限规范器官族，覆盖文本级左右写法）
-        for o in ORGAN_SIDE_LIST:
-            fs = _organ_sides_in_text(f_txt, o)
-            isd = _organ_sides_in_text(i_txt, o)
-            if len(fs) == 1 and len(isd) == 1 and fs != isd:
-                out.append(Finding("R14-SIDE", "前后文逻辑错误-左右矛盾", "high",
-                    f"同一器官「{o}」在影像描述为『{'左' if 'left' in fs else '右'}』侧、"
-                    f"影像结论为『{'左' if 'left' in isd else '右'}』侧，方位前后矛盾",
-                    "", (-1, -1)))
-                break
-        # R14-4b 英文报告（MIMIC-CXR / IU-Xray 风格）左右跨段矛盾
-        if not any(f.rule_id == "R14-SIDE" for f in out) and re.search(r"[A-Za-z]", f_txt + i_txt):
-            for key, aliases in EN_SIDE_ORGANS.items():
-                fs = _organ_sides_en(f_txt, aliases)
-                isd = _organ_sides_en(i_txt, aliases)
-                if len(fs) == 1 and len(isd) == 1 and fs != isd:
-                    out.append(Finding("R14-SIDE", "前后文逻辑错误-左右矛盾", "high",
-                        f"同一器官『{key}』在影像描述为『left』、影像结论为『right』，方位前后矛盾（英文报告）",
-                        "", (-1, -1)))
-                    break
+        # R14-4 / R14-4b 同器官左右跨段矛盾：已统一合并至 R2-LATERALITY（见 _r2_laterality），
+        # 此处不再单独产出，避免与 R2 重复告警。R14 现仅负责良恶性定性(R14-NATURE)与数量(R14-COUNT)。
         return out
 
     # R15 上下文逻辑错误（同一描述段内跨句一致性）
@@ -1737,11 +1771,11 @@ class RuleEngine:
         # 后者会匹配『部位+正常』（如『小脑正常』）而误把局部正常当整段正常外溢。
         if not found:
             if _has_positive(f_txt) and i_global_normal:
-                out.append(Finding("R11-ABNORMAL", "上下文逻辑错误-描述结论矛盾", "high",
+                out.append(Finding("R17-PERREGION", "上下文逻辑错误-描述结论矛盾", "high",
                     "影像描述提示阳性征（异常表现），但影像结论称『未见异常/正常』，二者矛盾",
                     i_txt[:30], (-1, -1)))
             elif f_global_normal and _has_positive(i_txt):
-                out.append(Finding("R14-NORMAL", "前后文逻辑错误-描述正常结论异常", "high",
+                out.append(Finding("R17-PERREGION", "前后文逻辑错误-描述正常结论异常", "high",
                     "影像描述称『未见异常/正常』，但影像结论给出阳性诊断，结论与描述不符",
                     i_txt[:30], (-1, -1)))
         return out

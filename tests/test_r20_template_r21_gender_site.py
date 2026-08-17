@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""R20 模板完整性校验 + R21 性别-部位联动 测试。"""
+"""R18 检查完整性（原 R20 必查要素已并入）+ R21 性别-部位联动 测试。"""
 import sys
 import os
 
@@ -14,10 +14,10 @@ def _find(rule_id, report, meta):
     return [f for f in eng.run(report, meta) if f.rule_id == rule_id]
 
 
-# ---------- R20 模板完整性 ----------
+# ---------- R18 检查完整性（原 R20 必查要素已并入 R18-COVERAGE）----------
 def test_r20_chest_ct_missing_elements():
     report = "影像描述：右肺上叶见磨玻璃影。\n影像诊断：磨玻璃结节，建议随访。"
-    hits = _find("R20-TEMPLATE", report, {"applied_site": "胸部CT"})
+    hits = _find("R18-COVERAGE", report, {"applied_site": "胸部CT"})
     assert hits, "胸部CT缺肺纹理/纵隔/胸膜等要素应报漏写"
     assert "肺纹理" in hits[0].message
 
@@ -25,26 +25,26 @@ def test_r20_chest_ct_missing_elements():
 def test_r20_chest_ct_complete_no_hit():
     report = ("影像描述：双肺纹理清晰，肺实质未见异常密度影，肺门及纵隔未见肿大淋巴结，"
               "胸膜无增厚，心脏大小正常，骨性胸廓完整。\n影像诊断：胸部未见明显异常。")
-    hits = _find("R20-TEMPLATE", report, {"applied_site": "胸部CT"})
+    hits = _find("R18-COVERAGE", report, {"applied_site": "胸部CT"})
     assert not hits, "胸部CT要素齐全不应报漏写"
 
 
 def test_r20_lumbar_missing():
     report = "影像描述：腰椎生理曲度存在，椎体形态可。\n影像诊断：腰椎退行性变。"
-    hits = _find("R20-TEMPLATE", report, {"applied_site": "腰椎"})
+    hits = _find("R18-COVERAGE", report, {"applied_site": "腰椎"})
     assert hits, "腰椎缺椎间盘/硬膜囊等要素应报"
     assert "硬膜囊" in hits[0].message
 
 
 def test_r20_no_site_no_hit():
     report = "影像描述：右肺上叶见结节。\n影像诊断：结节。"
-    hits = _find("R20-TEMPLATE", report, {})
+    hits = _find("R18-COVERAGE", report, {})
     assert not hits, "无登记部位/类型信息时不应误报"
 
 
 def test_r20_head_ct():
     report = "影像描述：右侧基底节区见低密度灶。\n影像诊断：腔隙性脑梗死可能。"
-    hits = _find("R20-TEMPLATE", report, {"applied_site": "头颅CT"})
+    hits = _find("R18-COVERAGE", report, {"applied_site": "头颅CT"})
     assert hits, "头颅CT缺脑室/中线/颅骨等要素应报"
     assert "脑室" in hits[0].message
 

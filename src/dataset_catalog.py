@@ -226,7 +226,7 @@ KNOWLEDGE_RESOURCES: Dict[str, Dict] = {
         "license": "PhysioNet（免费，需认证）",
         "access": "https://physionet.org/content/radgraph/1.0.0/",
         "use_in_app": "将 anatomy_lexicon 从器官族升级到实体+关系（如 'opacity' 位于 "
-                      "'right lower lobe'），增强左右/部位逻辑质控（R14-SIDE / R6-SITE）",
+                      "'right lower lobe'），增强左右/部位逻辑质控（R2-LATERALITY / R6-SITE）",
         "related": ["mimic_cxr", "chexpert", "radlex"],
     },
     "radlex_playbook": {

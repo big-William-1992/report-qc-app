@@ -5,7 +5,7 @@
     python ../test/run_r1_r7_test.py
 
 验证两件事：
-  1) 全错误报告应命中全部 7 条规则（R1-R7）
+  1) 全错误报告应命中全部规则（R1-R6 + R12；原 R7 男女器官混用已并入 R12-SENTENCE）
   2) 多份正确报告不应产生任何误报（回归）
 """
 import os
@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(_ROOT, "src"))
 from engine import RuleEngine
 
 NEED = ["R1-GENDER", "R2-LATERALITY", "R3-SCORE", "R4-UNIT",
-        "R5-CONSISTENCY", "R6-SITE", "R7-INTERNAL"]
+        "R5-CONSISTENCY", "R6-SITE", "R12-SENTENCE"]
 
 
 def check(report_path, meta, expect_all=True):

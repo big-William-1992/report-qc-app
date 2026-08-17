@@ -68,7 +68,7 @@ def test_dataset_normal_no_high_false_positive():
     # 5 个含报告/可模拟的数据集，正常样例不应触发左右/性别/侧别高危误报
     for key, text in _DATASET_NORMAL.items():
         f = _run(text)
-        assert not _has(f, "R14-SIDE"), f"{key}: 正常报告误报 R14-SIDE"
+        assert not _has(f, "R2-LATERALITY"), f"{key}: 正常报告误报 R2-LATERALITY"
         assert not _has(f, "R11-SIDE"), f"{key}: 正常报告误报 R11-SIDE"
         assert not _has(f, "R1-GENDER"), f"{key}: 正常报告误报 R1-GENDER"
         assert not _has(f, "R2-LATERALITY"), f"{key}: 正常报告误报 R2-LATERALITY"
@@ -82,7 +82,7 @@ def test_chexpert_english_lower_lobe_contradiction():
         "IMPRESSION: The left lower lobe shows consolidation."
     )
     f = _run(text)
-    assert _has(f, "R14-SIDE")
+    assert _has(f, "R2-LATERALITY")
 
 
 def test_rocov2_multi_organ_side_contradiction():
@@ -92,7 +92,7 @@ def test_rocov2_multi_organ_side_contradiction():
         "IMPRESSION: The right kidney is unremarkable."
     )
     f = _run(text)
-    assert _has(f, "R14-SIDE")
+    assert _has(f, "R2-LATERALITY")
 
 
 # ----------------------------- 数据集目录完整性 -----------------------------

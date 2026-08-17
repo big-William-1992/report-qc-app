@@ -252,7 +252,7 @@ function _pasteAutoSplit(target, pasted) {
 
 // ==================== 报告质控：运行引擎 ====================
 // 侧别取值：优先取独立下拉框；为空时从「项目/检查部位」自由文本派生，
-// 让后台 R11-SIDE（项目 vs 描述/诊断 左右比对）在常见录入方式下都能启动。
+// 让后台左右侧比对规则（R2-LATERALITY 跨段 + R17 逐部位精确比对）在常见录入方式下都能启动。
 function effectiveLaterality() {
   const lat = (document.getElementById('mLaterality') || {}).value || '';
   if (lat.trim()) return lat.trim();

@@ -40,7 +40,7 @@ def test_reg_mimic_normal_no_high_false_positive():
             "cardiopulmonary process.")
     f = _run(text)
     # 正常报告不应有左右矛盾 / 性别矛盾 / 左右侧混淆类高危误报
-    assert not _has(f, "R14-SIDE")
+    assert not _has(f, "R2-LATERALITY")
     assert not _has(f, "R11-SIDE")
     assert not _has(f, "R1-GENDER")
     assert not _has(f, "R2-LATERALITY")
@@ -51,7 +51,7 @@ def test_reg_mimic_english_lower_lobe_contradiction():
     text = ("Findings: Opacity in the right lower lobe concerning for pneumonia.\n"
             "Impression: The left lower lobe shows consolidation.")
     f = _run(text)
-    assert _has(f, "R14-SIDE")
+    assert _has(f, "R2-LATERALITY")
 
 
 def test_reg_iuxray_english_kidney_contradiction():
@@ -59,7 +59,7 @@ def test_reg_iuxray_english_kidney_contradiction():
     text = ("Findings: A nodule in the left kidney.\n"
             "Impression: The right kidney demonstrates a cystic lesion.")
     f = _run(text)
-    assert _has(f, "R14-SIDE")
+    assert _has(f, "R2-LATERALITY")
 
 
 def test_reg_english_same_side_no_false_positive():
@@ -67,7 +67,7 @@ def test_reg_english_same_side_no_false_positive():
     text = ("Findings: Opacity in the right lower lobe.\n"
             "Impression: Right lower lobe pneumonia, recommend follow-up.")
     f = _run(text)
-    assert not _has(f, "R14-SIDE")
+    assert not _has(f, "R2-LATERALITY")
 
 
 # ----------------------------- 中文报告（PadChest 风格 / 临床常见） -----------------------------
@@ -75,21 +75,21 @@ def test_reg_padchest_style_lung_contradiction():
     # PadChest 风格胸片报告（中文）：左肺下叶 vs 右肺下叶
     text = "检查所见：左肺下叶见斑片状模糊影。\n诊断印象：右肺下叶炎症，建议抗炎后复查。"
     f = _run(text)
-    assert _has(f, "R14-SIDE")
+    assert _has(f, "R2-LATERALITY")
 
 
 def test_reg_liver_lobe_contradiction():
     # 肝左右叶矛盾（肝为单一偏右但有功能左右叶，纳入比对）
     text = "检查所见：肝左叶见低密度灶。\n诊断印象：肝右叶占位，考虑血管瘤。"
     f = _run(text)
-    assert _has(f, "R14-SIDE")
+    assert _has(f, "R2-LATERALITY")
 
 
 def test_reg_new_bilateral_oviduct_contradiction():
     # 新增成对器官（输卵管）左右矛盾：验证 lexicon 派生扩大了覆盖
     text = "检查所见：左输卵管增粗。\n诊断印象：右输卵管积水。"
     f = _run(text)
-    assert _has(f, "R14-SIDE")
+    assert _has(f, "R2-LATERALITY")
 
 
 def test_reg_gender_contradiction_r1():
@@ -144,7 +144,7 @@ def test_reg_normal_chinese_no_false_positive():
     # 一致性正常中文报告：不应有左右/性别/登记部位类误报
     text = "检查所见：双肺纹理清晰，未见异常。\n诊断印象：心肺未见异常，建议年度复查。"
     f = _run(text)
-    assert not _has(f, "R14-SIDE")
+    assert not _has(f, "R2-LATERALITY")
     assert not _has(f, "R1-GENDER")
     assert not _has(f, "R6-SITE")
     assert not _has(f, "R2-LATERALITY")
