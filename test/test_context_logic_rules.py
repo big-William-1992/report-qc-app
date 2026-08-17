@@ -89,6 +89,45 @@ class TestR11Context(unittest.TestCase):
         self.assertNotIn("R17-NORMALITY", [f.rule_id for f in out])
 
 
+class TestNegationRegression(unittest.TestCase):
+    """按 NER 知识模型重构阳性/正常判定后的回归锁定（2026-08-17）。
+
+    根因：原 _has_positive 仅做『紧邻否定前缀』匹配，『未见实质性病变』『未见明确
+    占位性病变』等夹修饰词的表述会漏过否定判断而误判阳性，导致纯正常报告误报
+    R17-NORMALITY、描述正常+结论异常的跨段矛盾漏检。本次改为分句级否定判定 +
+    NER 征象实体 span 优先。
+    """
+
+    def test_has_positive_negated_with_modifier(self):
+        # 否定前缀夹修饰词，仍应判为『无阳性』
+        self.assertFalse(engine._has_positive("双肺纹理清晰，未见实质性病变。"))
+        self.assertFalse(engine._has_positive("未见明确占位性病变"))
+        self.assertFalse(engine._has_positive("未见明显炎症"))
+        self.assertFalse(engine._has_positive("无增生"))
+
+    def test_has_positive_cross_clause_not_negated(self):
+        # 跨分句不应误否定：『未见骨折，右肺见结节』整体仍含阳性征
+        self.assertTrue(engine._has_positive("未见骨折，右肺见结节"))
+
+    def test_has_positive_real_abnormal(self):
+        self.assertTrue(engine._has_positive("右肺上叶见一结节"))
+
+    def test_no_false_r17_on_pure_normal_report(self):
+        # 纯正常报告（描述正常+结论正常）不应误报 R17-NORMALITY
+        text = ("检查所见：\n双肺纹理清晰，未见实质性病变。\n"
+                "诊断印象：\n未见异常。\n")
+        out = _run(text, {})
+        self.assertNotIn("R17-NORMALITY", [f.rule_id for f in out])
+
+    def test_segment_level_normal_finding_abnormal_impression(self):
+        # 段级：描述正常（双肺…未见实质性病变）vs 结论异常（两肺多发转移瘤）
+        # 原实现因『病变』误判而漏检，重构后应正确报 R17-NORMALITY
+        text = ("检查所见：\n双肺纹理清晰，未见实质性病变。\n"
+                "诊断印象：\n两肺多发转移瘤。\n")
+        out = _run(text, {})
+        self.assertIn("R17-NORMALITY", [f.rule_id for f in out])
+
+
 class TestR12Sentence(unittest.TestCase):
     def test_mixed_gender_organ_same_sentence(self):
         text = ("检查所见：\n子宫未见异常，但前列腺增大。\n"
