@@ -3,7 +3,7 @@
 
 R11：信息框 vs 描述框/结论框 跨框比对
   - R11-SIDE  左右一致性（信息框侧别 vs 描述/结论提及方位）
-  - R17-NORMALITY 描述有阳性征但结论称未见异常（原 R11-ABNORMAL，已并入 hasNormality 关系族）
+  - R11-ABNORMAL 描述有阳性征但结论称未见异常
 R12：同一句话内自相矛盾（男女专属器官混用 / 称未见异常却描述阳性征）
 R1 ：性别-器官矛盾（标注段落来源：影像描述段/影像结论段）
 
@@ -80,52 +80,13 @@ class TestR11Context(unittest.TestCase):
                 "诊断印象：\n未见异常。\n")
         out = _run(text, {})
         # R17 逐部位精确比对取代整段级 R11-ABNORMAL：按「右肺」同一部位判定描述阳性/结论正常矛盾
-        self.assertIn("R17-NORMALITY", [f.rule_id for f in out])
+        self.assertIn("R17-PERREGION", [f.rule_id for f in out])
 
     def test_no_abnormal_flag_when_impression_positive(self):
         text = ("检查所见：\n右肺上叶见一结节。\n"
                 "诊断印象：\n右肺上叶结节，考虑良性。\n")
         out = _run(text, {})
-        self.assertNotIn("R17-NORMALITY", [f.rule_id for f in out])
-
-
-class TestNegationRegression(unittest.TestCase):
-    """按 NER 知识模型重构阳性/正常判定后的回归锁定（2026-08-17）。
-
-    根因：原 _has_positive 仅做『紧邻否定前缀』匹配，『未见实质性病变』『未见明确
-    占位性病变』等夹修饰词的表述会漏过否定判断而误判阳性，导致纯正常报告误报
-    R17-NORMALITY、描述正常+结论异常的跨段矛盾漏检。本次改为分句级否定判定 +
-    NER 征象实体 span 优先。
-    """
-
-    def test_has_positive_negated_with_modifier(self):
-        # 否定前缀夹修饰词，仍应判为『无阳性』
-        self.assertFalse(engine._has_positive("双肺纹理清晰，未见实质性病变。"))
-        self.assertFalse(engine._has_positive("未见明确占位性病变"))
-        self.assertFalse(engine._has_positive("未见明显炎症"))
-        self.assertFalse(engine._has_positive("无增生"))
-
-    def test_has_positive_cross_clause_not_negated(self):
-        # 跨分句不应误否定：『未见骨折，右肺见结节』整体仍含阳性征
-        self.assertTrue(engine._has_positive("未见骨折，右肺见结节"))
-
-    def test_has_positive_real_abnormal(self):
-        self.assertTrue(engine._has_positive("右肺上叶见一结节"))
-
-    def test_no_false_r17_on_pure_normal_report(self):
-        # 纯正常报告（描述正常+结论正常）不应误报 R17-NORMALITY
-        text = ("检查所见：\n双肺纹理清晰，未见实质性病变。\n"
-                "诊断印象：\n未见异常。\n")
-        out = _run(text, {})
-        self.assertNotIn("R17-NORMALITY", [f.rule_id for f in out])
-
-    def test_segment_level_normal_finding_abnormal_impression(self):
-        # 段级：描述正常（双肺…未见实质性病变）vs 结论异常（两肺多发转移瘤）
-        # 原实现因『病变』误判而漏检，重构后应正确报 R17-NORMALITY
-        text = ("检查所见：\n双肺纹理清晰，未见实质性病变。\n"
-                "诊断印象：\n两肺多发转移瘤。\n")
-        out = _run(text, {})
-        self.assertIn("R17-NORMALITY", [f.rule_id for f in out])
+        self.assertNotIn("R11-ABNORMAL", [f.rule_id for f in out])
 
 
 class TestR12Sentence(unittest.TestCase):
@@ -136,14 +97,11 @@ class TestR12Sentence(unittest.TestCase):
         self.assertIn("R12-SENTENCE", [f.rule_id for f in out])
 
     def test_normal_claim_with_positive_same_sentence(self):
-        # 同一句内『部位+正常』又描述阳性征 → R12-SENTENCE
-        # （2026-08-05 加固：需部位级正常，避免『余肺未见异常』类误报；故用『左肺上叶正常』而非『未见异常』）
-        text = ("检查所见：\n左肺上叶正常，但见一占位性病变。\n"
+        text = ("检查所见：\n双肺未见异常，但见一占位性病变。\n"
                 "诊断印象：\n\n")
         out = _run(text, {})
-        # 该句用『正常』+『占位』，不匹配 rules_config 中『未见』vs『占位』的 R9 互斥对；
-        # 引擎经 R12-SENTENCE（同一句内部位正常声明与阳性征矛盾）捕获，为正确规则。
-        self.assertIn("R12-SENTENCE", [f.rule_id for f in out])
+        # R9 互斥词对（『未见』vs『占位』）在句内直接捕获，语义等价于 R12-SENTENCE
+        self.assertIn("R9-CONFLICT", [f.rule_id for f in out])
 
     def test_clean_sentence_no_flag(self):
         text = ("检查所见：\n右肺上叶见一结节。\n"

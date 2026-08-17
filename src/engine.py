@@ -328,22 +328,6 @@ def _region_cn_name(key, side) -> str:
     return base
 
 
-def _negated_positive_in(window: str) -> bool:
-    """window 内是否存在『否定前缀 + 阳性征』（即该部位正常声明）。
-
-    与 _has_positive 的否定逻辑一致：阳性征被 _NEG_PREFIXES（未见/无/不伴…）修饰
-    即视为『未见/无…病变』，记为该部位的『正常』断言。按 NER 知识模型，否定后的
-    征象实体即代表该解剖部位正常。
-    """
-    for k in POSITIVE_STRONG:
-        idx = window.find(k)
-        while idx != -1:
-            if _negated_before(window, idx):
-                return True
-            idx = window.find(k, idx + 1)
-    return False
-
-
 def _region_assertions_in_section(text: str, spans):
     """按部位聚合该段的正常 / 异常声明：返回 {(key, side): set(['normal'/'positive'])}。
 
@@ -367,8 +351,7 @@ def _region_assertions_in_section(text: str, spans):
                 break
         is_normal = ("正常" in after[:2]) or ("未见异常" in after_big) \
                     or ("未见明显异常" in after_big) or ("未见占位" in after_big) \
-                    or ("未见明确异常" in after_big) \
-                    or _negated_positive_in(after_big)
+                    or ("未见明确异常" in after_big)
         is_positive = _has_positive(after_big)
         bucket = out.setdefault((_k, _s), set())
         if is_normal:
@@ -509,46 +492,18 @@ def _claims_normal(text: str) -> bool:
     return bool(_REGION_NORMAL_RE.search(text))
 
 
-def _negated_before(text: str, pos: int) -> bool:
-    """判断 text[pos] 处的词在其所在分句内是否被否定前缀修饰。
-
-    否定前缀（_NEG_PREFIXES：未见/未见明显/无/不伴…）与阳性词之间允许夹少量
-    修饰词（如『实质性』『明确』『可疑』），解决『未见实质性病变』『未见明确占位
-    性病变』等此前因紧邻匹配失效而误判阳性（按 NER 实体 span 思路做分句级否定判定）。
-    分句以 ，；、。 及换行切分，避免跨分句误否定（如『未见骨折，右肺见结节』）。
-    """
-    if pos <= 0:
-        return False
-    starts = [text.rfind(sep, 0, pos) + 1 for sep in ("，", "；", "、", "。", "\n")]
-    clause_start = max(starts) if starts else 0
-    clause = text[max(0, clause_start):pos]
-    # 同一分句内出现否定前缀即判否定（跨分句已由 ，；、。 切分拦截，不会误伤
-    # 『未见骨折，右肺见结节』这类跨分句场景）。
-    return any(neg in clause for neg in _NEG_PREFIXES)
-
-
 def _has_positive(text: str) -> bool:
     """文本是否包含强阳性征（异常表现）。
-
-    判定来源按 NER 知识模型组织：
-    1) 优先用 zh_ner 抽取的『征象』实体（带精确 span）做分句级否定上下文判定；
-    2) 兜底用 POSITIVE_STRONG 强阳性词表（离线、零依赖），同样走分句级否定判定。
-    否定前缀后（或其所在分句内）的阳性征视为『未见/无/不伴…』，不算异常，
-    避免『未见实质性病变』『未见明显炎症』『无增生』被误判（参考 _NEG_PREFIXES）。
-    """
+    注：中文无词边界，采用子串匹配；POSITIVE_STRONG 均为强特异性词（占位/结节/癌…），
+    误命中风险低。『未见/未见明显/无/不伴…』等否定前缀后的阳性征词不算异常，
+    避免『未见明显炎症』『无增生』被误判（参考 _NEG_PREFIXES）。如需更严谨可改为句级判定。"""
     if not text:
         return False
-    if _ZH_NLP_OK:
-        try:
-            for e in _zh_ner_entities(text):
-                if e.label == "征象" and not _negated_before(text, e.start):
-                    return True
-        except Exception:  # pragma: no cover - 防御性降级
-            pass
     for k in POSITIVE_STRONG:
         idx = text.find(k)
         while idx != -1:
-            if not _negated_before(text, idx):
+            pre = text[max(0, idx - 5): idx]
+            if not any(pre.endswith(neg) for neg in _NEG_PREFIXES):
                 return True
             idx = text.find(k, idx + 1)
     return False
@@ -1768,12 +1723,12 @@ class RuleEngine:
             c_only_pos = (c_eff == {"positive"})
             name = _region_cn_name(*region)
             if d_only_normal and c_only_pos:
-                out.append(Finding("R17-NORMALITY", "描述与结论正常性矛盾", "high",
+                out.append(Finding("R17-PERREGION", "前后文逻辑错误-描述正常结论异常", "high",
                     f"影像描述段「{name}」称正常/未见异常，但影像结论段对「{name}」给出阳性诊断，"
                     f"同一部位描述与结论矛盾（描述正常、结论异常）", name, (-1, -1)))
                 found = True
             elif d_only_pos and c_only_normal:
-                out.append(Finding("R17-NORMALITY", "描述与结论正常性矛盾", "high",
+                out.append(Finding("R17-PERREGION", "上下文逻辑错误-描述结论矛盾", "high",
                     f"影像描述段「{name}」提示阳性征（异常表现），但影像结论段称「{name}」正常/未见异常，"
                     f"同一部位描述与结论矛盾（描述异常、结论正常）", name, (-1, -1)))
                 found = True
@@ -1782,11 +1737,11 @@ class RuleEngine:
         # 后者会匹配『部位+正常』（如『小脑正常』）而误把局部正常当整段正常外溢。
         if not found:
             if _has_positive(f_txt) and i_global_normal:
-                out.append(Finding("R17-NORMALITY", "描述与结论正常性矛盾", "high",
+                out.append(Finding("R11-ABNORMAL", "上下文逻辑错误-描述结论矛盾", "high",
                     "影像描述提示阳性征（异常表现），但影像结论称『未见异常/正常』，二者矛盾",
                     i_txt[:30], (-1, -1)))
             elif f_global_normal and _has_positive(i_txt):
-                out.append(Finding("R17-NORMALITY", "描述与结论正常性矛盾", "high",
+                out.append(Finding("R14-NORMAL", "前后文逻辑错误-描述正常结论异常", "high",
                     "影像描述称『未见异常/正常』，但影像结论给出阳性诊断，结论与描述不符",
                     i_txt[:30], (-1, -1)))
         return out
