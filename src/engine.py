@@ -1723,12 +1723,12 @@ class RuleEngine:
             c_only_pos = (c_eff == {"positive"})
             name = _region_cn_name(*region)
             if d_only_normal and c_only_pos:
-                out.append(Finding("R17-PERREGION", "前后文逻辑错误-描述正常结论异常", "high",
+                out.append(Finding("R17-NORMALITY", "描述与结论正常性矛盾", "high",
                     f"影像描述段「{name}」称正常/未见异常，但影像结论段对「{name}」给出阳性诊断，"
                     f"同一部位描述与结论矛盾（描述正常、结论异常）", name, (-1, -1)))
                 found = True
             elif d_only_pos and c_only_normal:
-                out.append(Finding("R17-PERREGION", "上下文逻辑错误-描述结论矛盾", "high",
+                out.append(Finding("R17-NORMALITY", "描述与结论正常性矛盾", "high",
                     f"影像描述段「{name}」提示阳性征（异常表现），但影像结论段称「{name}」正常/未见异常，"
                     f"同一部位描述与结论矛盾（描述异常、结论正常）", name, (-1, -1)))
                 found = True
@@ -1737,11 +1737,11 @@ class RuleEngine:
         # 后者会匹配『部位+正常』（如『小脑正常』）而误把局部正常当整段正常外溢。
         if not found:
             if _has_positive(f_txt) and i_global_normal:
-                out.append(Finding("R11-ABNORMAL", "上下文逻辑错误-描述结论矛盾", "high",
+                out.append(Finding("R17-NORMALITY", "描述与结论正常性矛盾", "high",
                     "影像描述提示阳性征（异常表现），但影像结论称『未见异常/正常』，二者矛盾",
                     i_txt[:30], (-1, -1)))
             elif f_global_normal and _has_positive(i_txt):
-                out.append(Finding("R14-NORMAL", "前后文逻辑错误-描述正常结论异常", "high",
+                out.append(Finding("R17-NORMALITY", "描述与结论正常性矛盾", "high",
                     "影像描述称『未见异常/正常』，但影像结论给出阳性诊断，结论与描述不符",
                     i_txt[:30], (-1, -1)))
         return out

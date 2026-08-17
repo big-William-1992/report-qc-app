@@ -3,7 +3,7 @@
 
 R11：信息框 vs 描述框/结论框 跨框比对
   - R11-SIDE  左右一致性（信息框侧别 vs 描述/结论提及方位）
-  - R11-ABNORMAL 描述有阳性征但结论称未见异常
+  - R17-NORMALITY 描述有阳性征但结论称未见异常（原 R11-ABNORMAL，已并入 hasNormality 关系族）
 R12：同一句话内自相矛盾（男女专属器官混用 / 称未见异常却描述阳性征）
 R1 ：性别-器官矛盾（标注段落来源：影像描述段/影像结论段）
 
@@ -80,13 +80,13 @@ class TestR11Context(unittest.TestCase):
                 "诊断印象：\n未见异常。\n")
         out = _run(text, {})
         # R17 逐部位精确比对取代整段级 R11-ABNORMAL：按「右肺」同一部位判定描述阳性/结论正常矛盾
-        self.assertIn("R17-PERREGION", [f.rule_id for f in out])
+        self.assertIn("R17-NORMALITY", [f.rule_id for f in out])
 
     def test_no_abnormal_flag_when_impression_positive(self):
         text = ("检查所见：\n右肺上叶见一结节。\n"
                 "诊断印象：\n右肺上叶结节，考虑良性。\n")
         out = _run(text, {})
-        self.assertNotIn("R11-ABNORMAL", [f.rule_id for f in out])
+        self.assertNotIn("R17-NORMALITY", [f.rule_id for f in out])
 
 
 class TestR12Sentence(unittest.TestCase):
@@ -97,7 +97,9 @@ class TestR12Sentence(unittest.TestCase):
         self.assertIn("R12-SENTENCE", [f.rule_id for f in out])
 
     def test_normal_claim_with_positive_same_sentence(self):
-        text = ("检查所见：\n双肺未见异常，但见一占位性病变。\n"
+        # 同一句内『部位+正常』又描述阳性征 → R12-SENTENCE
+        # （2026-08-05 加固：需部位级正常，避免『余肺未见异常』类误报；故用『左肺上叶正常』而非『未见异常』）
+        text = ("检查所见：\n左肺上叶正常，但见一占位性病变。\n"
                 "诊断印象：\n\n")
         out = _run(text, {})
         # R9 互斥词对（『未见』vs『占位』）在句内直接捕获，语义等价于 R12-SENTENCE

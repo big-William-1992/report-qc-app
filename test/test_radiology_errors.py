@@ -86,11 +86,9 @@ def test_r15_internal_side_no_flip_same_side():
 
 # ----------------------------- 前后文逻辑错误 (R14/R17) -----------------------------
 def test_r14_normal_findings_abnormal_impression():
-    # 描述正常 → 结论异常。
-    # R17 重构后按部位精确比对（肺），产生更精确的 R17-PERREGION（描述正常、结论异常），
-    # 替代旧的整段级 R14-NORMAL 兜底；用例语义不变，断言同步到新规则。
+    # 描述正常 → 结论异常（已并入 hasNormality 关系族，统一为 R17-NORMALITY）
     f = _run("影像描述：未见明显异常。\n影像结论：考虑肺癌。")
-    assert _has(f, "R17-PERREGION")
+    assert _has(f, "R17-NORMALITY")
 
 
 def test_r14_nature_conflict():
