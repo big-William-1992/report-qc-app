@@ -1,0 +1,11 @@
+# 二进制模型与产物：建议用 Git LFS 管理（当前仓库未启用 LFS，先标注意图；
+# 后续 `git lfs migrate` 迁移历史时按此规则自动处理）。
+*.onnx filter=lfs diff=lfs merge=lfs -text
+*.db filter=lfs diff=lfs merge=lfs -text
+*.zip filter=lfs diff=lfs merge=lfs -text
+
+# 统一换行（Windows 构建环境友好）
+*.py text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf

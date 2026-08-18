@@ -173,7 +173,7 @@ python3 desktop_app.py          # 或直接双击「启动星衍质控软件.com
 
 | 规则      | 名称          | 严重度      | 判定逻辑                                          |
 | ------- | ----------- | -------- | --------------------------------------------- |
-| **R1**  | 性别矛盾        | 高        | 报告性别（头信息或正文推断）与文中男女专属器官（前列腺/子宫等）冲突            |
+| **R1**  | 性别矛盾        | 高        | 报告性别（头信息或正文推断）与文中男女专属器官（前列腺/子宫等）冲突（含原 R11 性别维度，已并入） |
 | **R2**  | 左右侧混淆       | 高        | 同一解剖部位族在「检查所见」与「诊断印象」段方位（左/右）互斥（含**肺跨段**，已修复漏报） |
 | **R3**  | 评分标准缺失      | 中        | 乳腺→要求 BI-RADS、前列腺/盆腔→要求 PI-RADS，报告未检出对应评分       |
 | **R4**  | 计量单位错误      | 低        | 检出非常规单位（非 cm/mm/HU/ml/° 等）                      |
@@ -183,20 +183,19 @@ python3 desktop_app.py          # 或直接双击「启动星衍质控软件.com
 | **R8**  | 同音错别字       | 中        | 语音录入常见错写（如「姐姐→结节」「占为→占位」），**可自动修正**           |
 | **R9**  | 自定义互斥冲突     | 中（可配）    | 用户在规则库配置的「词 A 与词 B 不应共存」冲突                      |
 | **R10** | 模板合规        | 低（可配）    | 缺「检查所见」段 / 缺「诊断印象/结论」段 / 未给随访建议                 |
-| **R11** | 信息框-正文矛盾（历史） | —      | 已合并：性别矛盾并入 R1-GENDER、侧别/描述-结论矛盾并入 R17；R11-GENDER / R11-SIDE / R11-ABNORMAL 均不再单独产出 |
 | **R12** | 句子前后文       | 中        | 单句内前后逻辑冲突（如先否定后肯定）                            |
 | **R14** | 前后文（跨段）     | 中        | 检查所见与诊断印象之间计数/性质矛盾（R14-COUNT / R14-NATURE）；左右矛盾已并入 R2-LATERALITY |
-| **R15** | 上下文（段内）     | 中        | 同段内正常表述/存在性/左右侧逻辑冲突（R15-NORMAL / R15-PRESENCE / R15-SIDE） |
+| **R15** | 上下文（段内）     | 中        | 同段内正常表述/存在性逻辑冲突（R15-NORMAL / R15-PRESENCE）；R15-SIDE（段内左右矛盾）2026-08-18 删除——与 R2-LATERALITY 重复，左右矛盾统一由 R2（跨段）/ R17（逐部位）负责 |
 | **R17** | 逐部位精确比对     | 高        | 按 `(器官, 侧别)` 精确到同一部位比对「检查所见」与「诊断印象」的正常/异常声明：**描述某部位正常、结论却写该部位病灶（或反之）即报矛盾**；左小脑正常 + 右小脑软化灶（不同侧）不误报，左小脑正常 + 左小脑软化灶（同侧）报矛盾 |
 | **R18** | 检查完整性（区域器官 + 必查要素） | 中 | 登记部位声明某区域（支持「胸部、上腹部」多区域拆分）但描述段未描述该区域任一器官→报漏写（整段「未见异常」整体声明不误报）；并能推断检查类型时进一步校验「必查要素」缺项（原 R20-TEMPLATE 已并入，正常报告亦应点名结构）；R20 不再单独产出 |
 
-> **逻辑错误增强（v4.1–v4.2）**：R11/R14 由「段级」加固为「整段无阳性才算正常 / 整段无正常才算异常」，避免「右肺上叶见结节、余两肺未见异常」这类**部分正常标准报告**被误判；R17 在上述基础上进一步做**逐部位精确比对**，可区分左右侧、精准定位矛盾部位。阳性征词典（`POSITIVE_STRONG`，在 `engine.py`）已扩充至覆盖 `结节/占位/肿块/软化灶/梗塞灶/萎缩/脱髓鞘/变性/缺如/低密度高密度灶影/积液/积血/积脓/炎症/炎性/增生/肿胀/瘘/畸形/囊变/闭塞/信号异常/占位效应…` 等常见病灶词，使「描述左乳正常、结论左乳增生」「甲状腺炎症、结论甲状腺正常」等矛盾均可被捕获。
+> **逻辑错误增强（v4.1–v4.2）**：R14 由「段级」加固为「整段无阳性才算正常 / 整段无正常才算异常」，避免「右肺上叶见结节、余两肺未见异常」这类**部分正常标准报告**被误判；R17 在上述基础上进一步做**逐部位精确比对**，可区分左右侧、精准定位矛盾部位。阳性征词典（`POSITIVE_STRONG`，在 `engine.py`）已扩充至覆盖 `结节/占位/肿块/软化灶/梗塞灶/萎缩/脱髓鞘/变性/缺如/低密度高密度灶影/积液/积血/积脓/炎症/炎性/增生/肿胀/瘘/畸形/囊变/闭塞/信号异常/占位效应…` 等常见病灶词，使「描述左乳正常、结论左乳增生」「甲状腺炎症、结论甲状腺正常」等矛盾均可被捕获。
 >
 > **否定语境防误报**：阳性征匹配对「未见 / 未见明显 / 无 / 不伴…」等否定前缀后的词不计入异常（如「未见明显炎症」「无增生」不会被误判为阳性），由 `_NEG_PREFIXES`（`engine.py`）统一控制。
 >
 > **检查部位器官漏写（v4.3，R18）**：在 R6（登记部位错配）之外新增「区域 → 器官组」覆盖校验。登记部位声明了某区域（如「胸部、上腹部」，自动按顿号/逗号拆分为多区域），引擎逐区域检查影像描述段是否至少命中该区域一个器官词（胸部→肺/胸膜/纵隔…；上腹部→肝/胆/胰/脾/肾/肾上腺/胃…；盆腔→膀胱/前列腺/子宫…；头颅→脑实质/小脑/脑干…）；全未命中即告警「检查部位器官漏写」。防误报：① 整段「未见异常」整体声明（不点名器官）不算漏，避免「上腹部 CT 未见异常」被误报；② 只查描述段；③ 多区域分别校验互不牵连；④ 仅校验「区域至少描述一器官」，不逐器官核对（临床报告通常只写异常器官，避免「写了胰脾肾但漏肝」误报）。
 
-> 除上表外，规则引擎还持续扩充放射科错别字 / 上下文 / 前后文逻辑错误词典。R11–R12、R14–R15、R17、R18 聚焦「上下文/逐部位/区域覆盖一致性」，可有效拦截语音录入与模板套用产生的隐蔽逻辑错误。
+> 除上表外，规则引擎还持续扩充放射科错别字 / 上下文 / 前后文逻辑错误词典。R12、R14–R15、R17、R18 聚焦「上下文/逐部位/区域覆盖一致性」，可有效拦截语音录入与模板套用产生的隐蔽逻辑错误。
 > **否定式判定升级（v4.3.1，2026-08-18）**：阳性/阴性判定升级为「否定前缀 + 允许间隔修饰词（实质性/明显等）+ 不跨标点」正则（`_NEG_BEFORE_POS_RE`），并新增 `_is_negative_claim` 识别「未见实质性病变」「未见占位性病变」等阴性声明——纯正常报告不再误报 `R17-PERREGION`，同时「描述整段阴性声明 + 结论阳性诊断」的跨段矛盾不再漏检。
 
 **严重度权重**：高 = −30，中 = −15，低 = −5（用于评分扣分）。UI 配色：**红 = 严重（high）/ 橙 = 警告（medium）/ 蓝 = 提示（low）**。
@@ -338,21 +337,32 @@ RapidOCR 模型权重，离线推理使用，不联网下载。
 
 ```
 src/
-├── app.py           # Tkinter GUI：三页签 + 弹窗 + 监听循环 + 导出 + 后台快捷键 + OCR 监控
-├── engine.py        # 规则引擎：NER + 知识图谱 + R1–R12、R14、R15 + 评分 + 元信息抽取
-├── accounts.py      # 本地账号系统（工号 + 密码哈希，责任到人）
+├── engine.py        # 规则引擎：NER + 知识图谱 + R1–R22 + 评分 + 元信息抽取
+├── _lexicons.py     # 阳性/阴性/否定/部位词表（引擎词典层）
+├── highfreq_lexicon.py  # 高频标准词组库（R19 形近字/读音候选）
+├── anatomy_lexicon.py  # 解剖部位知识图谱（器官族 + 侧别 + 中英文映射）
+├── dataset_catalog.py  # 公开数据集目录（回归评测用）
+├── accounts.py      # 账号系统（SQLAlchemy users 表：role/dept_id）
 ├── ocr_provider.py  # 离线 RapidOCR 屏幕区域监控（截图 → OCR → 回填）
 ├── samplelib.py     # 样本库：SQLite 存储、脱敏、统计（类型分布 / 每日趋势）
 ├── ris.py           # RIS 直连：数据库拉取（可选）
 ├── version.py       # 版本信息（APP_VERSION，单一事实来源）
 ├── auto_updater.py  # 自动更新检查
-├── license_utils.py # 许可校验
-├── log_utils.py     # 日志工具
+├── license_utils.py # 许可校验（Ed25519）
+├── log_utils.py     # 滚动日志 + 诊断包（server 端已接入）
 └── update_check.py  # 更新检测
+server/
+├── main.py          # FastAPI 后端：/api/v1/* 全部路由 + 静态托管（单服务同源）
+├── db.py            # SQLAlchemy 连接（DATABASE_URL 可切 PG；SQLite busy_timeout 30s）
+├── models.py        # Department/User/Sample/QueueItem/Setting 模型
+└── license_web.py   # Web 授权
+web/static/          # SPA（index.html + css/style.css + js/app.js）
+desktop_app.py       # pywebview 桌面壳（后台起 uvicorn + 系统原生 WebView）
 assets/
 ├── rules_config.json   # 用户可维护规则（错别字/互斥/忽略/模板）
 ├── ris_config.json     # RIS 连接配置
-├── accounts.db         # 本地账号库
+├── qc.db               # 统一数据层（users/departments/queue/settings，SQLAlchemy）
+├── samples.db          # 样本库（独立，待迁入 qc.db —— task 229）
 └── ocr_models/         # RapidOCR 模型权重（离线）
 build/
 ├── report_qc.spec      # PyInstaller 打包规格
@@ -365,15 +375,68 @@ docs/
 └── RELEASE_TEMPLATE.md    # Release 说明模板
 ```
 
-- **核心零第三方依赖**：纯 Python 标准库（re / json / sqlite3 / difflib / tkinter）
-- **OCR 依赖**：`rapidocr-onnxruntime` 等（见 `requirements.txt`），离线推理
+- **核心零第三方依赖**：规则引擎主体纯 Python 标准库（re / json / sqlite3）
+- **OCR 依赖**：`rapidocr-onnxruntime` 等（见 `requirements.txt` / `requirements.lock` 锁定基线），离线推理
 - **跨平台资源路径**：`frozen` 态自动切换至用户可写目录，避免安装到只读目录后配置失效
+
+### 环境变量（部署配置，2026-08-18 集中文档化）
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `QC_API_SECRET` | 内置默认（告警） | HMAC token 签名密钥；**公网/内网多用户部署必须设置强随机值** |
+| `QC_API_TTL` | 86400 | Bearer token 有效期（秒） |
+| `QC_PORT` | 8000 | 服务端口（CORS 白名单随之收窄） |
+| `QC_HOST` | 127.0.0.1 | 监听地址（内网部署改 0.0.0.0） |
+| `QC_CORS_ORIGINS` | 空 | 追加允许的跨域源（逗号分隔） |
+| `QC_APPDATA` | 平台默认 | 数据目录覆盖（用户可写目录） |
+| `QC_OCR_MAX_BYTES` | 20MB | OCR base64 上传上限 |
+| `DATABASE_URL` | sqlite://assets/qc.db | SQLAlchemy 连接串（可切 PostgreSQL） |
+| `QC_DB_OVERRIDE` | 空 | E2E 测试隔离：指向临时 sqlite |
+| `AU_NO_LAUNCH` | 空 | 自动更新器禁止启动新实例（CI 用） |
 
 ---
 
 ## 十二、版本与更新
 
-- **v4.3.1**（当前）：修复 **R17 否定式误判**——`_has_positive`/`_word_effectively_present` 由「否定词紧贴阳性词」升级为「否定前缀 + 允许间隔修饰词 + 不跨标点」正则判定（`_NEG_BEFORE_POS_RE`），新增 `_is_negative_claim` 识别「未见实质性病变」「未见占位性病变」等阴性声明并贯通段级全局正常判定与 R17 段级兜底：纯正常报告不再误报 `R17-PERREGION`，「描述阴性声明 + 结论阳性诊断」跨段矛盾恢复检出；新增 `TestR17NegationFix` 3 用例（test/ 193 passed）
+- **v4.3.2**（当前）：2026-08-18 系统性代码审查修复（代码 APP_VERSION 仍为 4.3）——
+  - **安全**：QC_API_SECRET 启动强制校验（缺失时告警）；远程访问仅接受 Bearer token（X-Emp-Id 头仅限本机，杜绝伪造冒充）；CORS 收窄到实际服务端口；样本导出/导入路径限定（防任意文件读写）；规则库写接口升级 require_admin；登录失败限速（5 次锁 5 分钟）+ 恒定时间密码比较。
+  - **引擎准确性**：R17 部位断言窗口加入逗号截断；R15 对侧阴性对照不再误报；R5 识别「两肺/双肾」双侧措辞 + 阳性标记否定过滤；R14 多部位计数保守不报；R6 单字部位键按语境识别（「未见脑转移」不再误判）；R8 移除「已见→未见」误报映射；盆腔不再误配 PI-RADS；R10 结论段按行首标题判定。
+  - **工程**：修复 R19 形近字 medium 档误报（改 `== "high"`，2 用例转绿）；解决 test/ tests/ 双目录同名模块冲突（默认 pytest 全绿 228 passed）；CI 新增 pytest 测试闸；JSON 持久化加锁+原子写；SQLite busy_timeout 提至 30s；RIS 轮询按 interval_min 调度（消除 30 倍无谓查询）+ 新增 RIS 配置持久化接口（SPA 可用）；qc/rules 清单对齐合并后 rule_id；前端 escapeHtml 补单引号（修存储型 XSS）、趋势图契约修复、apiFetch 超时+401 全局处理；自动更新 tar 解包路径穿越防护。
+  - **第四轮（2026-08-18 晚）**：
+    - **数据一致性**：修复 **R19 自动修正 span 错位**（span 基于去空格 norm_text，auto_fix 直接切原文会损坏含空格报告——新增 `_r19_norm_text` + `_map_norm_span_to_orig` 双指针坐标还原）；RIS 轮询与手动触发加互斥锁（防并发重复入库）；队列入队改 **DB 层唯一索引原子去重**（QueueItem 新增 report_hash 列 + `_queue_orm_add_dedup`，`ux_queue_hash` 唯一索引兜底并发竞态）。
+    - **多用户隔离（GTM 终局前置）**：样本读取/导出/统计/看板按 `_scope_user_id` 归属过滤（doctor 仅见自己数据）；队列删除/清空归属校验（非 admin 只能移出本人或 ris-poll 公共复核项）；账号创建 X-Emp-Id 头仅限本机（远程强制 Bearer + admin）；登录锁定到期自动清零（不再超时封锁）。
+    - **健壮性**：模块级建表+存量迁移（import 即就绪，TestClient/桌面壳不再无表）；**QC_DB_OVERRIDE 隔离修复**（main 显式 `set_database_override`，不再依赖 import 顺序，杜绝测试污染真实库）；CSV 导入必填列/空行校验；OCR 推理统一 `_OCR_LOCK` 串行（防并发推理内存叠加 OOM）；导出文件下载后自动删除 + ris_fetch_reports 统一错误封装；samples 写入补 dept_id。
+    - **前端重做（core.js 提取时 git checkout 曾回滚前三轮前端修复，本轮全部重做并 Playwright 验证 0 错误）**：apiFetch 20s 超时+401 全局回登录闸门+FormData 兼容；47 处裸 fetch 全改 apiFetch；escapeHtml 补单引号；趋势图 `e[1].n` 契约修复；renderRecentTable/loadSamples/renderModalityChart/fetchRisReports XSS 转义；规则页 severity 按 SEV_META（high/medium/low）；新增 RIS 配置保存/回填（saveRisConfig/loadRisConfig）；fetchRisReports 移除 body limit；矛盾对保存保留 severity/note；OCR 模态透传 dynamic；setVal 空串清残留（医疗数据防串）；Esc 在输入框内不清空；粘贴监听挂 document；parsePatientInfo 排除人称词+支持中文数字年龄；`_pickReportFormat` 去重。
+    - **测试**：新增 `test/test_api_guard.py`（6 用例：队列去重/归属隔离/RIS 配置持久化/登录锁定到期）+ R19 span 回归用例；全量 **228 passed + 7 skipped + 9 subtests**（连续两次稳定）。
+  - **第五轮（2026-08-18 下午）——授权/更新链路专项**：
+    - **授权防绕过（P0，license_utils.py + license_web.py 同步）**：`check_trial` 此前只读本地明文 JSON 的 `activated` 布尔——手改 `{"activated":true}` 即永久绕过 Ed25519 验签、复制他机已激活文件即一码多机。现激活时落盘绑定 `machine_id` + `activated_at`，每次启动回验「本机指纹一致 + activation_code 仍可通过公钥验签」（`_activated_valid`）；license 文件改 0600 权限（内含激活码，防科室主机其他账号读取）。
+    - **前端授权门顺序修复（P0）**：`bootstrapGate` 此前「已有 token 直接放行」在试用过期检查之前，导致试用过期的登录用户永久绕过激活门（只剩横幅）。现将免责/试用过期/激活检查移到登录态快捷路径之前。
+    - **更新链路加固（P1）**：Windows zip 解包增加成员路径校验（拒绝绝对路径/`..` 逃逸，与 macOS tar 分支对齐）；`download` 无 sha256/签名校验与 macOS `xattr -dr com.apple.quarantine` 清除隔离属性列为发布前必须项（当前更新链路无生产调用方，属悬挂代码，接入时需补齐 UI+服务端+退出编排）。
+    - **测试**：新增 `test/test_license.py`（3 用例：伪造 activated 拦截/异机激活拦截/真实激活链路不受影响）；全量 **229 passed + 7 skipped + 9 subtests**。
+    - **OCR/导出链路（专项代理审查，3 P1 + 5 P2 修复）**：
+      - **下载接口可删样本库（P1 数据丢失）**：`/files/download` 此前仅按 basename 限定目录，构造 `?file=qc.db` 即可下载并删除整个样本库 → 新增导出产物前缀白名单（`samples_export_*`/`质控报告_*`），其余一律 404。
+      - **导出报告单崩溃（P1）**：CSV 导入样本 `scores_json="[]"` 时 `scores.items()` 抛 AttributeError → 新增 `_scores_of()` 统一校验 dict。
+      - **OCR 部位/侧别丢失（P1 全链路断点）**：`ocrFill` 此前丢弃后端 meta 的 `applied_site/laterality` → R6 无法基于 OCR 触发 → 已回填 `mSite/mLaterality`。
+      - **P2**：DOCX `_xml_escape` 剥离 XML 1.0 非法控制字符（防 Word 文档损坏）；`/screen/regions` PUT 坐标校验（越界/非数字 400，防 OCR 500）；导出支持 `anonymize` 脱敏（剥离患者姓名/性别/年龄）；`downloadExportedFile` 改 apiFetch+blob（远程部署不再 401）；`ocrOneClick` 异常兜底恢复窗口；启动清理超 3 天导出残留。
+      - **性能负面结论（无需修复）**：RuleEngine 构造 ≈0ms、单条 run ≈2ms、50 条 batch 实测 9ms；OCR 缓存不持有 PIL 图像、无内存泄漏。
+      - **测试**：`test_api_guard.py` 新增 5 用例（下载白名单/坐标校验）；全量 **234 passed + 7 skipped + 9 subtests**。
+    - **遗留项全部落地（2026-08-18 收尾）**：
+      - **服务端 license 强制**：新增 `require_license_active` 依赖并应用到 15 个写接口（qc/check、samples 写、导出、导入、队列写、OCR 等）——试用过期且未激活时写操作 403，读接口放行（登录用户仍可查历史）；开发/内测试用期放行。
+      - **更新链路接入（此前为悬挂代码）**：新增 `GET /api/v1/update/check`（调 `update_check.check_update_sync`，比对 GitHub Release）；设置页新增「🔄 检查更新」按钮（status/版本提示 + 跳转下载）；`auto_updater.download` 下载后强制校验发布物附带的 `.sha256`（不匹配抛错并删除，防被替换的更新包执行任意代码）。
+      - **桌面单实例锁（跨平台）**：`desktop_app` 启动时获取 `tempfile` 锁文件 + PID 存活检查，已有实例运行则提示退出（修复 Windows 双开并发写 SQLite 风险）；退出自动清理。
+      - **性能优化**：`sample_list` 归属过滤提前到 SQL 层（`list_samples_full(user_id=…)`，避免全表载入长文本）；`stats_report` 只 SELECT ts/user_id/findings_json/scores_json（不再载入 report_text 全文）。
+  - **第六轮（2026-08-18 晚）——NER/词典层专项（2 P0 + 3 P1 + 1 P2 修复）**：
+    - **P0「左侧X」措辞侧别漏检**：`_organ_sides_in_text` 正则「左+器官」遇"侧"字即阻断——**『左侧肾上腺见占位/右侧肾上腺见占位』这类放射科最常见写法的跨段左右矛盾整体漏检**（实测零告警）。修复：正则容忍 `(?:侧)?`。
+    - **P0 NER 复合词误切**：短别名（右肺/左肾）在复合词内被误命中——「右肺门→右肺」驱动 R5 误报、「左肾上腺→左肾」使 R2 把肾上腺误归肾族。修复：`ANATOMY_SYNONYMS` 补「左/右肺门、左/右肾上腺、左/右肾盂/肾盏、无侧别肺门/肾上腺」词条（最长匹配优先）。
+    - **P1**：`_ORGAN_COMPOUND` 补肺门/肺野/肺尖/肺实质/肺底/肺间质（"右肺门"不再被当"肺"侧别误报 R2）；NER `SECTION_MAP` 与 `_split_for_r5` 段标题集合对齐（补「影像诊断/诊断结论/影像结论/diagnosis」——此前 NER 把结论段整段标为 findings，R2 分支1 跨段比对失效）；`anatomy_lexicon` 修 Fallopian 前导空格、「肺门」从 lung 族移除（双族消歧）。
+    - **测试**：新增 `TestSidePhrasingNER` 4 用例；全量 **238 passed + 7 skipped + 9 subtests**。
+    - **标注建议（已全部处理）**：R19 档位语义修正（候选加 kind 标记 exact/near/shape，按类型过滤——medium=同音+3字以上近音、2字保守防『双肺→上肺』误报、high=含形近；R19 滑窗 exact 优先，修复『膜玻璃样→磨玻璃影』错改）；`R2_COVERED` 移除死条目「股骨头」（SIDE_CHECK_ORGANS 用短名「股骨」，原排除永不触发）；**新增繁体字检测**（R23-TRADITIONAL：检出确凿繁体独有字形时提示转简体，避免简体词典对繁体输入静默误判）；RIS SQL Server 连接驱动 18→17/13 自动回退（医院 ODBC 版本不一）；`dataset_catalog.py` 更正"单一事实来源"声明（实际词表在 _lexicons/anatomy_lexicon/highfreq_lexicon）；zh_ner 部位实体/normalize_text 明确为有意不接入（标注架构决策：全量 ANATOMY 词表含征象别名会放大误报、归一文本 span 与规则坐标冲突）。
+  - **第七轮（2026-08-18 晚）——规则边界 + schema 一致性专项**：
+    - **规则边界（1 P0 + 4 P1 + 5 P2 修复）**：R4 CT 值「HU」必误报（大小写不匹配）+ 血压「120/80mmHg」吞 / 前缀 → 白名单小写化、单位首字符禁 /；R14「不除外恶性」不再被当否定（临床强阳性措辞，漏检修复）；R22 术语与测量间容忍修饰语（『结节较前增大，现约3.5cm』）；R3 modality 回退 applied_site + 间隔词容忍（『BI-RADS分级4a』）+ 阴性报告豁免；R6 多区域申请拆分比对（『胸部、上腹部』不再误报）；R21 男性乳腺仅钼靶判女性专属（乳腺超声=合理临床）；R1 乳腺检查豁免；R12 同侧『见结节+未见异常』；R14 多发/单发计数。
+    - **schema 一致性（1 P0 数据滞留 + 6 项）**：**P0 修复**——旧 ORM 表 created_at 列使 user_id 重建迁移 INSERT 失败，历史样本滞留 samples_conv_old 孤儿表（真实库取证：李四行 + user_id 截断 559）→ 新增 `rescue_samples_conv()`（列交集拷贝 + user_id 按 users.emp_id 补零校正 + 幂等），启动自动抢救，真实库已迁回；init_db 迁移改列交集防再失败；`samples` 建 `ix_samples_user_ts` 索引；`models.Sample.dept_id` Integer FK → String(64)（与 samplelib TEXT 一致）；`queue` 迁移条目补 `_emp=ris-poll`（否则非 admin 不可见）；`report_hash` 双唯一索引去重（新库由 models unique 生成，旧库才手工建）；启动去重清理仅在补列迁移时执行。
+    - **前端（3 项）**：ocrFill 的 mSite/mLaterality 改无条件 setVal（空串清残留，防连续处理串扰）；queueRunAll 入库成功后出队失败单独提示（不再误计失败且防重复入库）；saveRulesConfig 保存后重建 `_typoCache` 并重渲染（右侧词库表不再显示旧数据）。
+    - **测试**：`test/test_radiology_errors.py` +9 用例（HU/血压/不除外/多发/R22 修饰/男性乳腺/R12 同侧/R3 豁免/R6 多区域）；`tests` R21 用例语义更新；全量 **251 passed + 7 skipped + 9 subtests**。
+- **v4.3.1**：修复 **R17 否定式误判**——`_has_positive`/`_word_effectively_present` 由「否定词紧贴阳性词」升级为「否定前缀 + 允许间隔修饰词 + 不跨标点」正则判定（`_NEG_BEFORE_POS_RE`），新增 `_is_negative_claim` 识别「未见实质性病变」「未见占位性病变」等阴性声明并贯通段级全局正常判定与 R17 段级兜底：纯正常报告不再误报 `R17-PERREGION`，「描述阴性声明 + 结论阳性诊断」跨段矛盾恢复检出；新增 `TestR17NegationFix` 3 用例（test/ 193 passed）
 - **v4.3**：新增 **R18 检查部位器官漏写**——登记部位声明某区域（含「胸部、上腹部」多区域自动拆分）但影像描述段未描述该区域任一器官即告警（如登记上腹部却只写肺），与 R6 互补（R6 抓部位错配、R18 抓器官漏写）；同时修复 R17 跨句否定前缀失效误报（「脑实质内未见异常信号，脑室系统大小正常」不再误判脑室为阳性）；代码内 APP_VERSION 对齐 4.3
 - **v4.2**：逻辑错误规则补全——阳性征词典补充软化灶/梗塞灶/萎缩/脱髓鞘/变性/缺如/低密度高密度灶影等，并新增「部位+正常」精准识别；新增 **R17 逐部位精确比对**（按器官+侧别比对描述↔结论正常/异常声明：左小脑正常+右小脑软化灶不同侧不误报、同侧矛盾能抓）；发现词表进一步扩充（炎症/炎性/增生/积血/积脓/肿胀/瘘/畸形/囊变等）并加否定前缀（未见/无/不伴…）防误报；SPA 桌面版集成注册/登录、90 天试用、激活码（Ed25519 验签）授权体系
 - **v4.1**：Tkinter 桌面端收尾——Windows 风格可配置快捷键完整落地（Ctrl+Enter 运行质控 / Ctrl+S 存样本 / Ctrl+T 切换主题，设置页可重绑并本地持久化）
