@@ -4,15 +4,6 @@
  */
 
 // ==================== SPA 页面切换 ====================
-const PAGE_TITLES = {
-  qc:        { title: '报告质控',     sub: 'AI 驱动的放射报告质量检测引擎' },
-  queue:     { title: '待质控队列',   sub: '排队中的报告，逐份质控并入库后自动出队' },
-  dashboard: { title: '质控看板',     sub: '数据统计与质量趋势分析' },
-  ris:       { title: 'RIS 直连',     sub: '连接 PACS/RIS 数据库获取报告' },
-  samples:   { title: '样本库',       sub: '已质控报告的存储与管理' },
-  rules:     { title: '规则维护',     sub: '查看和管理质控规则' },
-};
-
 // 全局应用设置（从 /api/v1/settings 载入，影响 OCR/入库/自动化行为）
 let APP_SETTINGS = {
   emp_id: 'demo01', default_modality: '', auto_qc_on_ocr: true, auto_enqueue: true,
@@ -31,87 +22,12 @@ let APP_SETTINGS = {
 
 // ==================== 账号 / 授权上下文 ====================
 // 登录态在 localStorage 持久化：刷新页面不必重复登录
-let AUTH = {
-  token: localStorage.getItem('xy-token') || '',
-  empId: localStorage.getItem('xy-emp') || '',
-  name:  localStorage.getItem('xy-name') || '',
-  role:  localStorage.getItem('xy-role') || '',
-};
 let LICENSE_STATUS = null;   // 最近一次授权状态聚合
 
 // 统一 API 封装：自动附加鉴权头（授权相关请求使用；业务请求沿用原 fetch 不受影响）
-async function apiFetch(url, opts = {}) {
-  opts.headers = Object.assign({}, opts.headers || {});
-  opts.headers['Content-Type'] = opts.headers['Content-Type'] || 'application/json';
-  if (AUTH.token)    opts.headers['Authorization'] = 'Bearer ' + AUTH.token;
-  if (AUTH.empId)    opts.headers['X-Emp-Id'] = AUTH.empId;
-  return fetch(url, opts);
-}
-
 // 严重度元数据：图标 + 文字（色盲可用）
-const SEV_META = {
-  high:   { icon: '⛔', label: '严重', cls: 'danger' },
-  medium: { icon: '⚠', label: '警告', cls: 'warning' },
-  low:    { icon: 'ℹ', label: '提示', cls: 'info' },
-};
-
 // 窄屏（≤1024px）侧边栏抽屉：展开/收起 + 遮罩
-function toggleSidebar() {
-  const sb = document.querySelector('.sidebar');
-  const bd = document.querySelector('.sidebar-backdrop');
-  const open = sb.classList.toggle('open');
-  if (bd) bd.classList.toggle('show', open);
-}
-function closeSidebar() {
-  const sb = document.querySelector('.sidebar');
-  const bd = document.querySelector('.sidebar-backdrop');
-  if (sb) sb.classList.remove('open');
-  if (bd) bd.classList.remove('show');
-}
-
-function switchPage(pageName, navEl) {
-  // 窄屏折叠下切换页面后自动收起侧边栏
-  closeSidebar();
-  // 切换导航高亮
-  document.querySelectorAll('.nav-cell').forEach(el => el.classList.remove('active'));
-  if (navEl) navEl.classList.add('active');
-
-  // 切换页面显示
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  const target = document.getElementById('page-' + pageName);
-  if (target) target.classList.add('active');
-
-  // 更新标题
-  const info = PAGE_TITLES[pageName] || {};
-  document.getElementById('pageTitle').textContent = info.title || '';
-  document.getElementById('pageSubtitle').textContent = info.sub || '';
-
-  // 页面加载时自动拉取数据
-  if (pageName === 'dashboard') loadDashboard();
-  if (pageName === 'samples') loadSamples();
-  if (pageName === 'rules') { loadRules(); loadRulesConfig(true); }
-  if (pageName === 'queue') loadQueue();
-  if (pageName === 'users') loadUsers();
-  if (pageName === 'ris') loadPollStatus();  // P0：轮询状态
-}
-
 // ==================== 角色 UI 适配 + 用户管理 ====================
-function applyRoleUI() {
-  const isAdmin = AUTH.role === 'admin';
-  document.querySelectorAll('[data-admin-only]').forEach(el => {
-    el.style.display = isAdmin ? '' : 'none';
-  });
-  // 侧边宫格：基于「可见项」判断奇数项 → 最后一项跨满整行。
-  // 不能用 DOM :last-child:nth-child(odd)，隐藏的「用户管理」会干扰判断。
-  document.querySelectorAll('#sidebar .nav-cell').forEach(el => el.classList.remove('span-full'));
-  const cells = [...document.querySelectorAll('#sidebar .nav-cell')].filter(el => el.offsetParent !== null);
-  if (cells.length % 2 === 1 && cells.length > 1) {
-    cells[cells.length - 1].classList.add('span-full');
-  }
-  const sub = document.getElementById('userMenuSub');
-  if (sub) sub.textContent = (isAdmin ? '系统管理员' : '医生') + ' · ' + (AUTH.empId || '');
-}
-
 async function loadUsers() {
   try {
     const res = await apiFetch('/api/v1/accounts');
@@ -198,15 +114,6 @@ function gotoPage(pageName) {
 }
 
 // ==================== Toast 通知 ====================
-function toast(msg, type = 'info') {
-  const c = document.getElementById('toastContainer');
-  const el = document.createElement('div');
-  el.className = `toast ${type}`;
-  el.textContent = msg;
-  c.appendChild(el);
-  setTimeout(() => el.remove(), 3500);
-}
-
 // ==================== 字数统计 ====================
 document.getElementById('findingsText').addEventListener('input', function() {
   document.getElementById('findingsCount').textContent = this.value.length + ' 字';
@@ -290,7 +197,7 @@ async function runQC() {
 
   try {
     const report = [findings, impression].filter(Boolean).join('\n');
-    const res = await fetch('/api/v1/qc/check', {
+    const res = await apiFetch('/api/v1/qc/check', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -582,7 +489,7 @@ async function saveToLibrary() {
 
   try {
     const report = [findings, impression].filter(Boolean).join('\n');
-    const res = await fetch('/api/v1/samples', {
+    const res = await apiFetch('/api/v1/samples', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
@@ -606,7 +513,7 @@ async function saveToLibrary() {
       // 从队列载入的报告，入库成功后自动出队（与桌面版 _dequeue_active 一致）
       if (ACTIVE_QUEUE_ID) {
         const qid = ACTIVE_QUEUE_ID; ACTIVE_QUEUE_ID = null;
-        try { await fetch('/api/v1/queue/' + encodeURIComponent(qid), { method: 'DELETE' }); } catch (e) {}
+        try { await apiFetch('/api/v1/queue/' + encodeURIComponent(qid), { method: 'DELETE' }); } catch (e) {}
         loadQueue(true);
       }
     }
@@ -619,7 +526,7 @@ async function saveToLibrary() {
 // ==================== 系统设置（真实持久化） ====================
 async function loadSettings(applyUI = true) {
   try {
-    const res = await fetch('/api/v1/settings');
+    const res = await apiFetch('/api/v1/settings');
     const data = await res.json();
     if (data.ok) APP_SETTINGS = Object.assign(APP_SETTINGS, data.data || {});
   } catch (e) { /* 离线兜底：沿用默认值 */ }
@@ -690,6 +597,32 @@ function updateShortcutHints() {
 }
 function closeSettings() { document.getElementById('settingsModal').style.display = 'none'; }
 
+/** 检查更新（2026-08-18 接入）：调 /api/v1/update/check，提示最新状态与下载链接。 */
+async function checkForUpdate() {
+  const btn = document.getElementById('updateCheckBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 检查中…'; }
+  try {
+    const res = await apiFetch('/api/v1/update/check');
+    const data = await res.json();
+    const d = (data && data.data) || {};
+    const status = d.status || 'error';
+    if (status === 'update') {
+      toast('🆕 ' + (d.message || '发现新版本'), 'warn');
+      if (d.url) {
+        if (confirm('发现新版本，是否前往下载？\n' + d.url)) window.open(d.url, '_blank');
+      }
+    } else if (status === 'latest') {
+      toast('✅ ' + (d.message || '已是最新版本'), 'success');
+    } else {
+      toast(d.message || '检查更新失败', 'info');
+    }
+  } catch (e) {
+    toast('检查更新失败：' + (e.message || e), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 检查更新'; }
+  }
+}
+
 async function saveSettings() {
   const payload = {
     emp_id:                document.getElementById('setEmpId').value.trim() || 'demo01',
@@ -705,7 +638,7 @@ async function saveSettings() {
     shortcuts:            APP_SETTINGS.shortcuts || {},
   };
   try {
-    const res = await fetch('/api/v1/settings', {
+    const res = await apiFetch('/api/v1/settings', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
@@ -735,7 +668,7 @@ let ACTIVE_QUEUE_ID = null;   // 从队列载入工作区的条目，入库后�
 
 async function loadQueue(silent = false) {
   try {
-    const res = await fetch('/api/v1/queue');
+    const res = await apiFetch('/api/v1/queue');
     const data = await res.json();
     QUEUE_ITEMS = ((data.data || {}).items) || [];
   } catch (e) {
@@ -795,7 +728,7 @@ async function enqueueCurrent(source = '手动', silent = false) {
 
 async function enqueueText(text, meta, source, silent = false) {
   try {
-    const res = await fetch('/api/v1/queue', {
+    const res = await apiFetch('/api/v1/queue', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         text, meta: meta || {},
@@ -955,7 +888,7 @@ function syncClipWatchUI() {
 
 async function queueRemove(qid) {
   try {
-    const res = await fetch('/api/v1/queue/' + encodeURIComponent(qid), { method: 'DELETE' });
+    const res = await apiFetch('/api/v1/queue/' + encodeURIComponent(qid), { method: 'DELETE' });
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '移除失败');
     if (ACTIVE_QUEUE_ID === qid) ACTIVE_QUEUE_ID = null;
@@ -967,7 +900,7 @@ async function queueClear() {
   if (!QUEUE_ITEMS.length) { toast('队列已是空的', 'info'); return; }
   if (!confirm(`确认清空队列中的 ${QUEUE_ITEMS.length} 份报告？此操作不可撤销。`)) return;
   try {
-    const res = await fetch('/api/v1/queue', { method: 'DELETE' });
+    const res = await apiFetch('/api/v1/queue', { method: 'DELETE' });
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '清空失败');
     ACTIVE_QUEUE_ID = null;
@@ -988,7 +921,7 @@ async function queueRunAll() {
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     try {
-      const res = await fetch('/api/v1/samples', {
+      const res = await apiFetch('/api/v1/samples', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           report: it.text,
@@ -998,7 +931,16 @@ async function queueRunAll() {
         })
       });
       const d = await res.json();
-      if (d.ok) { okCount++; await fetch('/api/v1/queue/' + encodeURIComponent(it.id), { method: 'DELETE' }); }
+      if (d.ok) {
+        okCount++;
+        // 2026-08-18：入库成功后出队失败单独提示——此前 DELETE 异常计入 failCount，
+        // toast 报『失败』与实际不符，且重跑会对同一报告重复入库（接口无去重）
+        try {
+          await apiFetch('/api/v1/queue/' + encodeURIComponent(it.id), { method: 'DELETE' });
+        } catch (e) {
+          toast('第 ' + (i + 1) + ' 份已入库但移出队列失败，稍后可手动移出', 'warn');
+        }
+      }
       else failCount++;
     } catch (e) { failCount++; }
     if (fill) fill.style.width = Math.round(((i + 1) / items.length) * 100) + '%';
@@ -1050,7 +992,7 @@ async function loadErrorTypes() {
   const box = document.getElementById('errorTypeChart');
   if (!box) return;
   try {
-    const res = await fetch('/api/v1/stats/error-types');
+    const res = await apiFetch('/api/v1/stats/error-types');
     const data = await res.json();
     const stats = data.data || {};
     const entries = Object.entries(stats).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
@@ -1080,7 +1022,7 @@ async function loadTrend() {
   const box = document.getElementById('trendChart');
   if (!box) return;
   try {
-    const res = await fetch('/api/v1/stats/trend');
+    const res = await apiFetch('/api/v1/stats/trend');
     const data = await res.json();
     const stats = data.data || {};
     let entries = Object.entries(stats).sort((a, b) => a[0].localeCompare(b[0])).slice(-30);
@@ -1091,10 +1033,11 @@ async function loadTrend() {
     }
     if (entries.length === 1) entries = [[entries[0][0], entries[0][1]], entries[0]]; // 单点也画得出线
     const W = 460, H = 220, PL = 34, PR = 10, PT = 14, PB = 26;
-    const max = Math.max(...entries.map(e => e[1]), 1);
+    // 契约：/stats/trend 返回 {date: {n, avg_acc}}，取 n 画线（2026-08-18 修复 NaN 空图）
+    const max = Math.max(...entries.map(e => e[1].n), 1);
     const stepX = (W - PL - PR) / Math.max(1, entries.length - 1);
     const yOf = v => PT + (H - PT - PB) * (1 - v / max);
-    const pts = entries.map((e, i) => [PL + i * stepX, yOf(e[1])]);
+    const pts = entries.map((e, i) => [PL + i * stepX, yOf(e[1].n)]);
     const line = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
     const area = `${line} L${pts[pts.length - 1][0].toFixed(1)},${H - PB} L${pts[0][0].toFixed(1)},${H - PB} Z`;
     // Y 轴 3 条参考线
@@ -1108,7 +1051,7 @@ async function loadTrend() {
     const xLabels = idxs.map(i => `<text x="${(PL + i * stepX).toFixed(1)}" y="${H - 8}" text-anchor="middle"
       font-size="10" fill="var(--text-muted)">${entries[i][0].slice(5)}</text>`).join('');
     const dots = pts.map((p, i) => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.6"
-      fill="var(--primary)"><title>${entries[i][0]}：${entries[i][1]} 份</title></circle>`).join('');
+      fill="var(--primary)"><title>${entries[i][0]}：${entries[i][1].n} 份</title></circle>`).join('');
     box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:240px;">
       <defs><linearGradient id="trendGrad" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stop-color="var(--primary)" stop-opacity="0.28"/>
@@ -1143,7 +1086,7 @@ async function loadStatsReport() {
   const q = [];
   if (start) q.push('start=' + start.toISOString().slice(0, 10));
   try {
-    const res = await fetch('/api/v1/stats/report' + (q.length ? '?' + q.join('&') : ''));
+    const res = await apiFetch('/api/v1/stats/report' + (q.length ? '?' + q.join('&') : ''));
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '加载失败');
     renderStatsReport(data.data || {});
@@ -1238,7 +1181,7 @@ function renderModalityChart(byModality) {
       <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;">
         <span style="font-size:13px;font-weight:700;color:var(--text-primary);">${count}</span>
         <div style="width:36px;height:${h}px;border-radius:8px;background:${colors[mod]||'var(--primary)'};transition:height 0.5s;"></div>
-        <span style="font-size:11px;color:var(--text-muted);font-weight:600;">${mod}</span>
+        <span style="font-size:11px;color:var(--text-muted);font-weight:600;">${escapeHtml(mod)}</span>
       </div>`;
   }).join('');
 
@@ -1255,10 +1198,10 @@ function renderRecentTable(items) {
   }
   tbody.innerHTML = items.slice(0,8).map(r => `
     <tr>
-      <td style="font-size:12px;color:var(--text-muted);">${(r.ts||'--').slice(5,16)}</td>
-      <td>${r.patient||'--'}</td>
-      <td><span class="tag info">${r.modality||'--'}</span></td>
-      <td>${r.applied_site||'--'}</td>
+      <td style="font-size:12px;color:var(--text-muted);">${escapeHtml((r.ts||'--').slice(5,16))}</td>
+      <td>${escapeHtml(r.patient||'--')}</td>
+      <td><span class="tag info">${escapeHtml(r.modality||'--')}</span></td>
+      <td>${escapeHtml(r.applied_site||'--')}</td>
       <td>
         <span class="tag ${(r.scores?.accuracy||0)>=90?'success':'warning'}">
           ${(r.scores?.accuracy||0).toFixed(0)}
@@ -1286,9 +1229,9 @@ async function loadSamples() {
         <td style="color:var(--text-muted);font-size:12px;">${r.id}</td>
         <td style="font-size:12px;">${r.ts||'--'}</td>
         <td>${escapeHtml(r.patient)||'--'}</td>
-        <td>${r.gender||'--'}</td>
-        <td>${r.age||'--'}</td>
-        <td><span class="tag info">${r.modality||'--'}</span></td>
+        <td>${escapeHtml(r.gender)||'--'}</td>
+        <td>${escapeHtml(r.age)||'--'}</td>
+        <td><span class="tag info">${escapeHtml(r.modality)||'--'}</span></td>
         <td>${escapeHtml(r.applied_site)||'--'}</td>
         <td>${r.findings_count||0}</td>
         <td><span class="tag ${(r.scores?.accuracy||0)>=90?'success':'warning'}">${(r.scores?.accuracy||0).toFixed(0)}</span></td>
@@ -1305,7 +1248,7 @@ async function loadSamples() {
 // ---------- 样本详情 / 删除 ----------
 async function viewSample(sid) {
   try {
-    const res = await fetch('/api/v1/samples/' + sid);
+    const res = await apiFetch('/api/v1/samples/' + sid);
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '读取失败');
     const s = data.data || {};
@@ -1381,7 +1324,7 @@ async function exportSamples() {
   if (!fmt) return;
   try {
     toast(`正在导出 ${fmt.toUpperCase()} 样本库...`, 'info');
-    const res = await fetch('/api/v1/samples/export', {
+    const res = await apiFetch('/api/v1/samples/export', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ fmt })
@@ -1447,16 +1390,25 @@ function pickExportFmt(fmt) {
   if (_exportFmtResolve) { _exportFmtResolve(fmt); _exportFmtResolve = null; }
 }
 
-/** 让浏览器/WebView 下载服务端生成的导出文件（GET /files/download） */
-function downloadExportedFile(path) {
+/** 下载服务端生成的导出文件（GET /files/download，走 apiFetch 带鉴权头；
+ *  2026-08-18 修复：此前裸 <a> 导航无 Authorization，远程部署必 401）。 */
+async function downloadExportedFile(path) {
   const name = (path || '').split(/[\\/]/).pop();
   if (!name) return;
-  const a = document.createElement('a');
-  a.href = '/api/v1/files/download?file=' + encodeURIComponent(name);
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => a.remove(), 500);
+  try {
+    const res = await apiFetch('/api/v1/files/download?file=' + encodeURIComponent(name));
+    if (!res.ok) { toast('下载失败：' + res.status, 'error'); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+  } catch (e) {
+    toast('下载失败：' + (e.message || e), 'error');
+  }
 }
 
 /** 当前工作区质控结果直接导出质控报告单（无需入库） */
@@ -1486,7 +1438,7 @@ async function exportQcReport() {
     if (el && el.textContent !== '--') scoreObj[cn] = { score: parseFloat(el.textContent) || 0, deductions: [] };
   }
   try {
-    const res = await fetch('/api/v1/qc/export-report', {
+    const res = await apiFetch('/api/v1/qc/export-report', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ report, meta: currentQcMeta(), findings, scores: scoreObj, fmt })
     });
@@ -1498,23 +1450,13 @@ async function exportQcReport() {
   } catch (e) { toast('导出失败: ' + e.message, 'error'); }
 }
 
-/** 质控报告单格式选择。返回 'docx'|'pdf' 或 null */
-function _pickReportFormat() {
-  return new Promise(resolve => {
-    const fmt = prompt('选择报告单格式：\n  1 = Word（DOCX，零依赖，推荐）\n  2 = PDF（需 reportlab）\n\n输入数字 1-2（取消=放弃）：', '1');
-    if (fmt === null) return resolve(null);
-    const m = { '1': 'docx', '2': 'pdf' }[String(fmt).trim()];
-    if (!m) { toast('格式编号无效，已取消', 'warn'); return resolve(null); }
-    resolve(m);
-  });
-}
 
 /** 样本详情：导出质控报告单（Word） */
 async function exportSampleReport(sid, fmt) {
   if (!sid) { toast('样本 ID 无效', 'error'); return; }
   try {
     toast(`正在生成质控报告单（${fmt === 'pdf' ? 'PDF' : 'Word'}）...`, 'info');
-    const res = await fetch(`/api/v1/samples/${sid}/export-report`, {
+    const res = await apiFetch(`/api/v1/samples/${sid}/export-report`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fmt })
     });
@@ -1572,7 +1514,7 @@ async function applyAllFixes() {
   const report = [fEl.value, iEl.value].filter(Boolean).join('\n');
   if (!report.trim()) { toast('请输入报告内容', 'warn'); return; }
   try {
-    const res = await fetch('/api/v1/qc/check', {
+    const res = await apiFetch('/api/v1/qc/check', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ report, meta: currentQcMeta(), auto_fix: true })
@@ -1615,7 +1557,7 @@ async function learnTypoFromFinding(btn) {
   if (!wrong || !correct) { toast('缺少错词/正确词，无法学习', 'error'); return; }
   btn.disabled = true;
   try {
-    const res = await fetch('/api/v1/qc/rules/learn-typo', {
+    const res = await apiFetch('/api/v1/qc/rules/learn-typo', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ wrong, correct })
     });
@@ -1640,7 +1582,7 @@ async function scanReportsForTypos() {
   btn && (btn.textContent = '扫描中…（读取最近 200 份报告）');
   box.innerHTML = '<div class="muted">正在扫描样本库并统计词频…</div>';
   try {
-    const res = await fetch('/api/v1/qc/rules/scan-reports', { method: 'POST' });
+    const res = await apiFetch('/api/v1/qc/rules/scan-reports', { method: 'POST' });
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '扫描失败');
     _scanCandidates = (data.data && data.data.candidates) || [];
@@ -1672,7 +1614,7 @@ async function adoptScanCandidate(btn, idx) {
   if (!c) return;
   btn.disabled = true;
   try {
-    const res = await fetch('/api/v1/qc/rules/learn-typo', {
+    const res = await apiFetch('/api/v1/qc/rules/learn-typo', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ wrong: c.wrong, correct: c.correct })
     });
@@ -1692,7 +1634,7 @@ let _cfgSnapshot = null;
 
 async function loadRulesConfig(silent = false) {
   try {
-    const res = await fetch('/api/v1/qc/rules/config');
+    const res = await apiFetch('/api/v1/qc/rules/config');
     const data = await res.json();
     const cfg = (data.data || {});
     const typos = cfg.typos || {};
@@ -1794,7 +1736,11 @@ async function saveRulesConfig() {
     if (p.length < 2) { console.warn('矛盾对格式应为 词A|词B，已跳过：' + ln); nBad++; continue; }
     const a = p[0], b = p[1];
     if (a === b) { console.warn('矛盾对 A 与 B 相同，已跳过：' + ln); nBad++; continue; }
-    conflicts.push({ a, b, scope });
+    // 保留已存 severity/note 元数据（2026-08-18：此前保存只回传 a/b/scope 会抹掉它们）
+    const prev = (_cfgSnapshot && _cfgSnapshot.conflicts || []).find(c => c.a === a && c.b === b);
+    conflicts.push({ a, b, scope,
+                     severity: (prev && prev.severity) || undefined,
+                     note: (prev && prev.note) || undefined });
   }
   if (nBad > 0) {
     toast(`有 ${nBad} 行矛盾对格式无效已跳过（每行应为 [范围] 词A|词B，范围∈{${_SCOPES.join('/')}}）`, 'warn');
@@ -1807,7 +1753,7 @@ async function saveRulesConfig() {
   const sensEl = document.getElementById('cfgR19Sens');
   const r19_sensitivity = (sensEl && ['low', 'medium', 'high'].includes(sensEl.value)) ? sensEl.value : 'medium';
   try {
-    const res = await fetch('/api/v1/qc/rules/config', {
+    const res = await apiFetch('/api/v1/qc/rules/config', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ typos, conflicts, ignores, template: tpl, enable_r19, r19_sensitivity,
                              disabled_typos: Array.from(_typoDisabled) })
@@ -1820,6 +1766,22 @@ async function saveRulesConfig() {
       conflicts: document.getElementById('cfgConflicts').value,
       ignores: document.getElementById('cfgIgnores').value,
     };
+    // 2026-08-18：重建可视化词库缓存并重渲染——此前直接编辑左侧词表保存后，
+    // 右侧表格仍显示旧数据；且新增词若同时在停用列表会存成『新增且停用』矛盾态
+    try {
+      _typoCache = {};
+      _typoDisabled = new Set();
+      const raw = document.getElementById('cfgTypos').value;
+      for (const ln of raw.split('\n')) {
+        const m = ln.match(/^(.+?)[\t|：:]\s*(.+?)\s*\[(.+?)\]\s*$/);
+        if (m) _typoCache[m[1].trim()] = m[2].trim();
+      }
+      const dis = document.getElementById('cfgDisabledTypos');
+      if (dis) {
+        for (const w of dis.value.split(/[\n,，]+/).map(x => x.trim()).filter(Boolean)) _typoDisabled.add(w);
+      }
+      renderTypoTable();
+    } catch (e) { console.warn('词库缓存重建失败', e); }
     updateCfgStats();
     toast(`规则配置已保存并生效（错字 ${Object.keys(typos).length} 条 / 矛盾对 ${conflicts.length} 条 / 忽略词 ${ignores.length} 条）`, 'success');
   } catch (e) {
@@ -1870,7 +1832,7 @@ async function addTypoItem() {
   const correct = document.getElementById('typoAddCorrect').value.trim();
   if (!wrong || !correct || wrong === correct) { toast('错词与正词均必填且不能相同', 'warn'); return; }
   try {
-    const res = await fetch('/api/v1/qc/rules/typos', {
+    const res = await apiFetch('/api/v1/qc/rules/typos', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ wrong, correct })
     });
@@ -1887,7 +1849,7 @@ async function addTypoItem() {
 
 async function toggleTypoItem(wrong, currentOn) {
   try {
-    const res = await fetch('/api/v1/qc/rules/typos/toggle', {
+    const res = await apiFetch('/api/v1/qc/rules/typos/toggle', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ wrong, correct: currentOn ? '0' : '1' })
     });
@@ -1902,7 +1864,7 @@ async function toggleTypoItem(wrong, currentOn) {
 async function deleteTypoItem(wrong) {
   if (!confirm(`确定删除错字词条「${wrong}」吗？`)) return;
   try {
-    const res = await fetch('/api/v1/qc/rules/typos/delete', {
+    const res = await apiFetch('/api/v1/qc/rules/typos/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ wrong })
     });
@@ -1931,7 +1893,7 @@ async function importTypoItems() {
   }).filter(Boolean);
   if (!items.length) { toast('请输入至少一条 错词=正词', 'warn'); return; }
   try {
-    const res = await fetch('/api/v1/qc/rules/typos/batch-import', {
+    const res = await apiFetch('/api/v1/qc/rules/typos/batch-import', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ items })
     });
@@ -1958,7 +1920,7 @@ function _refreshCfgTextarea() {
 async function resetRulesConfig() {
   if (!confirm('确定恢复默认规则库吗？当前所有自定义规则将被出厂配置覆盖。')) return;
   try {
-    const res = await fetch('/api/v1/qc/rules/config/reset', { method: 'POST' });
+    const res = await apiFetch('/api/v1/qc/rules/config/reset', { method: 'POST' });
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '恢复失败');
     _cfgSnapshot = null;
@@ -1980,7 +1942,7 @@ async function importSamples() {
     fd.append('file', f);
     try {
       toast('正在导入样本...', 'info');
-      const res = await fetch('/api/v1/samples/import/upload', { method: 'POST', body: fd });
+      const res = await apiFetch('/api/v1/samples/import/upload', { method: 'POST', body: fd });
       const data = await res.json();
       if (!data.ok) throw new Error(data.message || '导入失败');
       toast(`导入完成：新增 ${data.data.inserted} 条，跳过 ${data.data.skipped} 条`, 'success');
@@ -1996,7 +1958,7 @@ async function importSamples() {
 // ---------- P0 主动轮询质检（后台定时线程：拉取→质控→入库+入队） ----------
 async function loadPollStatus() {
   try {
-    const res = await fetch('/api/v1/ris/poll-status');
+    const res = await apiFetch('/api/v1/ris/poll-status');
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '加载失败');
     const st = data.data || {};
@@ -2018,6 +1980,7 @@ async function loadPollStatus() {
         (st.last_error ? `<br/><span style="color:#e53e3e;">最近错误：${escapeHtml(st.last_error)}</span>` : '');
     }
   } catch (e) { /* 页面可能未加载完成，静默 */ }
+  loadRisConfig(); // 进入 RIS 页顺带回填已保存连接配置（2026-08-18）
 }
 
 async function savePollConfig() {
@@ -2034,7 +1997,7 @@ async function savePollConfig() {
     auto_enqueue: ae ? ae.checked : true,
   };
   try {
-    const res = await fetch('/api/v1/ris/poll-config', {
+    const res = await apiFetch('/api/v1/ris/poll-config', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
@@ -2048,7 +2011,7 @@ async function savePollConfig() {
 async function runPollNow() {
   toast('正在执行一次 RIS 轮询...', 'info');
   try {
-    const res = await fetch('/api/v1/ris/poll-now', { method: 'POST' });
+    const res = await apiFetch('/api/v1/ris/poll-now', { method: 'POST' });
     const data = await res.json();
     if (!data.ok) { toast('轮询失败: ' + (data.message || data.detail || ''), 'error'); loadPollStatus(); return; }
     const r = data.data || {};
@@ -2058,24 +2021,58 @@ async function runPollNow() {
   } catch (e) { toast('轮询请求失败: ' + e.message, 'error'); }
 }
 
+// RIS 连接表单统一收集（test-connection / fetch / save 三处同源，2026-08-18）
+function _risFormPayload() {
+  return {
+    db_type:   document.getElementById('risDbType').value,
+    host:      document.getElementById('risHost').value,
+    port:      parseInt(document.getElementById('risPort').value)||0,
+    database:  document.getElementById('risDbName').value,
+    user:      document.getElementById('risUser').value,
+    password:  document.getElementById('risPassword').value,
+    query_sql: document.getElementById('risSql').value,
+  };
+}
+
+// 保存 RIS 连接配置（PUT /ris/config，admin）；轮询线程复用持久化配置
+async function saveRisConfig() {
+  const btn = document.getElementById('risSaveBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiFetch('/api/v1/ris/config', {
+      method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(_risFormPayload()),
+    });
+    const data = await res.json();
+    if (data.ok) { toast('RIS 配置已保存', 'success'); loadPollStatus(); }
+    else toast(data.message || data.detail || '保存失败', 'error');
+  } catch (e) { toast('保存失败: ' + e.message, 'error'); }
+  finally { if (btn) btn.disabled = false; }
+}
+
+// 进入 RIS 页时回填已保存配置（GET /ris/config，password 脱敏不回填）
+async function loadRisConfig() {
+  try {
+    const res = await apiFetch('/api/v1/ris/config');
+    const data = await res.json();
+    if (!data.ok) return;
+    const cfg = data.data || {};
+    const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+    set('risDbType', cfg.db_type); set('risHost', cfg.host); set('risPort', cfg.port);
+    set('risDbName', cfg.database); set('risUser', cfg.user); set('risSql', cfg.query);
+  } catch (e) { /* 静默：可能未配置或页面未加载完成 */ }
+}
+
 async function testRisConnection() {
   const statusEl = document.getElementById('connStatus');
   statusEl.className = 'conn-status disconnected';
   statusEl.innerHTML = '<span class="led"></span> 测试中...';
 
   try {
-    const res = await fetch('/api/v1/ris/test-connection', {
+    const res = await apiFetch('/api/v1/ris/test-connection', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        db_type:   document.getElementById('risDbType').value,
-        host:      document.getElementById('risHost').value,
-        port:      parseInt(document.getElementById('risPort').value)||0,
-        database:  document.getElementById('risDbName').value,
-        user:      document.getElementById('risUser').value,
-        password:  document.getElementById('risPassword').value,
-        query_sql: document.getElementById('risSql').value,
-      })
+      body: JSON.stringify(_risFormPayload()),
     });
     const data = await res.json();
     if (data.ok && data.data && data.data.ok) {
@@ -2103,8 +2100,9 @@ async function fetchRisReports() {
   risController = new AbortController();
   if (prog) prog.classList.add('show');
   if (cancelBtn) cancelBtn.style.display = 'inline-flex';
+  const myCtrl = risController;
   try {
-    const res = await fetch('/api/v1/ris/fetch-reports', {
+    const res = await apiFetch('/api/v1/ris/fetch-reports', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
@@ -2115,9 +2113,8 @@ async function fetchRisReports() {
         user:      document.getElementById('risUser').value,
         password:  document.getElementById('risPassword').value,
         query_sql: document.getElementById('risSql').value,
-        limit: 50,
       }),
-      signal: risController.signal,
+      signal: myCtrl.signal,   // limit 由后端 Query 默认 50（契约对齐，2026-08-18）
     });
     const data = await res.json();
     const items = (data.data||{}).items||[];
@@ -2135,7 +2132,7 @@ async function fetchRisReports() {
         <td style="text-align:center;"><input type="checkbox" class="ris-check" value="${i}"></td>
         <td>${escapeHtml(r.patient||'--')}</td>
         <td style="font-size:12px;">${escapeHtml(r.gender||'--')}/${escapeHtml(r.age||'--')}</td>
-        <td><span class="tag info">${r.modality||'--'}</span></td>
+        <td><span class="tag info">${escapeHtml(r.modality||'--')}</span></td>
         <td>${escapeHtml(r.applied_site||'--')}</td>
         <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;" title="${escapeHtml(r.report_text||'')}">${escapeHtml((r.report_text||'').slice(0,80))}</td>
       </tr>
@@ -2146,9 +2143,11 @@ async function fetchRisReports() {
     if (e.name === 'AbortError') toast('已取消拉取', 'info');
     else toast('拉取失败: '+e.message, 'error');
   } finally {
+    // 仅当本请求仍是当前控制器时才置空（防止 abort 的旧请求清掉新建的控制器 B，
+    // 导致第三次触发时无法取消 B，进度条状态互相覆盖；2026-08-18 修复）
+    if (risController === myCtrl) risController = null;
     if (prog) prog.classList.remove('show');
-    if (cancelBtn) cancelBtn.style.display = 'none';
-    risController = null;
+    if (cancelBtn && !risController) cancelBtn.style.display = 'none';
   }
 }
 
@@ -2194,7 +2193,7 @@ async function batchQC() {
   for (const r of risItems) {
     if (!r.report_text) { failCount++; continue; }
     try {
-      const res = await fetch('/api/v1/samples', {
+      const res = await apiFetch('/api/v1/samples', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           report: r.report_text,
@@ -2228,7 +2227,7 @@ async function risEnqueueAll() {
 // ==================== 规则维护 ====================
 async function loadRules() {
   try {
-    const res = await fetch('/api/v1/qc/rules');
+    const res = await apiFetch('/api/v1/qc/rules');
     const data = await res.json();
     const rules = (data.data||[]);
 
@@ -2243,7 +2242,7 @@ async function loadRules() {
         <td style="font-family:monospace;font-size:12px;">${r.rule_id||'--'}</td>
         <td>${r.name||'--'}</td>
         <td><span class="tag info">${r.category||'--'}</span></td>
-        <td><span class="tag ${r.severity==='critical'?'danger':r.severity==='warning'?'warning':'info'}">${r.severity||'info'}</span></td>
+        <td><span class="tag ${(SEV_META[r.severity]||{}).cls||'info'}">${r.severity||'info'}</span></td>
         <td><span class="tag ${r.enabled!==false?'success':'warning'}">${r.enabled!==false?'启用':'禁用'}</span></td>
       </tr>
     `).join('');
@@ -2251,29 +2250,7 @@ async function loadRules() {
 }
 
 // ==================== 工具函数 ====================
-function escapeHtml(str) {
-  if (!str) return '';
-  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
 // ==================== 明暗主题切换 ====================
-function toggleTheme() {
-  const cur = document.documentElement.getAttribute('data-theme');
-  const next = cur === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', next);
-  localStorage.setItem('xy-theme', next);
-  const t = document.getElementById('themeToggle');
-  if (t) t.textContent = next === 'dark' ? '☀️' : '🌙';
-}
-(function initTheme() {
-  const saved = localStorage.getItem('xy-theme');
-  if (saved) {
-    document.documentElement.setAttribute('data-theme', saved);
-    const t = document.getElementById('themeToggle');
-    if (t) t.textContent = saved === 'dark' ? '☀️' : '🌙';
-  }
-})();
-
 // ==================== 全局快捷键 ====================
 // ==================== 框选 OCR（三段识别） ====================
 // 三区对应 PACS：basic=病人基础信息 / findings=影像描述 / impression=影像诊断
@@ -2296,7 +2273,7 @@ function openOcrModal() {
   if (!document.getElementById('page-qc').classList.contains('active')) switchPage('qc', document.querySelector('.nav-cell[data-page="qc"]'));
   document.getElementById(OCR_MODAL).style.display = 'flex';
   // 载入上次「记住框位」保存的比例框
-  fetch('/api/v1/screen/regions').then(r => r.json()).then(d => {
+  apiFetch('/api/v1/screen/regions').then(r => r.json()).then(d => {
     const wr = (d.data || {}).web_regions;
     if (wr && typeof wr === 'object') {
       ocrState.boxes.forEach(b => {
@@ -2345,7 +2322,7 @@ async function ocrGrabScreen() {
   const status = document.getElementById('ocrStatus');
   if (status) status.textContent = '正在截取全屏...';
   try {
-    const res = await fetch('/api/v1/screen/capture', { method: 'POST' });
+    const res = await apiFetch('/api/v1/screen/capture', { method: 'POST' });
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '截屏失败');
     const d = data.data;
@@ -2383,7 +2360,7 @@ async function ocrSaveRegions() {
         w: +b.w.toFixed(4), h: +b.h.toFixed(4),
       };
     });
-    const res = await fetch('/api/v1/screen/regions', {
+    const res = await apiFetch('/api/v1/screen/regions', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(regions)
     });
@@ -2395,8 +2372,9 @@ async function ocrSaveRegions() {
   }
 }
 
-// 粘贴截图（仅在模态打开时处理）
-document.getElementById('ocrCanvasWrap').addEventListener('paste', (e) => {
+// 粘贴截图（挂 document 而非 ocrCanvasWrap：paste 事件只到达聚焦元素，
+// 画布无 tabindex 时事件不会到达该容器，2026-08-18 修复粘贴失效）
+document.addEventListener('paste', (e) => {
   if (document.getElementById(OCR_MODAL).style.display !== 'flex') return;
   const items = e.clipboardData && e.clipboardData.items;
   if (!items) return;
@@ -2490,7 +2468,7 @@ async function ocrCropAndRecognize(box) {
   const octx = off.getContext('2d');
   octx.drawImage(ocrState.img, box.x * ocrState.naturalW, box.y * ocrState.naturalH, off.width, off.height, 0, 0, off.width, off.height);
   const b64 = off.toDataURL('image/png').split(',')[1];
-  const res = await fetch('/api/v1/ocr/base64', {
+  const res = await apiFetch('/api/v1/ocr/base64', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ image_base64: b64 })
   });
@@ -2515,9 +2493,9 @@ async function ocrRecognize() {
         x: +b.x.toFixed(4), y: +b.y.toFixed(4), w: +b.w.toFixed(4), h: +b.h.toFixed(4)
       });
       const refresh = document.getElementById('ocrRefresh')?.checked;
-      const res = await fetch('/api/v1/screen/ocr', {
+      const res = await apiFetch('/api/v1/screen/ocr', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ regions, refresh })
+        body: JSON.stringify({ regions, refresh, dynamic: !!APP_SETTINGS.ocr_dynamic, dynamic_region: APP_SETTINGS.ocr_dynamic ? unionRegions(regions) : null })
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.message || 'OCR 失败');
@@ -2538,7 +2516,7 @@ async function ocrRecognize() {
     // 图片模式也走后端 extract_meta_full（与屏幕模式一致），姓名回填更稳健；失败则回退前端解析
     let meta = null;
     try {
-      const mr = await fetch('/api/v1/ocr/meta', {
+      const mr = await apiFetch('/api/v1/ocr/meta', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ basic: map.basic || '', findings: map.findings || '', impression: map.impression || '' })
       });
@@ -2566,8 +2544,10 @@ function parseName(raw) {
 }
 function parsePatientInfo(text) {
   const out = {}; let m;
-  // 噪声词（字段词/科室词）：无标签兜底时排除，避免把科室/字段误填成姓名
-  const NOISE = /(性别|年龄|检查|部位|科室|门诊|住院|床号|影像|诊断|申请|病案|临床|设备|医院|报告|记录|呼吸|心血管|神经|骨科|普外|泌尿|妇科|产科|儿科|急诊|超声|放射|肿瘤|消化|内分泌|免疫|血液|皮肤|眼科|耳鼻喉|口腔|中医|康复|病理|心电|核医学|受理|登记|来源|类型|方法|所见|印象|建议|征象|结论|提示|说明|病床|住院号|门诊号|检查号|影像号)/;
+  // 噪声词（字段词/科室词）：无标签兜底时排除，避免把科室/字段误填成姓名。
+  // 2026-08-18 补「患者/病人/受检者/就诊」：无分隔写法『患者张三』此前兜底2 会把
+  // 人称词本身误当姓名（NOISE 缺词），现排除后仍取不到则交给兜底3（整行 2-3 字）不匹配，返回空。
+  const NOISE = /(患者|病人|受检者|就诊|性别|年龄|检查|部位|科室|门诊|住院|床号|影像|诊断|申请|病案|临床|设备|医院|报告|记录|呼吸|心血管|神经|骨科|普外|泌尿|妇科|产科|儿科|急诊|超声|放射|肿瘤|消化|内分泌|免疫|血液|皮肤|眼科|耳鼻喉|口腔|中医|康复|病理|心电|核医学|受理|登记|来源|类型|方法|所见|印象|建议|征象|结论|提示|说明|病床|住院号|门诊号|检查号|影像号)/;
   const COMPOUND = /^(欧阳|司马|诸葛|东方|上官|令狐|皇甫|宇文|慕容|司徒|夏侯|长孙|赫连|万俟|闻人|澹台|尉迟|公孙)/;
   // 部位词（兜底2/3 共用）：排除『胸部』『腰椎』等部位词，避免把部位误填成姓名
   const BODYPART = /^(头部|颈部|胸部|腹部|盆腔|腰部|骶部|尾部|颅脑|头颅|鼻窦|眼眶|涎腺|鼻咽|口咽|喉部|甲状腺|上腹部|中腹部|下腹部|肾上腺|肝脏|胆囊|胰腺|脾脏|肾脏|胃肠|膀胱|前列腺|子宫|卵巢|四肢|关节|肩关节|肘关节|腕关节|髋关节|膝关节|踝关节|腰椎|颈椎|胸椎|骶骨|尾骨|股骨|胫骨|腓骨|肱骨|尺骨|桡骨|骨盆|肋骨|锁骨|脑|颈|胸|腹|盆|腰|骶|颅|颌|面|眼|耳|鼻|咽|喉|肺|肝|胆|胰|脾|肾|胃|肠|膀|乳|肩|肘|腕|髋|膝|踝|指|趾|脊|椎|骨|肋|锁|股|胫|腓|肱|桡)/;
@@ -2631,7 +2611,23 @@ function parsePatientInfo(text) {
   } else if (/女/.test(text) && !/男/.test(text)) {
     out.gender = '女';
   }
-  if ((m = text.match(/(?:年龄|age)[:：]?\s*(\d{1,3})/i))) out.age = m[1];
+  // 年龄：阿拉伯数字或中文数字（2026-08-18 补『四十五岁/二十三岁』等写法）
+  const _CN2N = { '一':1,'二':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10 };
+  function _cnAge(s) {
+    if (!s) return '';
+    if (/^\d+$/.test(s)) return String(parseInt(s, 10));
+    let n = 0, acc = 0;
+    for (const ch of s) {
+      if (ch === '十') { n = (n || 1) * 10; }
+      else if (_CN2N[ch] !== undefined) { if (n === 0) n = _CN2N[ch]; else acc += n, n = 0; }
+      else return '';
+    }
+    return String(n + acc);
+  }
+  if ((m = text.match(/(?:年龄|age)[:：]?\s*([\d一二两三四五六七八九十]{1,3})(?=\s*(?:岁|Y|y|$))/i)))
+    out.age = _cnAge(m[1]);
+  else if ((m = text.match(/(?:年龄|age)[:：]?\s*([\d一二两三四五六七八九十]{1,3})岁/)))
+    out.age = _cnAge(m[1]);
   const mod = text.match(/(CT|MRI|MR|DR|CR|DSA|XA|US|超声|核磁共振|计算机断层)/i);
   if (mod) {
     const v = mod[1].toUpperCase();
@@ -2643,7 +2639,8 @@ function parsePatientInfo(text) {
 
 function setVal(id, v) {
   const el = document.getElementById(id);
-  if (!el || !v) return;
+  // 空串也应赋值：连续处理两份报告时，字段为空的第二份必须清掉第一份残留（2026-08-18）
+  if (!el || v === undefined || v === null) return;
   el.value = v;
   el.dispatchEvent(new Event('input'));
 }
@@ -2652,17 +2649,25 @@ function ocrFill(map, meta) {
   // 前端兜底：拼接三区文本解析（姓名可能落在非 basic 区，如侧边栏/标题栏被划进 findings）
   const combined = [map.basic, map.findings, map.impression].filter(Boolean).join('\n');
   const p = parsePatientInfo(combined);
-  // 后端结构化 meta 更鲁棒（extract_meta_full 已跨区补抽），优先覆盖非空字段
+  // 后端结构化 meta 更鲁棒（extract_meta_full 已跨区补抽），优先覆盖非空字段。
+  // 2026-08-18 修复：applied_site/laterality 此前被丢弃，OCR 识别出的部位/侧别
+  // 不会进入质控（runQC 的 applied_site 恒空 → R6 登记部位不符无法基于 OCR 触发）。
   if (meta) {
     if (meta.patient)   p.patient   = meta.patient;
     if (meta.gender)    p.gender    = meta.gender;
     if (meta.age)       p.age       = meta.age;
     if (meta.modality)  p.modality  = meta.modality;
+    if (meta.applied_site) p.applied_site = meta.applied_site;
+    if (meta.laterality)   p.laterality   = meta.laterality;
   }
   setVal('mPatient', p.patient);
   setVal('mGender', p.gender);
   setVal('mAge', p.age);
   setVal('mModality', p.modality);
+  // 2026-08-18：无条件 setVal（空串清残留）——此前仅非空赋值，连续处理时
+  // 第二份未识别部位/侧别会残留第一份的值进质控（meta 恒含 applied_site/laterality）
+  setVal('mSite', p.applied_site || '');
+  setVal('mLaterality', p.laterality || '');
   if (map.findings) setVal('findingsText', map.findings.trim());
   if (map.impression) setVal('impressionText', map.impression.trim());
 }
@@ -2676,9 +2681,9 @@ async function ocrPipeline() {
         x: +b.x.toFixed(4), y: +b.y.toFixed(4), w: +b.w.toFixed(4), h: +b.h.toFixed(4)
       });
       const refresh = document.getElementById('ocrRefresh')?.checked;
-      const res = await fetch('/api/v1/screen/ocr', {
+      const res = await apiFetch('/api/v1/screen/ocr', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ regions, refresh })
+        body: JSON.stringify({ regions, refresh, dynamic: !!APP_SETTINGS.ocr_dynamic, dynamic_region: APP_SETTINGS.ocr_dynamic ? unionRegions(regions) : null })
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.message || 'OCR 失败');
@@ -2692,7 +2697,7 @@ async function ocrPipeline() {
       // 图片模式同样走后端结构化抽取，保证与屏幕模式一致的稳健回填
       let meta = null;
       try {
-        const mr = await fetch('/api/v1/ocr/meta', {
+        const mr = await apiFetch('/api/v1/ocr/meta', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ basic: map.basic || '', findings: map.findings || '', impression: map.impression || '' })
         });
@@ -2733,7 +2738,7 @@ async function ocrOneClick() {
     // 1) 读已保存框位；无则提示先去设置
     let regions = null;
     try {
-      const r = await fetch('/api/v1/screen/regions').then(x => x.json());
+      const r = await apiFetch('/api/v1/screen/regions').then(x => x.json());
       regions = (r && r.data && r.data.web_regions) || null;
     } catch (e) { regions = null; }
     if (!regions || !(regions.basic || regions.findings || regions.impression)) {
@@ -2755,7 +2760,7 @@ async function ocrOneClick() {
     const dynamicRegion = useDynamic ? unionRegions(regions) : null;
     let ocr;
     try {
-      ocr = await fetch('/api/v1/screen/ocr', {
+      ocr = await apiFetch('/api/v1/screen/ocr', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ regions, refresh: true, dynamic: useDynamic,
                                dynamic_region: dynamicRegion })
@@ -2789,6 +2794,10 @@ async function ocrOneClick() {
     }
     // 5) 收尾：非静默模式才把窗口弹回来展示结果；静默模式保持后台，仅 toast 提示
     if (!silent) _ocrShowApp();
+  } catch (e) {
+    // 未捕获异常兜底：窗口恢复显示，避免"窗口永久隐藏"（2026-08-18）
+    if (!silent) _ocrShowApp();
+    toast('一键 OCR 异常：' + ((e && e.message) || e), 'error');
   } finally {
     _ocrOneClickBusy = false;
   }
@@ -2876,10 +2885,12 @@ document.addEventListener('keydown', function(e) {
       return;
     }
   }
-  // Esc 为固定行为：先关 OCR 模态，否则在工作区清空录入
+  // Esc 为固定行为：先关 OCR 模态；工作区焦点在输入框内时不清空（防误触清空报告）
   if (e.key === 'Escape') {
-    if (document.getElementById('ocrModal').style.display === 'flex') closeOcrModal();
-    else if (document.getElementById('page-qc').classList.contains('active')) clearInput();
+    if (document.getElementById('ocrModal').style.display === 'flex') { closeOcrModal(); return; }
+    const t = e.target;
+    if (t && t.closest && t.closest('input,textarea,select')) return; // 编辑中 Esc（取消输入法/退出全屏）不清空
+    if (document.getElementById('page-qc').classList.contains('active')) clearInput();
   }
 });
 
@@ -2907,16 +2918,6 @@ function _renderShortcutRow(action) {
 }
 
 // ==================== 账号 / 授权（启动闸门） ====================
-function showGate(v) {
-  const g = document.getElementById('gate');
-  if (g) g.style.display = v ? 'flex' : 'none';
-}
-function gateShow(step) {
-  document.querySelectorAll('.gate-step').forEach(el => el.style.display = 'none');
-  const el = document.getElementById('gate-' + step);
-  if (el) el.style.display = 'block';
-}
-function setGateErr(id, msg) { const e = document.getElementById(id); if (e) e.textContent = msg || ''; }
 
 async function loadDisclaimer() {
   try {
@@ -3087,15 +3088,18 @@ async function bootstrapGate() {
     maybeShowOnboarding();
     return;
   }
-  // 已有登录态：跳过登录步骤直接进入
+  // 授权门校验优先于登录态快捷路径（2026-08-18 修复）：
+  // 此前『已有 token 直接放行』导致试用过期的登录用户永久绕过激活门，只剩顶部横幅，
+  // 与免责声明「试用期后需输入有效的激活码方可继续使用」矛盾。
+  showGate(true);
+  if (!status.disclaimer_accepted) { gateShow('disclaimer'); loadDisclaimer(); return; }
+  if (status.trial_state === 'expired' && !status.activated) { gateShow('activation'); fillMachineCode(); return; }
+  // 授权状态通过后，已登录用户快捷进入（免重复登录）
   if (AUTH.token && status.account_count > 0) {
     showGate(false); refreshUserUI(); applyRoleUI(); updateTrialBanner(status);
     maybeShowOnboarding();
     return;
   }
-  showGate(true);
-  if (!status.disclaimer_accepted) { gateShow('disclaimer'); loadDisclaimer(); return; }
-  if (status.trial_state === 'expired' && !status.activated) { gateShow('activation'); fillMachineCode(); return; }
   gateShow(status.account_count === 0 ? 'account' : 'login');
 }
 
