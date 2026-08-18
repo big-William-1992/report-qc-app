@@ -105,3 +105,25 @@ class TestSpaceTolerance:
         f = _run("检查所见：右肺上叶见磨 玻 离影。\n诊断印象：建议定期复查。\n")
         hits = [x for x in f if x.rule_id == "R19-HOMOPHONE" and "磨玻璃" in x.suggestion]
         assert hits, [x.message for x in f]
+
+    def test_r19_space_homophone(self):
+        # 带空格的错字『磨 玻 离』（OCR/录入带空格）应被归一化后识别为『磨玻璃』
+        f = _run("检查所见：右肺上叶见磨 玻 离影。\n诊断印象：建议定期复查。\n")
+        hits = [x for x in f if x.rule_id == "R19-HOMOPHONE" and "磨玻璃" in x.suggestion]
+        assert hits, [x.message for x in f]
+
+    def test_r19_autofix_span_maps_to_orig(self):
+        # R19 span 基于去空格/标点的 norm_text，auto_fix 必须还原到原文坐标，
+        # 否则『双肺 见膜玻璃』这类含空格报告自动修正会切错位损坏原文（2026-08-18 修复）
+        t = "检查所见：双肺 见膜玻璃样密度影，考虑间质性改变。\n诊断印象：间质性改变。"
+        f = _run(t)
+        r19 = [x for x in f if x.rule_id == "R19-HOMOPHONE" and "磨玻璃" in x.suggestion]
+        assert r19, [x.message for x in f]
+        fixed, n_fix, manual, fixes = RuleEngine().auto_fix(t, f)
+        assert n_fix == 1, (n_fix, fixes)
+        for fx in fixes:
+            assert t[fx["start"]:fx["end"]] == fx["wrong"], \
+                f"span 错位: 原文[{fx['start']}:{fx['end']}]={t[fx['start']:fx['end']]!r} != {fx['wrong']!r}"
+            assert fx["correct"] == "磨玻璃", fx
+        assert "磨玻璃" in fixed and "膜玻璃" not in fixed, fixed
+        assert "双肺 " in fixed, "空格应保留，未被替换破坏"

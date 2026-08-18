@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""上下文逻辑错误 + 同一句话逻辑错误 规则测试（R11 / R12 / R1 段落归属）。
+"""上下文逻辑错误 + 同一句话逻辑错误 规则测试（R17 / R12 / R1 段落归属）。
 
-R11：信息框 vs 描述框/结论框 跨框比对
-  - R11-SIDE  左右一致性（信息框侧别 vs 描述/结论提及方位）
-  - R11-ABNORMAL 描述有阳性征但结论称未见异常
+R11 已删除（2026-08-18）：性别维度并入 R1-GENDER，侧别/描述-结论矛盾并入
+R17-PERREGION；R15-SIDE（段内左右矛盾）因与 R2 重复也已删除（2026-08-18），
+左右矛盾统一由 R2（跨段）/ R17（逐部位）负责。本节用例按当前规则族验证
+「不再误报侧别/矛盾类」的防回归语义。
 R12：同一句话内自相矛盾（男女专属器官混用 / 称未见异常却描述阳性征）
 R1 ：性别-器官矛盾（标注段落来源：影像描述段/影像结论段）
 
@@ -67,27 +68,31 @@ class TestR1GenderSection(unittest.TestCase):
         self.assertTrue(any("影像描述段" in f.message for f in out))
 
 
-class TestR11Context(unittest.TestCase):
+class TestContextNoSideFalsePositive(unittest.TestCase):
+    """R11/R15-SIDE 删除后的防回归（2026-08-18）：信息框侧别 vs 报告侧别不再有
+    独立侧别规则；左右矛盾交由 R2-LATERALITY（跨段）/ R17-PERREGION（逐部位）。"""
+
     def test_side_only_contralateral_no_flag(self):
-        # 回归：信息框侧别为左，但报告只提右侧（本侧未描述）——
-        # 本侧可能正常未提及，属『未涉及』而非矛盾，不再误报 R11-SIDE。
+        # 信息框侧别为左，但报告只提右侧（本侧未描述）——
+        # 本侧可能正常未提及，属『未涉及』而非矛盾，不得误报侧别/逐部位矛盾。
         text = ("检查所见：\n右侧胸腔见少量积液。\n"
                 "诊断印象：\n右侧胸腔积液。\n")
         out = _run(text, {"laterality": "左"})
         ids = [f.rule_id for f in out]
-        self.assertNotIn("R11-SIDE", ids)
+        self.assertNotIn("R17-PERREGION", ids)
 
     def test_side_no_mismatch_when_consistent(self):
         text = ("检查所见：\n左侧胸腔见少量积液。\n"
                 "诊断印象：\n左侧胸腔积液。\n")
         out = _run(text, {"laterality": "左"})
-        self.assertNotIn("R11-SIDE", [f.rule_id for f in out])
+        ids = [f.rule_id for f in out]
+        self.assertNotIn("R17-PERREGION", ids)
 
     def test_abnormal_in_findings_normal_in_impression(self):
+        # R17 逐部位精确比对取代整段级 R11-ABNORMAL：按「右肺」同一部位判定描述阳性/结论正常矛盾
         text = ("检查所见：\n右肺上叶见一结节，大小约12mm。\n"
                 "诊断印象：\n未见异常。\n")
         out = _run(text, {})
-        # R17 逐部位精确比对取代整段级 R11-ABNORMAL：按「右肺」同一部位判定描述阳性/结论正常矛盾
         self.assertIn("R17-PERREGION", [f.rule_id for f in out])
 
 
@@ -115,10 +120,11 @@ class TestR17NegationFix(unittest.TestCase):
         self.assertIn("R17-PERREGION", [f.rule_id for f in out])
 
     def test_no_abnormal_flag_when_impression_positive(self):
+        # 描述阳性 + 结论同样阳性（考虑良性）→ 无矛盾，不得报 R17-PERREGION
         text = ("检查所见：\n右肺上叶见一结节。\n"
                 "诊断印象：\n右肺上叶结节，考虑良性。\n")
         out = _run(text, {})
-        self.assertNotIn("R11-ABNORMAL", [f.rule_id for f in out])
+        self.assertNotIn("R17-PERREGION", [f.rule_id for f in out])
 
 
 class TestR12Sentence(unittest.TestCase):
@@ -181,5 +187,88 @@ class TestFalsePositiveRegression(unittest.TestCase):
         self.assertNotIn("R5-CONSISTENCY", [f.rule_id for f in out])
 
 
+class TestReviewFixes20260818(unittest.TestCase):
+    """2026-08-18 系统性代码审查的引擎误报/漏检修复回归（R5/R6/R8/R14/R15/R17/R3/R10）。"""
+
+    def _ids(self, text, meta=None):
+        return [f.rule_id for f in _run(text, meta or {})]
+
+    def test_r5_bilateral_wording_no_false_positive(self):
+        # 印象段『两肺/双肾未见异常』属阴性一致结论，不应报 R5-CONSISTENCY
+        self.assertNotIn("R5-CONSISTENCY",
+                         self._ids("影像描述：右肺上叶见一结节。\n影像结论：两肺未见明显异常。"))
+        self.assertNotIn("R5-CONSISTENCY",
+                         self._ids("影像描述：右肾见囊肿。\n影像结论：双肾未见明显异常。"))
+
+    def test_r6_single_char_site_context(self):
+        # 申请胸部 vs 左肾结石 → 应报（单字键+侧别语境仍计入）
+        self.assertIn("R6-SITE", self._ids("检查所见：左肾见结石。\n诊断印象：左肾结石。",
+                                           {"applied_site": "胸部"}))
+        # 申请上腹部 + 正文偶发『未见脑转移』→ 不误报
+        self.assertNotIn("R6-SITE",
+                         self._ids("影像描述：肝左叶见占位，未见脑转移。\n影像结论：肝脏占位。",
+                                   {"applied_site": "上腹部"}))
+
+    def test_r8_yijian_improving_no_false_positive(self):
+        # 『病灶较前已见好转』是正确表达，不报 R8-TYPO（也不应进 auto_fix）
+        self.assertNotIn("R8-TYPO",
+                         self._ids("影像描述：病灶较前已见好转。\n影像结论：较前好转。"))
+
+    def test_r14_multi_site_count_conservative(self):
+        # 多部位分列计数（左肺3枚、右肺2枚）无总数 → R14-COUNT 保守不报
+        self.assertNotIn("R14-COUNT",
+                         self._ids("影像描述：左肺见3枚结节，右肺见2枚结节。\n影像结论：双肺多发结节。"))
+
+    def test_r15_contralateral_negative_control(self):
+        # 『病灶侧 + 对侧阴性对照』是标准写法，不误报矛盾（R15-SIDE 已删，防回归）
+        self.assertNotIn("R17-PERREGION",
+                         self._ids("影像描述：左肺见结节；右肺未见明显结节。\n影像结论：左肺结节。"))
+
+    def test_r17_comma_boundary(self):
+        # 『右肺结节，余肺未见异常』逗号后声明不贴给右肺 → 与结论正常构成真矛盾仍应报
+        self.assertIn("R17-PERREGION",
+                      self._ids("影像描述：右肺上叶见一结节，余肺未见异常。\n影像结论：胸部未见明显异常。"))
+
+    def test_r3_pelvis_no_birads_misconfig(self):
+        # 盆腔检查不再被误要求 PI-RADS
+        self.assertNotIn("R3-SCORE",
+                         self._ids("影像描述：子宫大小形态正常。\n影像结论：未见异常。",
+                                   {"applied_site": "盆腔"}))
+
+    def test_r10_clinical_conclusion_not_impression(self):
+        # 『临床初步结论』是正文词，不应被当作结论段标题 → 缺结论段仍应报模板缺失
+        self.assertIn("R10-TEMPLATE",
+                      self._ids("影像描述：右肺见结节。\n临床初步结论：结节待查。"))
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSidePhrasingNER(unittest.TestCase):
+    """NER 侧别/复合词修复回归（2026-08-18 第六轮 P0）：
+    『左侧X』措辞可识别（此前漏检）；复合词（右肺门/左肾上腺）不被短别名误切（此前 R5/R2 误报）。"""
+
+    def test_left_side_word_phrasing(self):
+        # 『左侧肾上腺』措辞：跨段左右矛盾应报 R2（此前『左+器官』遇"侧"字整体漏检）
+        out = _run("检查所见：左侧肾上腺见占位。\n诊断印象：右侧肾上腺见占位。", {})
+        self.assertIn("R2-LATERALITY", [f.rule_id for f in out])
+
+    def test_hilum_not_mistaken_for_lung(self):
+        # 『右肺门淋巴结增大』不得被 NER 误切为『右肺』→ R5 不误报（结论段肺门可被识别）
+        out = _run("检查所见：右肺门淋巴结增大。\n诊断印象：肺门淋巴结增大，建议随访。", {})
+        self.assertNotIn("R5-CONSISTENCY", [f.rule_id for f in out])
+        self.assertNotIn("R2-LATERALITY", [f.rule_id for f in out])
+
+    def test_adrenal_not_mistaken_for_kidney(self):
+        # 『左肾上腺/右肾上腺』按 adrenal 族报矛盾（此前误归肾族）
+        out = _run("检查所见：左肾上腺见占位。\n诊断印象：右肾上腺见占位。", {})
+        ids = [f.rule_id for f in out]
+        self.assertIn("R2-LATERALITY", ids)
+        # 不得同时按肾族重复报（描述段肾实体不应出现）
+        self.assertNotIn("R5-CONSISTENCY", ids)
+
+    def test_hilum_real_mismatch_still_reported(self):
+        # 真矛盾不因修复漏检：描述右肺门阳性 + 结论整体正常 → R17 仍报
+        out = _run("检查所见：右肺门淋巴结增大。\n诊断印象：胸部未见明显异常。", {})
+        self.assertIn("R17-PERREGION", [f.rule_id for f in out])

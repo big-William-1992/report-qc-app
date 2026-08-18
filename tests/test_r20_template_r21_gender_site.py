@@ -50,10 +50,17 @@ def test_r20_head_ct():
 
 
 # ---------- R21 性别-部位联动 ----------
-def test_r21_male_breast():
+def test_r21_male_breast_mammography():
+    # 2026-08-18 语义更新：乳腺检查是否判『与男性性别不符』取决于方式——
+    # 钼靶/乳腺X线报（男性常规不做钼靶）；乳腺超声不报（男性乳房发育是合理适应证）。
     report = "影像描述：双侧乳腺腺体致密。\n影像诊断：乳腺未见异常。"
-    hits = _find("R21-GENDER-SITE", report, {"applied_site": "乳腺", "gender": "男"})
-    assert hits, "男性做乳腺检查应报检查部位与性别不符"
+    hits = _find("R21-GENDER-SITE", report, {"applied_site": "乳腺", "modality": "钼靶", "gender": "男"})
+    assert hits, "男性做钼靶应报检查部位与性别不符"
+
+def test_r21_male_breast_ultrasound_ok():
+    report = "影像描述：双乳腺体组织未见异常。\n影像诊断：未见异常。"
+    hits = _find("R21-GENDER-SITE", report, {"applied_site": "乳腺", "modality": "超声", "gender": "男"})
+    assert not hits, "男性乳腺超声（乳房发育）不应报"
 
 
 def test_r21_female_prostate():

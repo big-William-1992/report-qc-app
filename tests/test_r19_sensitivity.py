@@ -73,3 +73,37 @@ def test_sensitivity_default_medium():
     # medium 应检出近音（非形近）
     hits = _r19("影像描述：右肺上叶见磨玻离影。\n影像诊断：磨玻离结节。")
     assert hits
+
+
+class TestMediumTierNearPhonetic:
+    """R19 档位语义回归（2026-08-18 修复）：
+    medium 档 3+ 字片段可检近音（此前近音相似度达不到 0.98 阈值，medium 实际=同音）；
+    2 字片段保守仅同音（防『双肺→上肺』类高频词近音误报）。"""
+
+    def test_medium_3plus_near_phonetic(self):
+        # 4 字近音（拼音编辑距离 1）：medium 档应命中
+        from highfreq_lexicon import segment_candidates
+        hit, cand = segment_candidates("膜玻璃样", "medium")
+        assert hit, "medium 档 3+ 字近音应命中"
+        assert any(k == "near" for _, _, _, k in cand), [c[:3] for c in cand]
+
+    def test_medium_2char_exact_only(self):
+        # 2 字片段：仅同音（『双肺→上肺』近音不得报，防高频词误报）
+        from highfreq_lexicon import segment_candidates
+        hit, cand = segment_candidates("双肺", "medium")
+        assert not hit, "2 字近音应被 medium 过滤"
+        # 2 字同音错字仍报（『占为→占位』）
+        hit2, cand2 = segment_candidates("占为", "medium")
+        assert hit2 and any(k == "exact" for _, _, _, k in cand2)
+
+    def test_autofix_exact_preferred_over_near(self):
+        # 滑窗 exact 优先（2026-08-18）：『膜玻璃样密度影』自动修正应改『磨玻璃』（3字窗同音）
+        # 而非 4 字窗近音『磨玻璃影』
+        t = "检查所见：双肺 见膜玻璃样密度影，考虑间质性改变。\n诊断印象：间质性改变。"
+        f = RuleEngine().run(t, {})
+        r19 = [x for x in f if x.rule_id == "R19-HOMOPHONE" and "磨玻璃" in x.suggestion]
+        assert r19, [x.message for x in f]
+        fixed, n_fix, manual, fixes = RuleEngine().auto_fix(t, f)
+        assert n_fix == 1, (n_fix, fixes)
+        for fx in fixes:
+            assert fx["correct"] == "磨玻璃", fx

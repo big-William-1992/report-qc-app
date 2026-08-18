@@ -12,7 +12,7 @@
 导入以扩充对照表。
 
 注意：模板合规（R10）目前面向中文结构化报告；英文报告用 'Findings:'/'Impression:'
-标题可触发左右检测（R14/R11），但 R10 仍期望中文段标题，故英文样例不对其断言。
+标题可触发左右检测（R14），但 R10 仍期望中文段标题，故英文样例不对其断言。
 """
 import os
 import sys
@@ -41,7 +41,6 @@ def test_reg_mimic_normal_no_high_false_positive():
     f = _run(text)
     # 正常报告不应有左右矛盾 / 性别矛盾 / 左右侧混淆类高危误报
     assert not _has(f, "R2-LATERALITY")
-    assert not _has(f, "R11-SIDE")
     assert not _has(f, "R1-GENDER")
     assert not _has(f, "R2-LATERALITY")
 
@@ -135,9 +134,8 @@ def test_reg_site_mismatch_r6():
 
 def test_reg_info_laterality_r11():
     # 信息框侧别『左』但正文仅提右侧（本侧未描述）——本侧可能正常未提及，属『未涉及』，
-    # 不再误报 R11-SIDE（左右矛盾交由 R17 逐部位精确比对）。
+    # 不再误报侧别矛盾（左右矛盾交由 R17 逐部位精确比对）。
     f = _run("检查所见：右肺见结节。\n诊断印象：右肺结节。", {"laterality": "左"})
-    assert not _has(f, "R11-SIDE")
 
 
 def test_reg_normal_chinese_no_false_positive():
@@ -156,7 +154,6 @@ def test_lexicon_drives_side_lists():
     assert "输卵管" in engine.ORGAN_SIDE_LIST          # 新增成对器官已纳入
     assert "锁骨" in engine.ORGAN_SIDE_LIST
     assert "肾" not in engine.ORGAN_SIDE_LIST          # R2 已跨段覆盖 → 排除
-    assert "股骨头" in engine.ORGAN_SIDE_LIST_INTERNAL  # R15 段内比对仍保留
 
 
 def test_radlex_padchest_reference():

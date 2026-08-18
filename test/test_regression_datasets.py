@@ -69,7 +69,7 @@ def test_dataset_normal_no_high_false_positive():
     for key, text in _DATASET_NORMAL.items():
         f = _run(text)
         assert not _has(f, "R2-LATERALITY"), f"{key}: 正常报告误报 R2-LATERALITY"
-        assert not _has(f, "R11-SIDE"), f"{key}: 正常报告误报 R11-SIDE"
+        assert not _has(f, "R15-SIDE"), f"{key}: 正常报告误报 R15-SIDE"
         assert not _has(f, "R1-GENDER"), f"{key}: 正常报告误报 R1-GENDER"
         assert not _has(f, "R2-LATERALITY"), f"{key}: 正常报告误报 R2-LATERALITY"
 
