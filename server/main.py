@@ -67,7 +67,8 @@ if _SERVER not in sys.path:
 # db 模块不生效 → 此处显式 set_database_override 强制切换（幂等，不依赖 import 顺序）。
 _qc_db_override = os.environ.get("QC_DB_OVERRIDE", "").strip()
 if _qc_db_override:
-    _qc_db_url = "sqlite:///" + os.path.abspath(_qc_db_override)
+    # 2026-08-18：Windows 路径含反斜杠，SQLAlchemy URL 需正斜杠（C:/...）
+    _qc_db_url = "sqlite:///" + os.path.abspath(_qc_db_override).replace("\\", "/")
     os.environ["DATABASE_URL"] = _qc_db_url
     try:
         import server.db as _sdb
