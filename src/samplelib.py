@@ -13,6 +13,11 @@ import shutil
 import re
 import zipfile
 import io
+import threading
+
+# 导入去重串行锁（2026-08-18 M1）：_import_rows 的「读 seen → 逐条 INSERT」跨事务，
+# 并发导入会重复插入；进程内锁串行化。配合 WAL + busy_timeout 消除 database is locked。
+_IMPORT_LOCK = threading.Lock()
 
 
 def _appdata_db() -> str:
@@ -164,6 +169,12 @@ def init_db(path: str = None) -> None:
     path = path or db_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with sqlite3.connect(path) as conn:
+        # 2026-08-18 M1：WAL 并发读不阻塞写 + 30s 写锁等待，消除多线程写 database is locked
+        try:
+            conn.execute("PRAGMA journal_mode=WAL").fetchall()
+            conn.execute("PRAGMA busy_timeout=30000")
+        except sqlite3.OperationalError:
+            pass
         conn.execute(_SAMPLES_TABLE_SQL)
         # 向后兼容：旧库无 laterality / user_id / dept_id 列时追加（SQLite 不支持 ADD COLUMN IF NOT EXISTS）
         for _col, _decl in (("laterality", "TEXT"), ("user_id", "TEXT"), ("dept_id", "TEXT")):
@@ -830,36 +841,38 @@ def _pdf_font():
 
 
 def _import_rows(rows: list, target: str = None):
-    """核心：把 dict 列表去重插入 target 库。去重键 (ts, report_text)。返回 (inserted, skipped)。"""
+    """核心：把 dict 列表去重插入 target 库。去重键 (ts, report_text)。返回 (inserted, skipped)。
+    2026-08-18 M1：进程内锁串行化「读 seen → 逐条 INSERT」跨事务窗口，防并发导入重复样本。"""
     target = target or db_path()
     init_db(target)
-    inserted = skipped = 0
-    with sqlite3.connect(target) as conn:
-        conn.row_factory = sqlite3.Row
-        seen = {(r["ts"], r["report_text"])
-                for r in conn.execute("SELECT ts, report_text FROM samples")}
-        for r in rows:
-            key = (r.get("ts", "") or "", r.get("report_text", "") or "")
-            if key in seen:
-                skipped += 1
-                continue
-            conn.execute(
-                """INSERT INTO samples
-                   (ts, patient, gender, age, modality, applied_site, laterality,
-                    user_id, report_text, findings_json, scores_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    key[0], r.get("patient", "") or "",
-                    r.get("gender", "") or "", str(r.get("age", "") or ""),
-                    r.get("modality", "") or "", r.get("applied_site", "") or "",
-                    r.get("laterality", "") or "", (r.get("user_id") or "").strip(),
-                    key[1], r.get("findings_json", "") or "[]",
-                    r.get("scores_json", "") or "[]",
-                ),
-            )
-            seen.add(key)
-            inserted += 1
-        conn.commit()
+    with _IMPORT_LOCK:
+        inserted = skipped = 0
+        with sqlite3.connect(target) as conn:
+            conn.row_factory = sqlite3.Row
+            seen = {(r["ts"], r["report_text"])
+                    for r in conn.execute("SELECT ts, report_text FROM samples")}
+            for r in rows:
+                key = (r.get("ts", "") or "", r.get("report_text", "") or "")
+                if key in seen:
+                    skipped += 1
+                    continue
+                conn.execute(
+                    """INSERT INTO samples
+                       (ts, patient, gender, age, modality, applied_site, laterality,
+                        user_id, report_text, findings_json, scores_json)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        key[0], r.get("patient", "") or "",
+                        r.get("gender", "") or "", str(r.get("age", "") or ""),
+                        r.get("modality", "") or "", r.get("applied_site", "") or "",
+                        r.get("laterality", "") or "", (r.get("user_id") or "").strip(),
+                        key[1], r.get("findings_json", "") or "[]",
+                        r.get("scores_json", "") or "[]",
+                    ),
+                )
+                seen.add(key)
+                inserted += 1
+            conn.commit()
     return inserted, skipped
 
 

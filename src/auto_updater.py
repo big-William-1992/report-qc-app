@@ -30,6 +30,7 @@ import tarfile
 import subprocess
 import threading
 import hashlib
+import base64
 import urllib.request
 
 APP_NAME = "星衍放射质控软件"
@@ -42,6 +43,18 @@ TARBALL_URL = "https://api.github.com/repos/big-William-1992/report-qc-app/tarba
 PORTABLE_ZIP_URL = ("https://github.com/big-William-1992/report-qc-app/"
                     "releases/download/latest/report-qc-portable.zip")
 RELEASE_PAGE = "https://github.com/big-William-1992/report-qc-app/releases/latest"
+
+# 更新包最大字节数（防 tar/zip 炸弹占满磁盘，2026-08-18 H4）
+_MAX_ARCHIVE_BYTES = 800 * 1024 * 1024
+
+# 更新包验签公钥（Ed25519，2026-08-18 H4）：发布时用私钥对归档 SHA-256 摘要签名
+# （base64 写入 <下载URL>.sig），客户端验签通过才允许解包执行。
+# 私钥存开发机用户数据目录 ~/.medical_report_qc/update_signing_key.pem，绝不进仓库/分发物。
+# 未附带 .sig 时宽容跳过（GitHub 动态产物如源码 tarball 无法附带）。
+_UPDATE_PUBLIC_KEY_PEM = b"""-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAtOAuNx0gjxomw2d7huXN/4eFOS9k18XDo2P8dZpoxjM=
+-----END PUBLIC KEY-----
+"""
 
 # 应用目录中永不触碰的项（用户私有 / 运行时 / 密钥）
 # macOS 安装器会删 assets 后再用 tarball 的 assets 覆盖（tarball 含此目录）；
@@ -96,6 +109,10 @@ TMP = os.path.join(APP_DIR, "update", "_extract")
 shutil.rmtree(TMP, ignore_errors=True)
 os.makedirs(TMP, exist_ok=True)
 with tarfile.open(TAR) as tf:
+    # 解包总大小上限（2026-08-18 H4：防 tar 炸弹占满磁盘）
+    _total = sum(m.size for m in tf.getmembers() if m.isfile())
+    if _total > 800 * 1024 * 1024:
+        raise RuntimeError("更新包过大，已拒绝解包")
     # filter="data" 需 Python 3.12+；macOS 系统 Python（3.9）不支持会 TypeError。
     # 低版本退化为手动路径穿越防护（2026-08-18 加固）：拒绝绝对路径与 .. 逃逸。
     try:
@@ -128,36 +145,69 @@ if os.path.isdir(logs_src):
 rc_src = os.path.join(APP_DIR, "assets", "rules_config.json")
 if os.path.isfile(rc_src):
     shutil.copy(rc_src, os.path.join(BAK, "rules_config.json"))
+# 备份 RIS 直连配置（含医院库连接信息；2026-08-18 M5：安装器整删 assets，此前会丢失）
+rc2_src = os.path.join(APP_DIR, "assets", "ris_config.json")
+if os.path.isfile(rc2_src):
+    shutil.copy(rc2_src, os.path.join(BAK, "ris_config.json"))
 # 备份本地 OCR 模型（可能被用户替换为医院自训模型，或新 tarball 漏带时兜底）
 ocr_src = os.path.join(APP_DIR, "assets", "ocr_models")
 if os.path.isdir(ocr_src):
     shutil.copytree(ocr_src, os.path.join(BAK, "ocr_models"))
 
-# 删除旧文件（保留 .git/.workbuddy/keys/update）
+# 完整备份旧应用树（2026-08-18 M5 回滚：删除/写入任一步失败即从 _old 恢复，
+# 避免更新中断后应用不可用；排除 update 防递归）
+OLD = os.path.join(APP_DIR, "update", "_old")
+shutil.rmtree(OLD, ignore_errors=True)
+os.makedirs(OLD, exist_ok=True)
 EXCLUDE = {".git", ".workbuddy", "keys", "update"}
 for name in os.listdir(APP_DIR):
     if name in EXCLUDE:
         continue
-    p = os.path.join(APP_DIR, name)
+    _s = os.path.join(APP_DIR, name)
+    _d = os.path.join(OLD, name)
     try:
-        if os.path.isdir(p) and not os.path.islink(p):
-            shutil.rmtree(p)
+        if os.path.isdir(_s) and not os.path.islink(_s):
+            shutil.copytree(_s, _d)
         else:
-            os.remove(p)
+            shutil.copy2(_s, _d)
     except Exception:
         pass
 
-# 写入新文件
-for name in os.listdir(SRC):
-    s = os.path.join(SRC, name)
-    d = os.path.join(APP_DIR, name)
-    try:
-        if os.path.isdir(s):
-            shutil.copytree(s, d)
-        else:
-            shutil.copy2(s, d)
-    except Exception:
-        pass
+# 删除旧文件 → 写入新文件；异常则回滚并终止安装
+try:
+    for name in os.listdir(APP_DIR):
+        if name in EXCLUDE:
+            continue
+        p = os.path.join(APP_DIR, name)
+        try:
+            if os.path.isdir(p) and not os.path.islink(p):
+                shutil.rmtree(p)
+            else:
+                os.remove(p)
+        except Exception:
+            pass
+    for name in os.listdir(SRC):
+        s = os.path.join(SRC, name)
+        d = os.path.join(APP_DIR, name)
+        try:
+            if os.path.isdir(s):
+                shutil.copytree(s, d)
+            else:
+                shutil.copy2(s, d)
+        except Exception:
+            pass
+except Exception:
+    for name in os.listdir(OLD):
+        s = os.path.join(OLD, name)
+        d = os.path.join(APP_DIR, name)
+        try:
+            if os.path.isdir(s):
+                shutil.copytree(s, d, dirs_exist_ok=True)
+            else:
+                shutil.copy2(s, d)
+        except Exception:
+            pass
+    raise
 
 # 恢复用户私有数据
 lic_bak = os.path.join(BAK, "license.dat")
@@ -180,6 +230,11 @@ rc_bak = os.path.join(BAK, "rules_config.json")
 if os.path.isfile(rc_bak):
     os.makedirs(os.path.join(APP_DIR, "assets"), exist_ok=True)
     shutil.copy(rc_bak, os.path.join(APP_DIR, "assets", "rules_config.json"))
+# 恢复 RIS 直连配置（2026-08-18 M5）
+rc2_bak = os.path.join(BAK, "ris_config.json")
+if os.path.isfile(rc2_bak):
+    os.makedirs(os.path.join(APP_DIR, "assets"), exist_ok=True)
+    shutil.copy(rc2_bak, os.path.join(APP_DIR, "assets", "ris_config.json"))
 # 恢复 OCR 模型：仅当新版 tarball 未携带该目录时补齐（新版有则跟随新模型，不覆盖）
 ocr_bak = os.path.join(BAK, "ocr_models")
 ocr_dst = os.path.join(APP_DIR, "assets", "ocr_models")
@@ -216,6 +271,7 @@ if os.environ.get("AU_NO_LAUNCH") != "1":
 # 清理
 shutil.rmtree(TMP, ignore_errors=True)
 shutil.rmtree(BAK, ignore_errors=True)
+shutil.rmtree(OLD, ignore_errors=True)
 try:
     os.remove(TAR)
 except Exception:
@@ -385,7 +441,24 @@ def download(dest, progress_cb=None, timeout=180):
                 done += len(chunk)
                 if progress_cb:
                     progress_cb(done, total)
+    # 2026-08-18 H4：下载完整性 + 大小上限
+    if total and done != total:
+        try:
+            os.remove(dest)
+        except Exception:
+            pass
+        raise RuntimeError("更新包下载不完整（大小不符），已删除，请重试")
+    try:
+        if os.path.getsize(dest) > _MAX_ARCHIVE_BYTES:
+            try:
+                os.remove(dest)
+            except Exception:
+                pass
+            raise RuntimeError("更新包过大（超过 800MB），已拒绝")
+    except OSError:
+        pass
     _verify_download_sha256(dest)
+    _verify_update_signature(dest)
     return dest
 
 
@@ -413,6 +486,36 @@ def _verify_download_sha256(dest):
         except Exception:
             pass
         raise RuntimeError("更新包校验失败（sha256 不匹配），已删除，请勿安装被篡改的文件")
+
+
+def _verify_update_signature(dest):
+    """若发布物附带 <下载URL>.sig（归档 SHA-256 摘要的 Ed25519 签名，base64）
+    则用内置公钥验签；不匹配抛 RuntimeError 并删除（2026-08-18 H4，防供应链投毒）。
+    无 .sig 文件时跳过（宽容：GitHub 动态产物如源码 tarball 无法附带签名）。"""
+    sig_url = _download_url() + ".sig"
+    try:
+        req = urllib.request.Request(sig_url, headers={"User-Agent": "xingyan-qc-update"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            sig_b64 = r.read(4096).decode("utf-8", "ignore").strip()
+    except Exception:
+        return
+    if not sig_b64:
+        return
+    h = hashlib.sha256()
+    with open(dest, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    try:
+        from cryptography.hazmat.primitives import serialization
+        pub = serialization.load_pem_public_key(_UPDATE_PUBLIC_KEY_PEM)
+        sig = base64.b64decode(sig_b64)
+        pub.verify(sig, h.digest())
+    except Exception:
+        try:
+            os.remove(dest)
+        except Exception:
+            pass
+        raise RuntimeError("更新包签名校验失败，已删除，请勿安装来源不明的文件")
 
 
 def make_installer(app_dir_path, archive_path):

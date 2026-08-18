@@ -398,7 +398,15 @@ docs/
 
 ## 十二、版本与更新
 
-- **v4.3.2**（当前）：2026-08-18 系统性代码审查修复（代码 APP_VERSION 仍为 4.3）——
+- **v4.3.3**（当前，2026-08-18 第三轮审查修复）：
+  - **数据安全（P0）**：① 冻结打包路径统一——`server/db.py` 不再落 `sys._MEIPASS`（临时目录/升级覆盖/只读 Program Files 均会导致账号库丢失），账号表与样本表同落用户可写数据目录 `MedicalReportQC/qc.db`（与 samplelib 同口径）；② R8 危险错字映射移除「有肺→右肺/直接→直径/简易→建议/结界→结节/肋膜→胸膜」+ `learn_typo` 高频白名单校验 + `auto_fix` 对常用词 wrong 只提示不替换（**实证「有肺气肿」不再被篡改为「右肺气肿」**）。
+  - **检出率（P0）**：NER 与 `_split_for_r5` 段落标题抽共享常量并补「影像所见/超声所见/CT所见/MRI所见/MR所见」——「影像所见」开头的报告 R5/R2/R12 不再静默漏检（**实证 0→1 条，与「检查所见」一致**）。
+  - **安全（P1）**：QC_API_SECRET 缺失时不再回退硬编码默认密钥（首启随机生成并持久化到用户数据目录，多进程共享）；`qc/check`/`qc/batch` 加 `require_emp_local` + 内存限流（默认 60 次/分/IP，`QC_RATE_PER_MIN` 可调）；全站响应加 CSP/nosniff/X-Frame-Options 安全头；RIS 查询强制只读校验（仅 SELECT/WITH、禁分号与 DDL/DML，防任意 SQL 执行/拖库）；RIS 配置落用户目录 + 0600；发卡工具 spec 不再打包私钥（只带公钥）+ 清理 dist 内已泄露私钥。
+  - **更新链路（P1）**：下载校验 `done==total` + 800MB 大小上限；发布物附 `.sig`（归档 SHA-256 的 Ed25519 签名）时强制验签（公钥内嵌，私钥存开发机 `~/.medical_report_qc/update_signing_key.pem`，不入库）；macOS 安装器解包总大小上限 + 完整备份旧树 + 失败回滚 + 备份恢复 `ris_config.json`。
+  - **数据层/前端（P2）**：samples 启用 WAL + busy_timeout 30s + 导入进程内锁（消并发 duplicate / database is locked）；规则 PUT `/qc/rules` 与 `/qc/rules/config` 改读-合并-写回（typos 增量合并，不再丢 enable_r19 等键）+ `save_rules_config` 原子写；`runQC` 请求代次保护（先发慢响应不再覆盖后发新结果）+ keydown 过滤 `e.repeat`；`splitReportSections` 支持诊断在前的反向切分；进程级引擎单例（批量 50 条不再 50 次配置加载）；PBKDF2 100k→600k（版本化哈希+登录自动升级）；session.json 迁用户目录；Setting 唯一约束改 `(key, user_id)`；`first_run` 试用期 HMAC 防篡改（改日期/损坏即 expired，不再白送试用期）；样本表 ts 补转义。
+  - 测试：全量 **251 passed + 7 skipped + 9 subtests** + Playwright E2E 2 passed。
+
+- **v4.3.2**：2026-08-18 系统性代码审查修复——
   - **安全**：QC_API_SECRET 启动强制校验（缺失时告警）；远程访问仅接受 Bearer token（X-Emp-Id 头仅限本机，杜绝伪造冒充）；CORS 收窄到实际服务端口；样本导出/导入路径限定（防任意文件读写）；规则库写接口升级 require_admin；登录失败限速（5 次锁 5 分钟）+ 恒定时间密码比较。
   - **引擎准确性**：R17 部位断言窗口加入逗号截断；R15 对侧阴性对照不再误报；R5 识别「两肺/双肾」双侧措辞 + 阳性标记否定过滤；R14 多部位计数保守不报；R6 单字部位键按语境识别（「未见脑转移」不再误判）；R8 移除「已见→未见」误报映射；盆腔不再误配 PI-RADS；R10 结论段按行首标题判定。
   - **工程**：修复 R19 形近字 medium 档误报（改 `== "high"`，2 用例转绿）；解决 test/ tests/ 双目录同名模块冲突（默认 pytest 全绿 228 passed）；CI 新增 pytest 测试闸；JSON 持久化加锁+原子写；SQLite busy_timeout 提至 30s；RIS 轮询按 interval_min 调度（消除 30 倍无谓查询）+ 新增 RIS 配置持久化接口（SPA 可用）；qc/rules 清单对齐合并后 rule_id；前端 escapeHtml 补单引号（修存储型 XSS）、趋势图契约修复、apiFetch 超时+401 全局处理；自动更新 tar 解包路径穿越防护。

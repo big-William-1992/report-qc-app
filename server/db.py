@@ -13,13 +13,25 @@ import hashlib
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-# 项目根：默认库落在 <root>/assets/qc.db。
-# 冻结（PyInstaller）后 __file__ 指向 PYZ 合成路径，不能用其回溯，改用 exe 所在目录。
+# 项目根：默认库落在 <root>/assets/qc.db（源码运行）。
+# 冻结（PyInstaller）后不能回溯 __file__（PYZ 合成路径），也不能用 sys._MEIPASS
+# （单文件模式是退出即删的临时解压目录，落那里账号/科室/权限每次重启全丢，
+# 单目录模式会被整体升级覆盖、Program Files 只读则启动失败）。
+# 2026-08-18 H2 修复：冻结模式统一落到用户可写数据目录
+# <APPDATA|~/Library/Application Support|~>/MedicalReportQC/qc.db，
+# 目录口径与 src/samplelib._appdata_db() 严格一致，保证账号表与样本表同库同文件。
 if getattr(sys, "frozen", False):
-    _PROJECT_ROOT = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
+    import platform as _plt
+    if _plt.system() == "Windows":
+        _base = os.path.expandvars("%APPDATA%")
+    elif _plt.system() == "Darwin":
+        _base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        _base = os.path.expanduser("~")
+    _PROJECT_ROOT = os.path.join(_base, "MedicalReportQC")
 else:
     _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DEFAULT_DB = "sqlite:///" + os.path.join(_PROJECT_ROOT, "assets", "qc.db")
+_DEFAULT_DB = "sqlite:///" + os.path.join(_PROJECT_ROOT, "qc.db")
 
 DATABASE_URL = os.environ.get("DATABASE_URL", _DEFAULT_DB)
 
@@ -71,6 +83,30 @@ def init_db() -> None:
             os.makedirs(_dir, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     _migrate_queue_hash(engine)
+    _migrate_settings_uk(engine)
+
+
+def _migrate_settings_uk(eng) -> None:
+    """幂等迁移（2026-08-18 D13）：settings.key 单列唯一 → (key, user_id) 复合唯一。
+
+    旧模型 key 声明 unique=True，SQLite 生成 sqlite_autoindex_settings_1，
+    会阻止同一 key 的「全局 + 用户级」两条记录并存。create_all 不会改已存在表，
+    这里手工 DROP 旧自动索引并重建复合唯一索引。"""
+    try:
+        with eng.connect() as c:
+            idx = [r[1] for r in c.execute("PRAGMA index_list(settings)").fetchall()]
+            for _name in idx:
+                if _name.startswith("sqlite_autoindex_settings"):
+                    cols = [r[2] for r in c.execute(
+                        "PRAGMA index_info('%s')" % _name).fetchall()]
+                    if cols == ["key"]:
+                        c.execute("DROP INDEX %s" % _name)
+                        c.execute("COMMIT")
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_settings_key_user "
+                      "ON settings(key, user_id)")
+            c.execute("COMMIT")
+    except Exception:
+        pass
 
 
 def _migrate_queue_hash(eng) -> None:

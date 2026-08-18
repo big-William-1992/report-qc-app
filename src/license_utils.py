@@ -6,6 +6,7 @@ license_utils.py
 
 import os
 import json
+import hmac
 import hashlib
 import base64
 import datetime
@@ -68,10 +69,13 @@ def _read_license():
 
 
 def _write_license(data):
-    """写许可证文件（0600：内含激活码，防科室多用户主机其他账号读取，2026-08-18）。"""
+    """写许可证文件（0600：内含激活码，防科室多用户主机其他账号读取，2026-08-18）。
+    2026-08-18 M7：临时文件 + os.replace 原子写，防写一半崩溃损坏 license。"""
     os.makedirs(os.path.dirname(_LICENSE_FILE), exist_ok=True)
-    with open(_LICENSE_FILE, "w", encoding="utf-8") as f:
+    tmp = _LICENSE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, _LICENSE_FILE)
     try:
         os.chmod(_LICENSE_FILE, 0o600)
     except Exception:
@@ -141,6 +145,20 @@ def show_disclaimer(parent):
 
 # ---------- 试用期检查 ----------
 
+# 2026-08-18 M7：first_run 与机器硬件标识绑定做 HMAC 防篡改。
+# key 派生自 _stable_hw_id（重装系统/换网卡即失效，回拨/手改日期后签名不匹配 → 视为过期）。
+def _trial_hmac_key() -> bytes:
+    return hashlib.sha256((_stable_hw_id() + "::xingyan-trial-v1").encode("utf-8")).digest()
+
+
+def _trial_sign(date_str: str) -> str:
+    return hmac.new(_trial_hmac_key(), date_str.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _trial_verify(date_str: str, sig: str) -> bool:
+    return hmac.compare_digest(_trial_sign(date_str), (sig or "").lower())
+
+
 def _activated_valid(lic: dict) -> bool:
     """激活状态真实性校验（2026-08-18 防绕过）：
     ① 激活时绑定的机器指纹必须与当前机器一致（防复制 license.dat 一码多机）；
@@ -164,21 +182,40 @@ def check_trial():
     if _activated_valid(lic):
         return ("activated", "")
 
-    first_run = lic.get("first_run")
-    if not first_run:
-        # 首次运行，记录日期
+    first_run_raw = lic.get("first_run")
+    if not first_run_raw:
+        # 首次运行，记录日期（带 HMAC 防篡改）
         today = datetime.date.today().isoformat()
-        lic["first_run"] = today
+        lic["first_run"] = {"date": today, "sig": _trial_sign(today)}
         _write_license(lic)
         return ("trial", TRIAL_DAYS)
+
+    # 2026-08-18 M7 防绕过：新格式 {date,sig} 验签；旧格式（纯日期串）校验合法性后迁移补签。
+    # 签名不匹配 / 日期非法 / 起点在未来 / 一年前开始却仍在试用 → 一律视为篡改，拒绝续期。
+    if isinstance(first_run_raw, dict):
+        first_run = first_run_raw.get("date", "")
+        if not first_run or not _trial_verify(first_run, first_run_raw.get("sig", "")):
+            return ("expired", 0)
+    else:
+        first_run = first_run_raw
+        try:
+            first_d = datetime.date.fromisoformat(first_run)
+        except Exception:
+            return ("expired", 0)  # 损坏：不再静默置今天白送试用
+        _today = datetime.date.today()
+        if first_d > _today or (_today - first_d).days > 366:
+            return ("expired", 0)  # 回拨痕迹：未来起点 或 一年前开始却仍在试用期
+        lic["first_run"] = {"date": first_run, "sig": _trial_sign(first_run)}
+        _write_license(lic)
 
     # 计算已用天数
     try:
         first = datetime.date.fromisoformat(first_run)
     except Exception:
-        first = datetime.date.today()
-    delta = datetime.date.today() - first
-    used = delta.days
+        return ("expired", 0)
+    used = (datetime.date.today() - first).days
+    if used < 0:
+        return ("expired", 0)  # 时钟回拨保护：试用起点在未来
 
     if used >= TRIAL_DAYS:
         return ("expired", 0)

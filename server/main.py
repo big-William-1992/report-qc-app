@@ -24,6 +24,7 @@ import hmac
 import hashlib
 import base64
 import json
+import secrets
 import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -98,14 +99,41 @@ from server.core import (  # 共享层（2026-08-18 拆分）：日志/响应封
 )
 
 # ----------------------------- 鉴权（stdlib HMAC 签名 token） -----------------------------
+def _load_or_create_secret() -> str:
+    """QC_API_SECRET 未设置时：从用户数据目录读持久化随机密钥；无则生成并 0600 保存。
+
+    2026-08-18 H1b 修复：此前缺失时回退硬编码 'change-me-in-prod'，该默认值随
+    软件分发即任何拿到代码者都能离线伪造任意工号 token。改为首启生成随机密钥
+    （多 worker/多进程共享同一文件，token 验签一致），不拒绝启动（保本地双击即用）。
+    """
+    path = os.path.join(_appdata_dir(), "qc_secret.key")
+    try:
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as fh:
+                v = fh.read().strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    v = secrets.token_hex(32)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(v)
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+    return v
+
+
 QC_API_SECRET = os.environ.get("QC_API_SECRET", "").strip()
 if QC_API_SECRET:
     SECRET = QC_API_SECRET
 else:
     # 本地演示/桌面单机默认值；公网/内网多用户部署必须设置强随机密钥。
-    SECRET = "change-me-in-prod"
-    print("\n[SECURITY] 警告: 未设置 QC_API_SECRET，使用内置默认密钥。"
-          "公网/内网多用户部署请 export QC_API_SECRET=<强随机串>。\n", file=sys.stderr)
+    SECRET = _load_or_create_secret()
+    print("\n[SECURITY] 警告: 未设置 QC_API_SECRET，已生成本机随机密钥并持久化到用户数据目录。"
+          "公网/内网多用户部署请 export QC_API_SECRET=<强随机串> 保持各节点一致。\n", file=sys.stderr)
 TOKEN_TTL = int(os.environ.get("QC_API_TTL", "86400"))  # 默认 24h
 
 
@@ -219,6 +247,23 @@ def require_license_active():
 # ----------------------------- 应用 -----------------------------
 app = FastAPI(title="星衍放射质控 API", version=APP_VERSION)
 
+# 安全响应头（2026-08-18 H3 服务端修复）：CSP / nosniff / 防 iframe 嵌入。
+# script-src 含 'unsafe-inline' 是因 app.js 动态渲染的 10 处内联 onclick 事件处理器；
+# 存储型 XSS 已由前端 escapeHtml 全量转义封堵，此头为纵深防御。
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "font-src 'self' data:; connect-src 'self'; object-src 'none'; "
+        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    return resp
+
 # CORS 白名单：默认只放行桌面端 WebView 的本地源（127.0.0.1 / localhost，任意端口）。
 # 禁止通配 "*"：否则任何网页（含恶意站点）都能向本机特权端点发请求（CSRF 面，见
 # require_emp_local 的本地放行）。内网/远程部署需要放行其它源时，用环境变量追加：
@@ -324,8 +369,31 @@ def _worst_sev(findings: list) -> str:
     return _SEV_MAP.get(worst, "info")
 
 
+# 进程级引擎单例（2026-08-18 E2 修复）：此前每次 /qc/check 新建 RuleEngine 并重读
+# rules_config.json（批量 50 条即 50 次磁盘读）。规则变更后 _reload_engine_rules()
+# 刷新；run() 只读 self.rules_config 引用，并发安全。
+_ENGINE = None
+_ENGINE_LOCK = threading.Lock()
+
+
+def _get_engine():
+    global _ENGINE
+    if _ENGINE is None:
+        with _ENGINE_LOCK:
+            if _ENGINE is None:
+                _ENGINE = engine.RuleEngine()
+    return _ENGINE
+
+
+def _reload_engine_rules():
+    try:
+        _get_engine().reload_rules()
+    except Exception:
+        pass
+
+
 def _run_qc(report: str, meta: dict, auto_fix: bool) -> dict:
-    eng = engine.RuleEngine()
+    eng = _get_engine()
     findings = eng.run(report, meta)
     score = engine.score_summary(engine.score(findings))
     data = {
@@ -342,19 +410,48 @@ def _run_qc(report: str, meta: dict, auto_fix: bool) -> dict:
 
 
 # ----------------------------- 质控计算（无状态） -----------------------------
+# 内存态简单限流（2026-08-18 H1c）：质控是 CPU 密集计算，远程部署时防止
+# 无凭证/恶意调用打满 CPU（DoS）。每 IP 每分钟默认 60 次，可 QC_RATE_PER_MIN 调整。
+_QC_RATE_MAX = int(os.environ.get("QC_RATE_PER_MIN", "60"))
+_QC_RATE: Dict[str, list] = {}
+_QC_RATE_LOCK = threading.Lock()
+
+
+def _qc_rate_ok(ip: str) -> bool:
+    now = time.time()
+    with _QC_RATE_LOCK:
+        ts = [t for t in _QC_RATE.get(ip, []) if now - t < 60]
+        if len(ts) >= _QC_RATE_MAX:
+            _QC_RATE[ip] = ts
+            return False
+        ts.append(now)
+        _QC_RATE[ip] = ts
+        return True
+
+
 @app.post("/api/v1/qc/check")
-def qc_check(req: CheckReq, _lic: bool = Depends(require_license_active)):
+def qc_check(req: CheckReq, request: Request,
+             emp: str = Depends(require_emp_local),
+             _lic: bool = Depends(require_license_active)):
     if not req.report.strip():
         raise HTTPException(400, "report 不能为空")
     if len(req.report) > 20000:
         raise HTTPException(413, "报告文本过长（上限 20000 字符）")
+    ip = request.client.host if request.client else ""
+    if not _qc_rate_ok(ip):
+        raise HTTPException(429, "质控请求过于频繁，请稍后重试")
     return _envelope(True, "OK", _run_qc(req.report, req.meta, req.auto_fix))
 
 
 @app.post("/api/v1/qc/batch")
-def qc_batch(req: BatchReq, _lic: bool = Depends(require_license_active)):
+def qc_batch(req: BatchReq, request: Request,
+             emp: str = Depends(require_emp_local),
+             _lic: bool = Depends(require_license_active)):
     if len(req.items) > 50:
         raise HTTPException(400, "单次最多 50 条")
+    ip = request.client.host if request.client else ""
+    if not _qc_rate_ok(ip):
+        raise HTTPException(429, "质控请求过于频繁，请稍后重试")
     results = []
     for it in req.items:
         if not it.report.strip():
@@ -400,15 +497,22 @@ def qc_rules_get():
 
 @app.put("/api/v1/qc/rules")
 def qc_rules_put(cfg: Dict[str, Any], emp: str = Depends(require_admin)):
-    # 仅持久化已知键，避免客户端写入杂项
-    clean = {
-        "typos": cfg.get("typos", {}),
-        "conflicts": cfg.get("conflicts", []),
-        "ignores": cfg.get("ignores", []),
-        "template": cfg.get("template", {}),
-    }
-    engine.save_rules_config(clean)
-    return _envelope(True, "OK", clean, "规则已更新，下次请求自动生效")
+    # 读→合并→写回（2026-08-18 M3 修复）：只覆盖客户端提交的已知键，不再整表覆盖
+    # （此前部分 PUT 会静默丢弃 enable_r19/r19_sensitivity/disabled_typos）。
+    # 注意：typos 必须**增量合并**（dict.update）而非整体替换——客户端通常只传
+    # 1~2 条增改，整体替换会把规则库其余几百条用户词条清空。
+    cur = engine.load_rules_config()
+    for k in ("conflicts", "ignores", "template"):
+        if k in cfg:
+            cur[k] = cfg[k]
+    if isinstance(cfg.get("typos"), dict):
+        merged = dict(cur.get("typos") or {})
+        merged.update(cfg["typos"])   # 新增/修改；不删除既有词条
+        cur["typos"] = merged
+    engine.save_rules_config(cur)
+    _reload_engine_rules()
+    return _envelope(True, "OK", {k: cur.get(k) for k in ("typos", "conflicts", "ignores", "template")},
+                    "规则已更新，下次请求自动生效")
 
 
 # ----------------------------- OCR（可选） -----------------------------
@@ -560,14 +664,6 @@ _POLL_DEFAULT = {
     "last_error": "",          # 最近一次错误信息
     "seen": [],                # 已处理报告正文 MD5 指纹（去重）
 }
-
-
-def _atomic_json_write(path: str, obj) -> None:
-    """临时文件 + os.replace 原子写，配合 _JSON_IO_LOCK 防并发撕裂/覆盖。"""
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(obj, fh, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
 
 
 def _poll_config() -> dict:
@@ -1776,9 +1872,14 @@ def qc_rules_config_get(emp: str = Depends(require_emp_local)):
 
 @app.put("/api/v1/qc/rules/config")
 def qc_rules_config_put(cfg: Dict[str, Any], emp: str = Depends(require_admin)):
-    """覆盖保存规则配置（typos/conflicts/ignores/template）。"""
+    """合并保存规则配置（读→合并→写回；2026-08-18 M3 修复：保留未提交的
+    enable_r19/r19_sensitivity/disabled_typos 等键，避免半量覆盖丢数据）。"""
     try:
-        engine.save_rules_config(cfg)
+        cur = engine.load_rules_config()
+        for k, v in cfg.items():
+            cur[k] = v
+        engine.save_rules_config(cur)
+        _reload_engine_rules()
         return _envelope(True, "OK", engine.load_rules_config(), "规则配置已保存")
     except Exception as exc:
         raise HTTPException(500, type(exc).__name__)

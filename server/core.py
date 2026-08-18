@@ -90,7 +90,8 @@ def _queue_orm_all() -> list:
                 meta = {}
             out.append({
                 "id": str(q.id),
-                "hash": hashlib.md5("".join((q.report_text or "").split()).encode("utf-8", "ignore")).hexdigest(),
+                # 2026-08-18：优先用 DB 列 report_hash，避免列表页对每条现算 MD5
+                "hash": q.report_hash or hashlib.md5("".join((q.report_text or "").split()).encode("utf-8", "ignore")).hexdigest(),
                 "patient": meta.get("patient", ""),
                 "site": meta.get("applied_site", ""),
                 "text": q.report_text or "",

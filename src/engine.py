@@ -55,6 +55,32 @@ except Exception:  # pragma: no cover - 仅防御性降级
 # zh_ner 中文标签 → 引擎内部英文标签（与 anatomy / laterality 等保持一致）
 _ZH_ENT_LABEL_MAP = {"征象": "sign", "随访": "followup", "程度": "degree"}
 
+# 段落标题共享常量（2026-08-18 H9 修复）：NER SECTION_MAP 与 _split_for_r5 必须同源，
+# 避免「影像所见/超声所见/CT所见/MRI所见/MR所见」等最常见描述段标题只在一处生效，
+# 导致 R5/R2/R12 在部分报告上静默漏检。修改标题集合只改这里。
+_FINDINGS_HEADERS = (
+    r"影像所见|影像描述|检查所见|超声所见|CT所见|MRI所见|MR所见|"
+    r"表现|imaging findings|findings|radiographic findings"
+)
+_IMPRESSION_HEADERS = (
+    r"影像诊断|诊断印象|印象|诊断意见|诊断结论|影像结论|结论|"
+    r"impression|diagnosis"
+)
+
+
+def _is_common_word(w: str) -> bool:
+    """错词是否为高频合法词（2026-08-18 H6）：R8 词条 wrong 命中高频白名单
+    （如「有肺/直接/结界」这类本身是常用表述的词）视为疑似误录，
+    拒绝 learn_typo 入库、auto_fix 自动替换——防一键采纳把报告语义改写。
+    依赖 highfreq_lexicon；词库缺失时保守返回 False（不阻断既有流程）。"""
+    if not w or len(w) < 2 or len(w) > 8:
+        return False
+    try:
+        from highfreq_lexicon import highfreq_words as _hf
+        return w in {x for x, _ in _hf()}
+    except Exception:
+        return False
+
 
 # ----------------------------- 数据模型 -----------------------------
 @dataclass
@@ -685,10 +711,13 @@ def load_rules_config(path: str = RULES_CONFIG_PATH) -> dict:
 
 
 def save_rules_config(cfg: dict, path: str = RULES_CONFIG_PATH) -> None:
-    """持久化规则配置到 JSON。"""
+    """持久化规则配置到 JSON（2026-08-18 M4 修复：临时文件 + os.replace 原子替换，
+    防写一半崩溃损坏配置、防并发覆盖写丢键）。"""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
 
 def learn_typo(wrong: str, correct: str, path: str = RULES_CONFIG_PATH) -> bool:
@@ -709,6 +738,10 @@ def learn_typo(wrong: str, correct: str, path: str = RULES_CONFIG_PATH) -> bool:
     typos = cfg.setdefault("typos", {})
     # 反向冲突保护：若正确词本身在错词表里（如曾误学 结节→姐姐），跳过
     if typos.get(correct) == wrong:
+        return False
+    # 高频白名单保护（2026-08-18 H6）：错词本身是常用合法词（有肺/直接/结界…）
+    # 时拒绝学习，避免 learn_typo/scan 采纳把合法表述当错字静默改写报告。
+    if _is_common_word(wrong):
         return False
     typos[wrong] = correct
     save_rules_config(cfg, path)
@@ -796,11 +829,11 @@ def scan_reports_for_typos(path: str = RULES_CONFIG_PATH, limit: int = 200) -> l
 # ----------------------------- NER -----------------------------
 class ChineseRadiologyNER:
     SECTION_MAP = [
-        (re.compile(r"检查所见|影像描述|表现|imaging findings|findings|radiographic findings", re.I), "findings"),
+        (re.compile(_FINDINGS_HEADERS, re.I), "findings"),
         # 与 _split_for_r5 的 impression 标题集合对齐（2026-08-18 修复：
         # 此前缺『影像诊断/诊断结论/影像结论/diagnosis』，NER 把结论段整段标为 findings，
         # 导致 R2 分支1/R5 依赖实体 section 的跨段比对失效）
-        (re.compile(r"影像诊断|诊断印象|印象|诊断意见|诊断结论|影像结论|结论|impression|diagnosis", re.I), "impression"),
+        (re.compile(_IMPRESSION_HEADERS, re.I), "impression"),
         (re.compile(r"患者信息|患者|性别|年龄|检查部位|申请"), "meta"),
     ]
 
@@ -918,7 +951,7 @@ class RuleEngine:
                   + self._r17_cross_region(text, secs)
                   + self._r18_region_coverage(text, meta)
                   + self._r21_gender_site(text, meta)
-                  + self._r22_lesion_size(text, self._split_for_r5(text))
+                  + self._r22_lesion_size(text, secs)  # E1 2026-08-18：复用上方 secs，避免重复切分
                   + (self._r19_homophone(text)
                      if self.rules_config.get("enable_r19", True) else [])
                   + (self._r16_followup_timeframe(text)
@@ -964,6 +997,12 @@ class RuleEngine:
                 sug = getattr(fd, "suggestion", "")
                 if s >= 0 and e > s and sug:
                     wrong = text[s:e]
+                    # 常用词保护（2026-08-18 H6）：R8 词典词条 wrong 命中高频白名单
+                    # （用户手工录入的 直接→直径 等）只提示不自动替换，防一键采纳
+                    # 把报告里的合法表述静默改写。R19 为读音推导，不受此限。
+                    if fd.rule_id == "R8-TYPO" and _is_common_word(wrong):
+                        manual += 1
+                        continue
                     snippet = text[max(0, s - 12): min(len(text), e + 12)]
                     fixes.append({"start": s, "end": e, "wrong": wrong,
                                   "correct": sug, "snippet": snippet, "message": fd.message})
@@ -1162,8 +1201,8 @@ class RuleEngine:
         返回 dict 额外含 findings_start：findings 段在原始 text 中的起始偏移，
         供 R5 用相对偏移取实体附近窗口（避免用绝对偏移索引子串导致错位）。"""
         spans = []
-        for pat, sec in [("(?i)检查所见|影像描述|表现|imaging findings|findings", "findings"),
-                         ("(?i)影像诊断|诊断印象|印象|诊断意见|诊断结论|影像结论|结论|impression|diagnosis", "impression")]:
+        for pat, sec in [("(?i)" + _FINDINGS_HEADERS, "findings"),
+                         ("(?i)" + _IMPRESSION_HEADERS, "impression")]:
             for m in re.finditer(pat, text):
                 spans.append((m.start(), sec))
         spans.sort()

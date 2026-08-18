@@ -23,16 +23,23 @@ RIS 数据库直连模块
 import os
 import sys
 import json
+import re
 
 def _config_path() -> str:
     """RIS 连接配置持久化路径（写盘，需真实可写目录）。
 
-    冻结后 __file__ 指向 PYZ 合成路径，os.path.abspath 回溯会得到不存在的位置，
-    导致配置永远写不进去。此时改用 exe 所在目录下的 assets/。
+    2026-08-18 M6：冻结后统一落用户可写数据目录（与 samplelib._appdata_db / db.py
+    同口径），不再写 sys._MEIPASS（临时目录，退出即丢；Program Files 只读则写失败）。
     """
     if getattr(sys, "frozen", False):
-        base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
-        return os.path.join(base, "assets", "ris_config.json")
+        import platform as _plt
+        if _plt.system() == "Windows":
+            base = os.path.expandvars("%APPDATA%")
+        elif _plt.system() == "Darwin":
+            base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+        else:
+            base = os.path.expanduser("~")
+        return os.path.join(base, "MedicalReportQC", "ris_config.json")
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "ris_config.json")
 
 
@@ -81,6 +88,10 @@ def save_config(cfg: dict):
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
     with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, ensure_ascii=False, indent=2)
+    try:
+        os.chmod(CONFIG_PATH, 0o600)  # 2026-08-18 M6：含医院库口令，限本账号读取
+    except Exception:
+        pass
 
 
 # ----------------------------- 驱动探测 -----------------------------
@@ -143,7 +154,8 @@ def _connect(cfg: dict):
         return pymysql.connect(
             host=cfg["host"], port=int(cfg.get("port") or 3306),
             user=cfg["user"], password=cfg["password"],
-            database=cfg["database"], charset="utf8mb4", connect_timeout=8)
+            database=cfg["database"], charset="utf8mb4", connect_timeout=8,
+            read_timeout=15, write_timeout=15)  # 2026-08-18 M9：查询级超时（pymysql 需连接参数）
 
     if db == "postgresql":
         import psycopg2
@@ -172,15 +184,60 @@ def test_connection(cfg: dict):
         return False, f"连接失败：{e}"
 
 
+# 只读 SQL 校验（2026-08-18 H5 修复）：Web 端点把客户端提交的 query 原样交给
+# fetch_reports 执行，键名打通后即成为「任意登录用户对自填主机执行任意 SQL」的口子。
+# 这里强制只读约束（SELECT/WITH 开头、禁分号、禁 DDL/DML），拒之门外。
+_SQL_FORBIDDEN = re.compile(
+    r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|"
+    r"EXEC|EXECUTE|MERGE|REPLACE|ATTACH|DETACH|VACUUM|COPY)\b", re.I)
+
+
+def _assert_readonly_sql(sql: str) -> None:
+    """校验查询 SQL 为只读单条 SELECT/WITH；不合法抛 ValueError。"""
+    q = (sql or "").strip()
+    if not q:
+        raise ValueError("查询 SQL 为空")
+    if len(q) > 20000:
+        raise ValueError("查询 SQL 过长（上限 20000 字符）")
+    if not re.match(r"(?is)^(SELECT|WITH)\b", q):
+        raise ValueError("只允许 SELECT/WITH 只读查询")
+    if ";" in q:
+        raise ValueError("查询中不允许分号（仅允许单条只读查询）")
+    if _SQL_FORBIDDEN.search(q):
+        raise ValueError("查询包含被禁止的关键字（仅允许只读 SELECT）")
+
+
+def _apply_query_timeout(conn, db_type: str, seconds: int = 15) -> None:
+    """设置查询级超时（2026-08-18 M9 修复）：连接超时之外，慢查询会无限阻塞
+    RIS 轮询线程/GUI。逐驱动设查询超时；pymysql 的 read_timeout 需连接参数，
+    已在 _connect 的 mysql 分支设置。"""
+    try:
+        if db_type == "sqlserver":        # pyodbc
+            conn.timeout = seconds
+        elif db_type == "oracle":          # oracledb（毫秒）
+            if hasattr(conn, "call_timeout"):
+                conn.call_timeout = seconds * 1000
+        elif db_type == "postgresql":      # psycopg2
+            cur = conn.cursor()
+            cur.execute("SET statement_timeout = %d" % (seconds * 1000))
+            cur.close()
+    except Exception:
+        pass
+
+
 def fetch_reports(cfg: dict, limit: int = 50):
     """执行配置里的查询，返回标准字段的字典列表。
 
     结果按 STD_FIELDS 归一化；缺失列填空字符串。report_text 为空的行会被跳过。
+    2026-08-18 H5/M9：查询只读校验 + 查询级超时。
     """
+    sql = cfg.get("query", "")
+    _assert_readonly_sql(sql)
     conn = _connect(cfg)
+    _apply_query_timeout(conn, cfg.get("db_type", ""))
     try:
         cur = conn.cursor()
-        cur.execute(cfg["query"])
+        cur.execute(sql)
         cols = [d[0].lower() for d in cur.description]
         rows = cur.fetchmany(limit) if hasattr(cur, "fetchmany") else cur.fetchall()
         out = []

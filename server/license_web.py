@@ -13,6 +13,7 @@ license 状态存于 appdata 目录下的 license.json（与 web_settings.json �
 """
 import os
 import json
+import hmac
 import hashlib
 import base64
 import datetime
@@ -69,8 +70,10 @@ def _read_license(appdata_dir: str) -> dict:
 
 def _write_license(appdata_dir: str, data: dict) -> None:
     os.makedirs(appdata_dir, exist_ok=True)
-    with open(_license_path(appdata_dir), "w", encoding="utf-8") as f:
+    tmp = _license_path(appdata_dir) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, _license_path(appdata_dir))  # 2026-08-18 M7：原子写
     try:
         os.chmod(_license_path(appdata_dir), 0o600)  # 内含激活码，防他账号读取（2026-08-18）
     except Exception:
@@ -111,6 +114,19 @@ def machine_id() -> str:
 
 # ---------------- 试用期 ----------------
 
+# 2026-08-18 M7：first_run 与机器硬件标识绑定做 HMAC 防篡改（与 src/license_utils.py 同口径）。
+def _trial_hmac_key() -> bytes:
+    return hashlib.sha256((_stable_hw_id() + "::xingyan-trial-v1").encode("utf-8")).digest()
+
+
+def _trial_sign(date_str: str) -> str:
+    return hmac.new(_trial_hmac_key(), date_str.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _trial_verify(date_str: str, sig: str) -> bool:
+    return hmac.compare_digest(_trial_sign(date_str), (sig or "").lower())
+
+
 def _activated_valid(lic: dict) -> bool:
     """激活状态真实性校验（2026-08-18 防绕过，与 src/license_utils.py 同口径）：
     ① 激活绑定的机器指纹必须与当前机器一致（防复制 license.json 一码多机）；
@@ -125,20 +141,40 @@ def _activated_valid(lic: dict) -> bool:
 
 def check_trial(appdata_dir: str):
     """返回 (state, days_left)。
-    state: 'activated' / 'trial' / 'expired'。"""
+    state: 'activated' / 'trial' / 'expired'。
+    2026-08-18 M7：first_run 带 HMAC 防篡改；旧格式日期串校验后迁移补签；
+    签名不匹配/日期非法/回拨 → expired（不再静默置今天白送试用）。"""
     lic = _read_license(appdata_dir)
     if _activated_valid(lic):
         return ("activated", 0)
-    first_run = lic.get("first_run")
-    if not first_run:
-        lic["first_run"] = datetime.date.today().isoformat()
+    first_run_raw = lic.get("first_run")
+    if not first_run_raw:
+        today = datetime.date.today().isoformat()
+        lic["first_run"] = {"date": today, "sig": _trial_sign(today)}
         _write_license(appdata_dir, lic)
         return ("trial", TRIAL_DAYS)
+    if isinstance(first_run_raw, dict):
+        first_run = first_run_raw.get("date", "")
+        if not first_run or not _trial_verify(first_run, first_run_raw.get("sig", "")):
+            return ("expired", 0)
+    else:
+        first_run = first_run_raw
+        try:
+            first_d = datetime.date.fromisoformat(first_run)
+        except Exception:
+            return ("expired", 0)
+        _today = datetime.date.today()
+        if first_d > _today or (_today - first_d).days > 366:
+            return ("expired", 0)
+        lic["first_run"] = {"date": first_run, "sig": _trial_sign(first_run)}
+        _write_license(appdata_dir, lic)
     try:
         first = datetime.date.fromisoformat(first_run)
     except Exception:
-        first = datetime.date.today()
+        return ("expired", 0)
     used = (datetime.date.today() - first).days
+    if used < 0:
+        return ("expired", 0)
     if used >= TRIAL_DAYS:
         return ("expired", 0)
     return ("trial", TRIAL_DAYS - used)

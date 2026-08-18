@@ -170,7 +170,13 @@ function effectiveLaterality() {
   return '';
 }
 
+// 质控请求代次计数（2026-08-18 M12：runQC 竞态保护，先发慢响应不得覆盖后发新结果）
+let _qcRunSeq = 0;
+
 async function runQC() {
+  // 2026-08-18 M12 修复：请求代次计数——先发的慢响应不得覆盖后发的新结果
+  // （医疗「结果串号」竞态）。每次 runQC 递增全局序号，响应返回时非最新代次则丢弃。
+  const _seq = ++_qcRunSeq;
   // 输入框仅质控页存在；剪贴板/热键后台触发时若未切页则为 null，须保护
   const fEl = document.getElementById('findingsText');
   const iEl = document.getElementById('impressionText');
@@ -219,6 +225,8 @@ async function runQC() {
     if (!data.ok) {
       throw new Error(data.message || '引擎执行失败');
     }
+    // 代次保护：期间又有新的 runQC 发起（用户改了文本再次质控），丢弃本次过期结果
+    if (_seq !== _qcRunSeq) return false;
 
     // FastAPI 返回 score 为中文维度键、findings 用 error_type；映射为前端期望结构
     const scoreMap = { '准确性': 'accuracy', '完整性': 'completeness', '规范性': 'normalization', '及时性': 'timeliness' };
@@ -785,7 +793,12 @@ function splitReportSections(text) {
   // 诊断标题（可能带序号/冒号/换行）
   const impRe = /(?:^|\n)\s*(?:[（(]?\d+[)）]?[.、．]?\s*)?(影像诊断|诊断印象|影像结论|诊断意见|诊断结论|结论|印象|impression|conclusion)\s*[:：]?\s*(?=[\s\S]*)/i;
   const imp = t.match(impRe);
-  if (imp && imp.index > 0) {
+  if (imp) {
+    if (imp.index === 0) {
+      // 2026-08-18 M13 修复：报告以「影像诊断：…」开头（诊断在前）——反向切分，
+      // 整段视为诊断正文，描述为空（避免整段误入描述框）。
+      return { findings: '', impression: t.replace(impRe, '').trim() };
+    }
     const impText = t.slice(imp.index);
     let findings = t.slice(0, imp.index).trim();
     // 去掉描述段自身的标题（保留正文）
@@ -1227,7 +1240,7 @@ async function loadSamples() {
     tbody.innerHTML = items.map(r => `
       <tr>
         <td style="color:var(--text-muted);font-size:12px;">${r.id}</td>
-        <td style="font-size:12px;">${r.ts||'--'}</td>
+        <td style="font-size:12px;">${escapeHtml(r.ts)||'--'}</td>
         <td>${escapeHtml(r.patient)||'--'}</td>
         <td>${escapeHtml(r.gender)||'--'}</td>
         <td>${escapeHtml(r.age)||'--'}</td>
@@ -2865,6 +2878,8 @@ function comboEquals(sc, evt) {
 let _capturingShortcut = null;   // 设置页“按下新快捷键”捕获中
 
 document.addEventListener('keydown', function(e) {
+  // 2026-08-18 M12：长按按键会连续触发 keydown（e.repeat），业务快捷键只应触发一次
+  if (e.repeat) return;
   // 设置页正在捕获：记录组合键并写回该动作，不触发业务动作
   if (_capturingShortcut) {
     e.preventDefault();

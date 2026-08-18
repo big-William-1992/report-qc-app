@@ -36,8 +36,16 @@ def _ensure_db_override() -> None:
 
 # ---------------- 会话（当前登录工号，文件持久化，前端预填用） ----------------
 def _assets_dir() -> str:
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    d = os.path.join(base, "assets")
+    """用户私有数据目录（2026-08-18 D9 修复）：冻结后 __file__ 回溯到 PYZ 合成路径
+    导致 session.json 写不进去；统一落用户可写目录（与 samplelib._appdata_db 同口径）。"""
+    import platform as _plt
+    if _plt.system() == "Windows":
+        base = os.path.expandvars("%APPDATA%")
+    elif _plt.system() == "Darwin":
+        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        base = os.path.expanduser("~")
+    d = os.path.join(base, "MedicalReportQC")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -62,10 +70,29 @@ def init_db() -> None:  # noqa: F811
     _init()
 
 
-def _hash_password(pw: str, salt: str) -> str:
-    return hashlib.pbkdf2_hmac(
-        "sha256", pw.encode("utf-8"), salt.encode("utf-8"), 100_000
+# 密码哈希（2026-08-18 D5）：PBKDF2 迭代从 100k 提到 600k（OWASP 2023 建议 ≥600k）。
+# 哈希串带迭代次数前缀（"600000$<hex>"）；旧格式（纯 hex，100k 迭代）验证时兼容，
+# 登录成功后由 verify_account 自动重哈希升级。
+_PBKDF2_ITERS = 600_000
+_LEGACY_PBKDF2_ITERS = 100_000
+
+
+def _hash_password(pw: str, salt: str, iterations: int = _PBKDF2_ITERS) -> str:
+    return "%d$%s" % (iterations, hashlib.pbkdf2_hmac(
+        "sha256", pw.encode("utf-8"), salt.encode("utf-8"), iterations
+    ).hex())
+
+
+def _verify_password(pw: str, salt: str, stored: str) -> bool:
+    try:
+        iters, expected = stored.split("$", 1)
+        iters = int(iters)
+    except Exception:
+        iters, expected = _LEGACY_PBKDF2_ITERS, stored  # 旧格式：无前缀（100k）
+    actual = hashlib.pbkdf2_hmac(
+        "sha256", (pw or "").encode("utf-8"), salt.encode("utf-8"), iters
     ).hex()
+    return hmac.compare_digest(actual, expected)
 
 
 def create_account(emp_id: str, password: str, name: str = "",
@@ -108,7 +135,13 @@ def verify_account(emp_id: str, password: str) -> bool:
         u = s.query(User).filter(User.emp_id == emp_id).first()
         if not u:
             return False
-        return hmac.compare_digest(_hash_password(password or "", u.salt), u.pwd_hash)
+        ok = _verify_password(password or "", u.salt, u.pwd_hash)
+        # 旧哈希（100k，无前缀）登录成功 → 自动升级为 600k 版本
+        if ok and "$" not in u.pwd_hash:
+            u.salt = secrets.token_hex(16)
+            u.pwd_hash = _hash_password(password or "", u.salt)
+            s.commit()
+        return ok
 
 
 def account_exists(emp_id: str) -> bool:

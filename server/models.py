@@ -14,7 +14,7 @@ server/models.py — SQLAlchemy ORM 模型（多用户 / 科室自托管）
 import datetime
 
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, ForeignKey, Index,
+    Column, Integer, String, Text, DateTime, ForeignKey, Index, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from server.db import Base
@@ -75,7 +75,10 @@ class QueueItem(Base):
 class Setting(Base):
     __tablename__ = "settings"
     id = Column(Integer, primary_key=True)
-    key = Column(String(120), unique=True, nullable=False, comment="设置键")
+    # 2026-08-18 D13 修复：key 单列 unique 与「NULL=全局 / 非 NULL=用户级覆盖」设计冲突
+    # （同一 key 无法同时存在全局与用户级两条记录）→ 改 (key, user_id) 复合唯一。
+    key = Column(String(120), nullable=False, comment="设置键")
     value_json = Column(Text, comment="设置值（JSON）")
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True,
                     comment="NULL=全局设置；非 NULL=用户级覆盖")
+    __table_args__ = (UniqueConstraint("key", "user_id", name="ux_settings_key_user"),)
