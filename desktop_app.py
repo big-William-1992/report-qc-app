@@ -22,6 +22,8 @@ import sys
 import subprocess
 import threading
 import time
+import tempfile
+import atexit
 import urllib.request
 import socket
 from pathlib import Path
@@ -612,7 +614,61 @@ def _get_screen_work_area():
         return None
 
 
+
+
+def _acquire_singleton() -> bool:
+    """跨平台单实例锁（2026-08-18）：锁文件 + PID 存活检查。
+
+    Windows 此前无单实例保护（_free_preferred_port 仅 macOS/Linux 生效），
+    双击两次会得到两个端口实例并发写 SQLite（锁冲突/数据损坏风险）。
+    已有实例在运行返回 False；否则写入本进程 PID 并注册退出清理。
+    """
+    lock = os.path.join(tempfile.gettempdir(), "xingyan_qc_singleton.lock")
+
+    def _pid_alive(pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+        except Exception:
+            return False
+
+    try:
+        if os.path.isfile(lock):
+            try:
+                with open(lock, encoding="utf-8") as f:
+                    old_pid = int((f.read().strip() or "0"))
+                if old_pid > 0 and _pid_alive(old_pid):
+                    return False  # 已有活跃实例
+            except Exception:
+                pass  # 锁文件损坏/不可读：接管
+        with open(lock, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        return True  # 无法写锁文件（权限等）时放行，不阻塞启动
+
+    def _cleanup():
+        try:
+            if os.path.isfile(lock):
+                with open(lock, encoding="utf-8") as f:
+                    cur = f.read().strip()
+                if cur == str(os.getpid()):
+                    os.remove(lock)
+        except Exception:
+            pass
+
+    atexit.register(_cleanup)
+    return True
+
+
 def main():
+    # 单实例锁：已有实例在运行则提示退出（跨平台，防双开并发写库）
+    if not _acquire_singleton():
+        show_fatal("已有实例在运行",
+                   "星衍质控已在运行，请先退出原实例后再启动。\n"
+                   "（单实例保护：防止两个实例并发写数据库导致数据损坏）")
+        sys.exit(0)
     # Windows 冻结（PyInstaller）下需尽早调用，避免子进程/线程相关异常。
     try:
         import multiprocessing
