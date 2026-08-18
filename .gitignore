@@ -67,3 +67,7 @@ node_modules/
 playwright-report/
 test-results/
 blob-report/
+
+# 迁移备份与生成的文档产物（含患者数据或体积大，不入库）
+assets/samples.db.bak
+使用说明书.docx
