@@ -68,10 +68,14 @@ def _read_license():
 
 
 def _write_license(data):
-    """写许可证文件。"""
+    """写许可证文件（0600：内含激活码，防科室多用户主机其他账号读取，2026-08-18）。"""
     os.makedirs(os.path.dirname(_LICENSE_FILE), exist_ok=True)
     with open(_LICENSE_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
+    try:
+        os.chmod(_LICENSE_FILE, 0o600)
+    except Exception:
+        pass
 
 
 # ---------- 免责声明 ----------
@@ -137,6 +141,18 @@ def show_disclaimer(parent):
 
 # ---------- 试用期检查 ----------
 
+def _activated_valid(lic: dict) -> bool:
+    """激活状态真实性校验（2026-08-18 防绕过）：
+    ① 激活时绑定的机器指纹必须与当前机器一致（防复制 license.dat 一码多机）；
+    ② activation_code 必须仍能通过 Ed25519 验签（防手改 {activated:true} 伪造）。"""
+    if not lic.get("activated"):
+        return False
+    if lic.get("machine_id") != _machine_id():
+        return False
+    code = (lic.get("activation_code") or "").strip()
+    return bool(code) and validate_activation_code(code)
+
+
 def check_trial():
     """检查试用期状态。
     返回: ("ok", "") - 可用
@@ -145,7 +161,7 @@ def check_trial():
           ("activated", "") - 已激活
     """
     lic = _read_license()
-    if lic.get("activated"):
+    if _activated_valid(lic):
         return ("activated", "")
 
     first_run = lic.get("first_run")
@@ -248,6 +264,8 @@ def activate(code):
         lic = _read_license()
         lic["activated"] = True
         lic["activation_code"] = code
+        lic["machine_id"] = _machine_id()   # 绑定机器指纹：防复制已激活文件一码多机（2026-08-18）
+        lic["activated_at"] = datetime.date.today().isoformat()
         _write_license(lic)
         return True
     return False

@@ -22,6 +22,15 @@ ANATOMY_SYNONYMS = {
     "右肺": "RUL", "左肺": "LUL",
     "左侧股骨头": "L-femoral-head", "右侧股骨头": "R-femoral-head",
     "左肾": "L-kidney", "右肾": "R-kidney",
+    # 2026-08-18 补复合词条（P0 修复）：短别名（右肺/左肾）此前在复合词内被误切分，
+    # "右肺门→右肺" 驱动 R5 误报、"左肾上腺→左肾" 使 R2 把肾上腺误归肾族；
+    # 补入 3 字词条后按最长匹配优先命中（_REGION_ALIAS_LIST_SORTED 按长度降序）。
+    "左肺门": "L-hilum", "右肺门": "R-hilum",
+    "肺门": "hilum",
+    "左肾上腺": "L-adrenal", "右肾上腺": "R-adrenal",
+    "肾上腺": "adrenal",
+    "左肾盂": "L-renalpelvis", "右肾盂": "R-renalpelvis",
+    "左肾盏": "L-renalcalyx", "右肾盏": "R-renalcalyx",
 }
 
 # 部位归一化（用于登记部位不符：申请部位词 → 规范部位族）
@@ -63,11 +72,10 @@ SITE_CANON = {
 VALID_UNITS = {"cm", "mm", "HU", "mm/s", "ml", "°", "mmhg"}
 
 MODALITY_SCORE = {"乳腺": "BI-RADS", "钼靶": "BI-RADS", "乳腺x线": "BI-RADS",
-                  "前列腺": "PI-RADS", "盆腔": "PI-RADS"}
+                  "前列腺": "PI-RADS"}
 
 # 描述内部阳性/阴性征（用于一致性）
 POSITIVE_MARKERS = ["结节", "占位", "阴影", "肿块", "异常信号", "斑片", "渗出", "骨折", "扩张", "增大"]
-NEGATIVE_MARKERS = ["未见", "无", "阴性", "通畅", "清晰", "正常", "未见明显", "未见异常"]
 
 # 强阳性征（用于『描述异常→结论正常』与『同一句话逻辑错误』判定，覆盖面更广）
 POSITIVE_STRONG = ["结节", "占位", "肿块", "骨折", "扩张", "增大", "囊肿", "结石", "出血",
@@ -100,16 +108,18 @@ REGION_NORMAL_WORDS = [
     "胸膜", "肺门", "支气管", "气管", "食管", "胃", "肠", "胆管", "输尿管",
 ]
 # 『部位+正常』正则
+# 2026-08-18：补『部位+未见异常』变体——『左肺见结节，左肺未见异常』同句同侧
+# 自相矛盾此前因只匹配『X正常』而漏检（_r12_sentence 依赖此正则）。
 _REGION_NORMAL_RE = re.compile(
     "(?:" + "|".join(re.escape(w) for w in
         sorted(set(REGION_NORMAL_WORDS) | set(ANATOMY_SYNONYMS.keys()) | set(SITE_NORM.keys()),
-               key=len, reverse=True)) + ")正常"
+               key=len, reverse=True)) + ")(?:正常|未见异常|未见明显异常)"
 )
 
 # 模块导出清单：供 engine.py `from _lexicons import *` 使用
 __all__ = [
     "LATERALITY", "GENDER_ORGANS", "ANATOMY_SYNONYMS", "SITE_NORM", "SITE_CANON",
-    "VALID_UNITS", "MODALITY_SCORE", "POSITIVE_MARKERS", "NEGATIVE_MARKERS",
+    "VALID_UNITS", "MODALITY_SCORE", "POSITIVE_MARKERS",
     "POSITIVE_STRONG", "_NEG_PREFIXES", "NORMAL_CLAIM", "_R19_NORM_RE",
     "REGION_NORMAL_WORDS", "_REGION_NORMAL_RE",
 ]

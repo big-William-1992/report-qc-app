@@ -21,7 +21,9 @@ from typing import List, Optional, Dict, Set, Tuple
 # 并显式 re-export 保持 `from engine import XXX` 对外兼容（2026-08-16）。
 # 注意：engine.py 中部分同名常量仍保留定义（覆盖导入值，行为不变），待后续逐步清理。
 from _lexicons import *  # noqa: F401,F403,E402
+_VALID_UNITS_LOWER = {u.lower() for u in VALID_UNITS}  # 单位白名单小写化（2026-08-18）
 from _utils import *     # noqa: F401,F403,E402
+from engine_text import *  # noqa: F401,F403,E402   # 文本工具层（2026-08-18 拆分）
 
 # 解剖部位知识图谱（RadLex 器官族 + PadChest 104 部位→UMLS）：驱动左右侧比对表
 from anatomy_lexicon import SIDE_CHECK_ORGANS, R2_COVERED, EN_SIDE_ORGANS
@@ -74,6 +76,14 @@ class Finding:
     snippet: str = ""
     span: tuple = (-1, -1)
     suggestion: str = ""   # 可自动修正的建议值（仅 R8 错别字填充）
+
+
+# 确凿繁体独有字（简体不使用这些字形；放射报告高频，2026-08-18 新增检测用）。
+# 注意：只收录「简体绝不会出现」的字形——简繁同形字（描/查/告/囊/腺/骨等）
+# 若误收会在简体报告上误报（已修正）。
+_TRADITIONAL_CHARS = ("雙紋門結節顯異竈腫塊縱斷層動脈靜診療預質掃強寬鈣瀰潤轉圍"
+                      "氣腸膽攝護宮狀實幹顱鎖葉葉聲腫據臨牀檢驗檢視術後疑慮蓋約"
+                      "數滿積液處置監測網絡環境時間空間數據系統設備操作權限登錄")
 
 
 # ----------------------------- 词典 / 知识图谱 -----------------------------
@@ -286,7 +296,6 @@ for _a, _k, _s in sorted(_REGION_ALIAS_LIST, key=lambda x: -len(x[0])):
         continue
     _SEEN_A.add(_a)
     _REGION_ALIAS_LIST_SORTED.append((_a, _k, _s))
-_REGION_ALIAS_RE = re.compile("|".join(re.escape(a) for a, _, _ in _REGION_ALIAS_LIST_SORTED))
 
 
 def _region_spans_in_text(text: str):
@@ -342,9 +351,10 @@ def _region_assertions_in_section(text: str, spans):
     for (_k, _s, _st, _en) in spans:
         after = text[_en: _en + 5]
         after_big = text[_en: _en + 16]
-        # 句边界保护：窗口内遇句号/分号/换行则截断，避免跨句吞入相邻部位阳性征
-        # （如『右肺见结节，左肺正常。』后 16 字窗口不能吞掉下一句的阳性征）。
-        for _bnd in ("。", "；", ";", "\n"):
+        # 句边界保护：窗口内遇句号/分号/换行/逗号则截断，避免跨句吞入相邻部位阳性征
+        # （如『右肺见结节，左肺正常。』后 16 字窗口不能吞掉下一句的阳性征；
+        #   2026-08-18 追加逗号：『右肺上叶见结节，余肺未见异常』中「未见异常」不再误贴给右肺）。
+        for _bnd in ("。", "；", ";", "\n", "，", ","):
             _bi = after_big.find(_bnd)
             if 0 < _bi < len(after_big):
                 after_big = after_big[:_bi]
@@ -389,78 +399,8 @@ LESION_WORDS = ["结节", "占位", "肿块", "病灶", "囊肿", "结石", "骨
 #    来源：src/anatomy_lexicon.py（RadLex 器官族 + 侧别建模）动态派生；保留原有的 R2 跨段覆盖分离，
 #    排除 R2 已覆盖的「肾/股骨头」避免重复告警。新增 输卵管/精囊/锁骨/肋骨 等成对器官扩大覆盖。
 ORGAN_SIDE_LIST = [o for o in SIDE_CHECK_ORGANS if o not in R2_COVERED]
-# —— 段内跨句比对(R15)用此表：在 ORGAN_SIDE_LIST 基础上补 R2 已覆盖的「肾/股骨头」
-#    （R15 仅查描述段内部，不与 R2 跨段检查重叠，故可并存）
-ORGAN_SIDE_LIST_INTERNAL = ORGAN_SIDE_LIST + list(R2_COVERED)
-
-_CN_NUM = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
-           "七": 7, "八": 8, "九": 9, "十": 10, "双": 2, "单": 1}
-
-
-def _norm_laterality(s):
-    """把侧别写法归一化为 'left'/'right'/'bilateral'；无法识别返回 None。"""
-    if not s:
-        return None
-    s = str(s).strip()
-    if s in LATERALITY:
-        return LATERALITY[s]
-    # 兼容口语/书面写法：左侧/右侧/双侧/两边/左右
-    if "双" in s or "两" in s or "左右" in s:
-        return "bilateral"
-    if "左" in s and "右" not in s:
-        return "left"
-    if "右" in s and "左" not in s:
-        return "right"
-    return None
-
-
-def _detect_side_in_text(text: str) -> set:
-    """扫描文本中提及的方位集合（left/right/bilateral）。兼容中英文报告。"""
-    if not text:
-        return set()
-    sides = set()
-    if re.search(r"左\s*(侧|肺|肾|肝|乳|肾上腺|卵巢|睾丸|附件|股骨|肱骨|膝|髋|肩|肘|腕|踝|叶|上|下|腹|盆|位)", text):
-        sides.add("left")
-    if re.search(r"右\s*(侧|肺|肾|肝|乳|肾上腺|卵巢|睾丸|附件|股骨|肱骨|膝|髋|肩|肘|腕|踝|叶|上|下|腹|盆|位)", text):
-        sides.add("right")
-    if re.search(r"双侧|两侧|左右|两边", text):
-        sides.add("bilateral")
-    # 英文报告（MIMIC-CXR / IU-Xray 风格）：left/right/bilateral 关键词
-    low = text.lower()
-    if re.search(r"\bleft\b", low):
-        sides.add("left")
-    if re.search(r"\bright\b", low):
-        sides.add("right")
-    if re.search(r"\bbilateral\b", low):
-        sides.add("bilateral")
-    return sides
-
-
-def _project_side(report: str, meta: dict):
-    """派生『项目 / 检查部位』侧别（left/right/bilateral/None）。
-
-    优先级：① 显式 meta.laterality（SPA 侧别下拉）>
-    ② 报告内显式标签字段（如『检查项目：右膝』『检查部位：左肺』）>
-    ③ meta.applied_site（检查部位自由文本，如『右膝关节』）。
-
-    之前 R11-SIDE 只取 ①，用户常把侧别写在 项目 自由文本里而不填独立下拉框，
-    导致 meta.laterality 为空、规则整条跳过，无法核对 项目 vs 描述/诊断 左右。
-    ② ③ 兜底让规则在常见录入方式下都能正确启动。
-    """
-    s = _norm_laterality(meta.get("laterality"))
-    if s:
-        return s
-    for label in ("检查项目", "检查部位", "检查名称", "申请部位", "扫描部位", "检查范围"):
-        m = re.search(label + r"[:：]?\s*([^\n，,。；;：]+)", report or "")
-        if m:
-            ss = _norm_laterality(m.group(1))
-            if ss:
-                return ss
-    ss = _norm_laterality(meta.get("applied_site"))
-    if ss:
-        return ss
-    return None
-
+# ORGAN_SIDE_LIST_INTERNAL 已删除（2026-08-18）：仅供已删除的 R15-SIDE 段内比对使用，
+# 左右矛盾统一由 R2（跨段）/ R17（逐部位）负责。
 
 def _organ_sides_en(text: str, aliases) -> set:
     """英文器官左右检测：返回文本中某器官的方位集合（left/right）。
@@ -593,71 +533,27 @@ def _r12_same_region(sent: str) -> bool:
     return False
 
 
-def _split_sentences(text: str) -> list:
-    """按中英文句末标点 + 换行切分为句子（保留标点）。"""
-    if not text:
-        return []
-    parts = re.split(r"(?<=[。！？!?；;\n])", text)
-    return [p.strip() for p in parts if p and p.strip()]
-
-
-def _cn_to_int(tok):
-    """中文数字/阿拉伯数字 → int；无法解析返回 None。"""
-    if tok is None:
-        return None
-    tok = str(tok).strip()
-    if tok.isdigit():
-        return int(tok)
-    return _CN_NUM.get(tok)
-
-
-def _extract_lesion_count(text: str):
-    """抽取文本中明确的病灶计数（枚/个），无法判定（如『多发/数枚』）返回 None。"""
-    if not text:
-        return None
-    m = re.search(r"([一二三四五六七八九十两双单\d])\s*枚", text)
-    if m:
-        return _cn_to_int(m.group(1))
-    m = re.search(r"([一二三四五六七八九十两双单\d])\s*个\s*(?:结节|占位|肿块|病灶|囊肿|结石|骨折|积液)", text)
-    if m:
-        return _cn_to_int(m.group(1))
-    return None
-
-
-def _has_marker_unnegated(text: str, markers) -> bool:
-    """文本中是否存在未受否定修饰的标记词（用于良恶性判定，避免『未见恶性』误判为恶性）。"""
-    if not text:
-        return False
-    for sent in _split_sentences(text):
-        s = sent.lower()
-        if not any(k.lower() in s for k in markers):
-            continue
-        if re.search(r"未见|未示|未见明显|不除外|不考虑|除外|待排|未见\s*明确", sent):
-            continue
-        return True
-    return False
-
-
-# 复合器官（含短名），避免短名被复合词误命中（如「肾上腺」误判为「肾」的左右）。
-# 注意：肝左叶/肝右叶 是真实的左右叶矛盾来源，必须保留比对，故不入此排除列表。
 _ORGAN_COMPOUND = {
     "肾": ["肾上腺", "肾盂", "肾盏", "肾窦", "肾门"],
     "肝": ["肝胆"],
+    "肺": ["肺门", "肺野", "肺尖", "肺实质", "肺底", "肺间质"],  # 2026-08-18：肺门等复合词此前未剔除 → "右肺门"被当"肺"侧别误报 R2
 }
 
 
 def _organ_sides_in_text(text: str, organ: str) -> set:
-    """返回文本中提及某器官的方位集合（left/right）。兼容『左肺』与『肝左叶』两种语序。
-    先剔除复合器官名（如肾上腺/肝胆），避免短名（肾/肝）被复合词误命中而产生假阳性左右矛盾。"""
+    """返回文本中提及某器官的方位集合（left/right）。兼容『左肺』『左侧肺』与『肝左叶』两种语序。
+    先剔除复合器官名（如肾上腺/肝胆/肺门），避免短名（肾/肝/肺）被复合词误命中而产生假阳性左右矛盾。
+    2026-08-18 修复：容忍『左侧X』措辞（放射科最常见写法），此前『左+器官』正则遇"侧"字即阻断，
+    『左侧肾上腺见占位/右侧肾上腺见占位』的跨段左右矛盾整体漏检。"""
     sides = set()
     tmp = text
     for comp in _ORGAN_COMPOUND.get(organ, []):
         tmp = tmp.replace(comp, "")
-    if (re.search(r"左\s*" + re.escape(organ), tmp)
-            or re.search(re.escape(organ) + r"\s*左", tmp)):
+    if (re.search(r"左\s*(?:侧)?\s*" + re.escape(organ), tmp)
+            or re.search(re.escape(organ) + r"\s*(?:侧)?\s*左", tmp)):
         sides.add("left")
-    if (re.search(r"右\s*" + re.escape(organ), tmp)
-            or re.search(re.escape(organ) + r"\s*右", tmp)):
+    if (re.search(r"右\s*(?:侧)?\s*" + re.escape(organ), tmp)
+            or re.search(re.escape(organ) + r"\s*(?:侧)?\s*右", tmp)):
         sides.add("right")
     return sides
 
@@ -697,7 +593,8 @@ TYPO_MAP_DEFAULT = {
     "覆查": "复查", "随防": "随访",
     "坐肺": "左肺",
     # —— P2 形近字错字（五笔/形码/OCR 误识别：形近但不同音）——
-    "未梢": "末梢", "末见": "未见", "已见": "未见",
+    "未梢": "末梢", "末见": "未见",
+    # （2026-08-18 移除 "已见":"未见"：『病灶较前已见好转』是正确表达，误报会进 auto_fix 自动替换）
     "结节边绿": "结节边缘", "边绿": "边缘",
     "末分化": "未分化", "己经": "已经", "巳经": "已经",
     "主干增租": "主干增粗", "末见明确": "未见明确", "末见异常": "未见异常",
@@ -882,7 +779,7 @@ def scan_reports_for_typos(path: str = RULES_CONFIG_PATH, limit: int = 200) -> l
         cand = find_homophone_suggestions(w)
         if not cand:
             continue
-        best, cat, sim = cand[0]
+        best, cat, sim, _k = cand[0]
         if sim < 0.97:
             continue
         seen.add(w)
@@ -900,7 +797,10 @@ def scan_reports_for_typos(path: str = RULES_CONFIG_PATH, limit: int = 200) -> l
 class ChineseRadiologyNER:
     SECTION_MAP = [
         (re.compile(r"检查所见|影像描述|表现|imaging findings|findings|radiographic findings", re.I), "findings"),
-        (re.compile(r"诊断印象|印象|诊断意见|结论|impression", re.I), "impression"),
+        # 与 _split_for_r5 的 impression 标题集合对齐（2026-08-18 修复：
+        # 此前缺『影像诊断/诊断结论/影像结论/diagnosis』，NER 把结论段整段标为 findings，
+        # 导致 R2 分支1/R5 依赖实体 section 的跨段比对失效）
+        (re.compile(r"影像诊断|诊断印象|印象|诊断意见|诊断结论|影像结论|结论|impression|diagnosis", re.I), "impression"),
         (re.compile(r"患者信息|患者|性别|年龄|检查部位|申请"), "meta"),
     ]
 
@@ -949,14 +849,22 @@ class ChineseRadiologyNER:
             for m in re.finditer(re.escape(word), text):
                 ents.append(Entity(word, "gender_organ", m.start(), m.end(),
                                     self._section_of(sections, m.start()), gender))
-        for m in re.finditer(r"(\d+(?:\.\d+)?)\s*([A-Za-z°/][A-Za-z°/0-9]*|\u00b0)", text):
+        for m in re.finditer(r"(\d+(?:\.\d+)?)\s*([A-Za-z°][A-Za-z°/0-9]*|\u00b0)", text):
             unit = m.group(2).lower()
-            label = "measurement" if unit in VALID_UNITS else "bad_unit"
+            # 2026-08-18 修复：① 单位首字符不允许 /（血压『120/80mmHg』不再被
+            # 吞成 /80mmhg）；② VALID_UNITS 大写 HU 比对时先小写化（此前 CT 值
+            # 『35HU』必误报 R4）。
+            label = "measurement" if unit in _VALID_UNITS_LOWER else "bad_unit"
             ents.append(Entity(m.group(0), label, m.start(), m.end(),
                                 self._section_of(sections, m.start()), unit))
         # —— 中文征象 / 随访 / 程度 实体（项目自建 zh_ner，离线词典式）——
         # 仅补充引擎既有 NER 未覆盖的 sign/followup/degree 三类；anatomy/laterality
         # 仍由上方 ANATOMY_SYNONYMS / LATERALITY 负责，避免重复抽取。
+        # 【2026-08-18 架构说明】zh_ner 的「部位实体」有意不接入：ANATOMY 全量词表
+        # 含征象别名（胸水/心影增大等）且匹配面宽，接入会放大 R5/R2 误报；
+        # normalize_text（同义词归一）同样未进 run() 预通道——会在归一文本上产出
+        # span，与其余规则基于原文本的坐标体系冲突（R19 span 教训）。如后续要
+        # 扩大器官覆盖，应扩充 ANATOMY_SYNONYMS 而非接入 zh_ner 全量。
         if _ZH_NLP_OK:
             for ze in _zh_ner_entities(text):
                 eng_label = _ZH_ENT_LABEL_MAP.get(ze.label)
@@ -995,27 +903,48 @@ class RuleEngine:
         ner = ChineseRadiologyNER()
         ents = ner.extract(text)
         secs = self._split_for_r5(text)
-        return (self._r1_gender(text, ents, meta)
-                + self._r2_laterality(text, ents)
-                + self._r3_score(text, meta)
-                + self._r4_unit(ents)
-                + self._r5_consistency(text, ents)
-                + self._r6_site(text, meta)
-                + self._r8_typo(text)
-                + self._r9_conflict(text)
-                + self._r10_template(text)
-                + self._r11_context(text, meta, secs)
-                + self._r12_sentence(text, ents)
-                + self._r14_cross(text, secs)
-                + self._r15_internal(text)
-                + self._r17_cross_region(text, secs)
-                + self._r18_region_coverage(text, meta)
-                + self._r21_gender_site(text, meta)
-                + self._r22_lesion_size(text, self._split_for_r5(text))
-                + (self._r19_homophone(text)
-                   if self.rules_config.get("enable_r19", True) else [])
-                + (self._r16_followup_timeframe(text)
-                   if self.rules_config.get("enable_r16") else []))
+        _finds = (self._r1_gender(text, ents, meta)
+                  + self._r2_laterality(text, ents)
+                  + self._r3_score(text, meta)
+                  + self._r4_unit(ents)
+                  + self._r5_consistency(text, ents)
+                  + self._r6_site(text, meta)
+                  + self._r8_typo(text)
+                  + self._r9_conflict(text)
+                  + self._r10_template(text)
+                  + self._r12_sentence(text, ents)
+                  + self._r14_cross(text, secs)
+                  + self._r15_internal(text)
+                  + self._r17_cross_region(text, secs)
+                  + self._r18_region_coverage(text, meta)
+                  + self._r21_gender_site(text, meta)
+                  + self._r22_lesion_size(text, self._split_for_r5(text))
+                  + (self._r19_homophone(text)
+                     if self.rules_config.get("enable_r19", True) else [])
+                  + (self._r16_followup_timeframe(text)
+                     if self.rules_config.get("enable_r16") else []))
+        # 繁体/异体字提示（2026-08-18）：避免简体词典对繁体输入静默误判
+        _trad = self._traditional_hits(text)
+        if _trad:
+            _finds.append(Finding(
+                "R23-TRADITIONAL", "繁体字提示", "low",
+                f"检测到繁体/异体字（{'、'.join(_trad)}…），质控词典为简体，"
+                f"相关规则识别可能不完整，建议转简体后重试",
+                "", (-1, -1)))
+        return _finds
+
+    def _traditional_hits(self, text: str) -> list:
+        """检测繁体/异体字（2026-08-18）：简体词典对繁体输入会产出碎片实体误报，
+        检出常见繁体字时提示用户，避免静默误判。"""
+        if not text:
+            return []
+        hits = []
+        for ch in _TRADITIONAL_CHARS:
+            if ch in text:
+                hits.append(ch)
+                if len(hits) >= 6:
+                    break
+        return hits
 
     def auto_fix(self, text: str, findings: List[Finding]):
         """自动修正：确定性错别字（R8 词典 / R19 读音推导）可安全替换；
@@ -1028,6 +957,10 @@ class RuleEngine:
             # 确定性错别字：R8 词典命中 / R19 读音推导（两者都带 suggestion=正确词）
             if fd.rule_id in ("R8-TYPO", "R19-HOMOPHONE"):
                 s, e = fd.span
+                if fd.rule_id == "R19-HOMOPHONE":
+                    # R19 的 span 基于去空格/标点的 norm_text，直接切原文会错位
+                    # （如『双肺 磨玻璃样密度影』）。用双指针映射还原到原文坐标。
+                    s, e = _map_norm_span_to_orig(text, _r19_norm_text(text), s, e)
                 sug = getattr(fd, "suggestion", "")
                 if s >= 0 and e > s and sug:
                     wrong = text[s:e]
@@ -1057,8 +990,14 @@ class RuleEngine:
             src = "报告正文"
         if not rg:
             return out  # 无法确定性别，不做判断（避免臆断）
+        # 检查部位本身为乳腺/钼靶时，正文『乳腺/乳房』是检查对象而非女性专属器官，
+        # 豁免（男性乳腺超声/钼靶检查 2026-08-18 修复，避免与 R21 口径不一致）。
+        _breast_exam = any(k in ((meta.get("applied_site") or "") + (meta.get("modality") or ""))
+                           for k in ("乳腺", "乳房", "钼靶"))
         seen = set()
         for e in [x for x in ents if x.label == "gender_organ"]:
+            if _breast_exam and e.text in ("乳腺", "乳房"):
+                continue
             expect = self.kg.expected_gender_for_organ(e.text)  # "male"/"female"
             if expect and expect != rg and e.text not in seen:
                 seen.add(e.text)
@@ -1151,14 +1090,20 @@ class RuleEngine:
     # R3 评分缺失
     def _r3_score(self, text, meta) -> List[Finding]:
         out = []
-        modality = meta.get("modality")
+        modality = meta.get("modality") or meta.get("applied_site")
+        # 2026-08-18：modality 为空时回退 applied_site（临床常只填申请部位）
         if not modality:
             return out
         required = self.kg.required_score_for_modality(modality)
         if not required:
             return out
-        pat = {"BI-RADS": r"BI-?RADS\s*[:：]?\s*\d", "PI-RADS": r"PI-?RADS\s*[:：]?\s*\d"}.get(required)
-        if pat and not re.search(pat, text, re.I):
+        # 间隔词容忍（2026-08-18）：『BI-RADS分级4a』『PI-RADS评分3分』等标配写法
+        pat = {"BI-RADS": r"BI-?RADS\s*(?:分级|评分|级|类别)?\s*[:：]?\s*\d",
+               "PI-RADS": r"PI-?RADS\s*(?:分级|评分|级|类别)?\s*[:：]?\s*\d"}.get(required)
+        # 阴性报告豁免（2026-08-18）：『乳腺未见异常』『前列腺未见明显异常』等
+        # 整体未见异常声明可不强制分级评分，避免阴性报告被无谓扣分。
+        _neg_report = re.search(r"未见异常|未见明显异常|未见实质性病变|未见占位性病变|正常$", text)
+        if pat and not re.search(pat, text, re.I) and not _neg_report:
             out.append(Finding("R3-SCORE", "评分标准缺失", "medium",
                 f"检查部位={modality} 要求包含 {required}，但报告未检出", "", (-1, -1)))
         return out
@@ -1186,12 +1131,16 @@ class RuleEngine:
             if not fam:
                 continue
             seg = f_txt[max(0, (e.start - f0) - 20): (e.end - f0) + 20]
-            if any(k in seg for k in POSITIVE_MARKERS):
+            if any(_word_effectively_present(seg, k) for k in POSITIVE_MARKERS):
                 fam_mk.setdefault(fam, e.text)
         for fam, name in fam_mk.items():
             # 印象段是否就该器官族给出结论（任一含该器官族同义词的实体 + 结论词）
             fam_organs = {w for w, c in ANATOMY_SYNONYMS.items() if _r5_fam(c) == fam}
-            mentioned = any(o in i_txt for o in fam_organs)
+            # 补充双侧/双/两 前缀措辞（如『两肺/双肾未见异常』），避免阴性一致报告误报。
+            # 由带侧别词（右肺/左肾）剥前缀得到基名（肺/肾），再拼『双/两/双侧』（2026-08-18 修复）。
+            _base = {w.lstrip("左右双两") for w in fam_organs if len(w) >= 2 and w.lstrip("左右双两")}
+            mentioned = any(o in i_txt for o in fam_organs) or \
+                any((p + b) in i_txt for p in ("双", "两", "双侧") for b in _base)
             concluded = any(k in i_txt for k in
                             ["占位", "结节", "癌", "瘤", "恶性", "病变", "异常",
                              "增大", "扩张", "囊肿", "结石", "水肿", "出血",
@@ -1239,20 +1188,35 @@ class RuleEngine:
         applied = meta.get("applied_site", "")
         if not applied:
             return out
-        norm_applied = self.kg.norm_site(applied)
+        # 多区域申请拆分（2026-08-18：『胸部、上腹部』按分隔符拆成多族，
+        # 正文覆盖任一申请区域即视为相符；此前只归一为单族导致误报 R6）
+        _applied_fams = set()
+        for _part in re.split(r"[、,，;；\s]+", applied):
+            _f = self.kg.norm_site(_part.strip())
+            if _f:
+                _applied_fams.add(_f)
+        norm_applied = next(iter(_applied_fams)) if _applied_fams else self.kg.norm_site(applied)
         if not norm_applied:
             return out
         # 仅扫描报告正文（检查所见 + 诊断印象），排除元信息头部，避免"申请部位"自身被计入
         secs = self._split_for_r5(text)
         body = secs["findings"] + "\n" + secs["impression"]
         found_families = set()
-        for m in re.finditer(r"|".join(map(re.escape, SITE_NORM.keys())), body):
+        # 多字部位键直接扫描；单字键（脑/肺/胰/脾/肾）需满足侧别/病变语境，避免
+        # 『未见脑转移』等偶发提及误报（2026-08-18 修复）。
+        _multi = [k for k in SITE_NORM if k not in _RISKY_SINGLE]
+        for m in re.finditer(r"|".join(map(re.escape, _multi)), body):
             fam = self.kg.norm_site(m.group(0))
             if fam:
                 found_families.add(fam)
-        if found_families and norm_applied not in found_families:
+        for k in _RISKY_SINGLE:
+            if _r6_site_single_key_hits(body, k):
+                fam = self.kg.norm_site(k)
+                if fam:
+                    found_families.add(fam)
+        if found_families and not (_applied_fams & found_families):
             out.append(Finding("R6-SITE", "登记部位不符", "high",
-                f"申请部位归一化={norm_applied}，但报告内容涉及{found_families}", "", (-1, -1)))
+                f"申请部位归一化={sorted(_applied_fams)}，但报告内容涉及{found_families}", "", (-1, -1)))
         return out
 
     # R18 检查部位器官漏写（登记区域声明 → 影像描述段应含该区域器官）
@@ -1329,10 +1293,12 @@ class RuleEngine:
         # 提取所有带尺寸的结节/肿块表述：术语 + 紧随的测量值（cm）
         # 匹配如：『结节，直径约 3.5cm』『结节大小约 4.2×3.1cm』『肿块，大小约 0.8cm』
         pat = re.compile(
-            r"(结节|肿块|占位|肿物)[，,、:：\s]*"
+            # 2026-08-18：术语后容忍 0-14 个非数字字符（『结节较前增大，现约3.5cm』
+            # 此前因中间夹修饰短语而漏检）；匹配后校验间隔串不含否定词。
+            r"(结节|肿块|占位|肿物)[^0-9]{0,14}?"
             r"(?:大小|直径|径线|体积|最长径)?\s*约?\s*"
             r"(\d+(?:\.\d+)?)\s*(?:×|x|\*)\s*(\d+(?:\.\d+)?)?\s*(cm|毫米|mm)"
-            r"|(结节|肿块|占位|肿物)[，,、:：\s]*"
+            r"|(结节|肿块|占位|肿物)[^0-9]{0,14}?"
             r"(?:大小|直径|径线|体积|最长径)?\s*约?\s*"
             r"(\d+(?:\.\d+)?)\s*(cm|毫米|mm)",
             re.I)
@@ -1391,8 +1357,12 @@ class RuleEngine:
         applied = (meta.get("applied_site") or "").strip().lower()
         modality = (meta.get("modality") or "").strip().lower()
         src = applied + " " + modality
-        female_only = ["乳腺", "乳房", "钼靶", "子宫", "卵巢", "宫颈", "阴道", "输卵管"]
+        female_only = ["子宫", "卵巢", "宫颈", "阴道", "输卵管"]
         male_only = ["前列腺", "睾丸", "阴茎", "精囊", "阴囊"]
+        # 乳腺：仅钼靶/乳腺X线判女性专属——男性乳腺超声（乳房发育）是合理临床
+        # 适应证，2026-08-18 修复此前『男+乳腺超声』误报。
+        if rg == "male" and ("钼靶" in src or "乳腺x线" in src or "乳腺x线" in modality or "钼" in src):
+            female_only = ["钼靶"] + female_only
         for kw in female_only:
             if kw in src and rg == "male":
                 out.append(Finding("R21-GENDER-SITE", "检查部位与性别不符", "high",
@@ -1453,12 +1423,7 @@ class RuleEngine:
         # 空格/标点容忍（2026-08-16 增强）：移除中文之间的空格/标点，使
         # 『磨 玻 璃』『磨．玻．璃』等 OCR/录入带空格的词能被识别为『磨玻璃』。
         # 仅用于 R19 读音比对（R19 为 low 级提示，位置偏移对使用影响极小）。
-        norm_text = text
-        while True:
-            _nxt = _R19_NORM_RE.sub(lambda m: m.group(1) + m.group(2), norm_text)
-            if _nxt == norm_text:
-                break
-            norm_text = _nxt
+        norm_text = _r19_norm_text(text)
         # R8 已标记区间：R19 不重复报（同音异字由 R19 补漏）
         r8_spans = set()
         typo_map = self.rules_config.get("typos", {}) or {}
@@ -1500,6 +1465,10 @@ class RuleEngine:
             run = m.group()
             # 对 run 内每个可能起点做滑窗
             for i in range(len(run)):
+                # 滑窗 4→3→2：命中 exact（同音）立即采用；near/shape 先记下继续找更短窗的 exact。
+                # 2026-08-18：此前任一命中即 break——『膜玻璃样』4字窗近音命中『磨玻璃影』
+                # 会阻断 3 字窗『膜玻璃』的同音『磨玻璃』，导致自动修正改错词。
+                best_hit = None  # (seg, s, e, best, cat, kind)
                 for ln in (4, 3, 2):
                     if i + ln > len(run):
                         continue
@@ -1509,27 +1478,33 @@ class RuleEngine:
                     seg = run[i:i + ln]
                     hit, cand = _hf_segment_candidates(seg, sensitivity)
                     if hit and cand:
-                        best, cat, sim = cand[0]
-                        if not _in_covered(s, e):
-                            # P0 上下文消歧：命中疑似错字但位于更长白名单词组
-                            # 内部（如「未见明显异常」切出「见明」）→ 豁免，
-                            # 消除『切词切出伪词』的误报。
-                            if _inside_covered(s, e, covered):
-                                continue
-                            # 判定错字类型：形近（sim==0.9 来自形近表）vs 同/近音
-                            if sim < 0.98:
-                                reason = "形近"
-                            elif sim == 1.0:
-                                reason = "同音"
-                            else:
-                                reason = "近音"
-                            out.append(Finding(
-                                "R19-HOMOPHONE", "读音/形近错字", "low",
-                                f"「{seg}」{reason}与高频词「{best}」（{cat}）相近，"
-                                f"疑为语音或输入法录入误写，请核对",
-                                seg, (s, e), best))
-                            seen_spans.add((s, e))
+                        best, cat, sim, _kind = cand[0]
+                        if _kind == "exact":
+                            best_hit = (seg, s, e, best, cat, "exact")
                             break
+                        if best_hit is None:
+                            best_hit = (seg, s, e, best, cat, _kind)
+                if best_hit:
+                    seg, s, e, best, cat, _kind = best_hit
+                    if not _in_covered(s, e):
+                        # P0 上下文消歧：命中疑似错字但位于更长白名单词组
+                        # 内部（如「未见明显异常」切出「见明」）→ 豁免，
+                        # 消除『切词切出伪词』的误报。
+                        if _inside_covered(s, e, covered):
+                            continue
+                        # 判定错字类型：exact=同音 / near=近音 / shape=形近
+                        if _kind == "shape":
+                            reason = "形近"
+                        elif _kind == "exact":
+                            reason = "同音"
+                        else:
+                            reason = "近音"
+                        out.append(Finding(
+                            "R19-HOMOPHONE", "读音/形近错字", "low",
+                            f"「{seg}」{reason}与高频词「{best}」（{cat}）相近，"
+                            f"疑为语音或输入法录入误写，请核对",
+                            seg, (s, e), best))
+                        seen_spans.add((s, e))
         return out
 
     # R9 用户自定义互斥冲突（由 rules_config.json 维护：词A 与 词B 不应在同一范围内共存）
@@ -1595,7 +1570,9 @@ class RuleEngine:
         required = cfg.get("required_sections", ["findings", "impression"])
         sev = cfg.get("severity", "low")
         has_findings = bool(re.search(r"检查所见|影像描述|表现", text))
-        has_impression = bool(re.search(r"诊断印象|印象|诊断意见|结论", text))
+        # 结论段判定限定『行首标题 + 冒号』（2026-08-18 修复）：此前子串"结论"会误匹配
+        # 『临床初步结论』『结论尚待』等正文词，导致真缺结论段时漏检模板缺失。
+        has_impression = bool(re.search(r"(?m)^\s*(?:诊断印象|印象|诊断意见|影像结论|影像诊断|结论)\s*[:：]", text))
         if "findings" in required and not has_findings:
             out.append(Finding("R10-TEMPLATE", "模板缺失-描述段", sev,
                 "报告缺少『检查所见/影像描述』段，不符合结构化报告规范", "", (-1, -1)))
@@ -1608,32 +1585,8 @@ class RuleEngine:
         return out
 
     # R11 上下文逻辑错误（信息框 vs 描述框/结论框 跨框比对）
-    def _r11_context(self, text, meta, secs) -> List[Finding]:
-        out = []
-        f_txt, i_txt = secs["findings"], secs["impression"]
-        # R11-1 左右一致性：项目/检查部位侧别 与 描述/结论提及的方位 比对
-        # 侧别来源自动兜底：meta.laterality > 报告内『检查项目/检查部位』标签 > meta.applied_site
-        # （用户常把左右写在 项目 自由文本、不填独立侧别框，此前规则因 laterality 空而整条跳过）
-        info_side = _project_side(text, meta)
-        if info_side and info_side != "bilateral":
-            for label, seg in (("影像描述", f_txt), ("影像结论", i_txt)):
-                sides = _detect_side_in_text(seg)
-                if not sides or "bilateral" in sides:
-                    continue
-                # 放宽（消除误报）：R11-SIDE 原在『报告只提对侧、未提本侧』时误报为左右矛盾，
-                # 但本侧可能正常未描述，属『未涉及』而非矛盾。现改为：
-                #   - 本侧未提及（info_side 不在 sides）→ 未涉及，不报；
-                #   - 本侧被提及（info_side 在 sides）→ 与信息框侧别一致，不报。
-                # 即仅凭单侧/双侧的“提及”不再判定左右矛盾（真正矛盾交由 R17 逐部位精确比对）。
-                if info_side == "left" and "left" not in sides:
-                    continue
-                if info_side == "right" and "right" not in sides:
-                    continue
-                # 本侧已被提及：一致，不报（双侧均描述也不构成矛盾）
-        # R11-2 描述异常 → 结论正常 矛盾：已下放到 R17 逐部位精确比对
-        # （按器官+侧别精确到同一部位；无法归属具体部位时由 R17 段级兜底保持原语义）。
-        # R11-3（信息框性别 vs 正文解析性别矛盾）已并入 R1-GENDER（见 _r1_gender 补充维度），此处不再单独产出。
-        return out
+    # （R11 信息框-正文矛盾已全部并入 R1-GENDER / R2-LATERALITY / R17-PERREGION，
+    #   原 _r11_context 恒返回 []，2026-08-18 清理删除。）
 
     # R12 同一句话逻辑错误（句级自相矛盾）
     def _r12_sentence(self, text, ents) -> List[Finding]:
@@ -1693,10 +1646,20 @@ class RuleEngine:
             out.append(Finding("R14-NATURE", "前后文逻辑错误-良恶性矛盾", "high",
                 "影像描述与影像结论在病灶良恶性定性上相互矛盾（一称恶性倾向、一称良性倾向）",
                 "", (-1, -1)))
-        # R14-3 病灶数量前后不一致
+        # R14-3 病灶数量前后不一致（2026-08-18：cf/ci 可为 "multi"=多发≥2）
         cf = _extract_lesion_count(f_txt)
         ci = _extract_lesion_count(i_txt)
-        if cf is not None and ci is not None and cf != ci:
+
+        def _count_conflict(a, b):
+            if a is None or b is None or a == b:
+                return False
+            if a == "multi" and isinstance(b, int) and b >= 2:
+                return False  # 多发与 2 枚以上不矛盾
+            if b == "multi" and isinstance(a, int) and a >= 2:
+                return False
+            return True
+
+        if _count_conflict(cf, ci):
             out.append(Finding("R14-COUNT", "前后文逻辑错误-数量不一致", "medium",
                 f"影像描述段提及病灶约 {cf} 枚/个，影像结论段提及约 {ci} 枚/个，数量前后不一致",
                 "", (-1, -1)))
@@ -1719,22 +1682,9 @@ class RuleEngine:
             out.append(Finding("R15-NORMAL", "上下文逻辑错误-段内自相矛盾", "high",
                 "影像描述段开头称『未见异常/正常』，但段内又描述阳性征，前后矛盾",
                 sents[0][:30], (-1, -1)))
-        # R15-2 同器官在描述段内前后左右矛盾
-        for o in ORGAN_SIDE_LIST_INTERNAL:
-            per = [(sent, _organ_sides_in_text(sent, o)) for sent in sents
-                   if len(_organ_sides_in_text(sent, o)) == 1]
-            flagged = False
-            for i in range(len(per)):
-                for j in range(i + 1, len(per)):
-                    if per[i][1] != per[j][1]:
-                        out.append(Finding("R15-SIDE", "上下文逻辑错误-左右自相矛盾", "high",
-                            f"影像描述段内同一器官「{o}」前后方位不一致："
-                            f"『{per[i][0][:18]}…』与『{per[j][0][:18]}…』",
-                            "", (-1, -1)))
-                        flagged = True
-                        break
-                if flagged:
-                    break
+        # R15-2（已删除 2026-08-18）：同器官描述段内前后左右矛盾——与 R2-LATERALITY
+        # 同属左右矛盾检测，用户确认删除；左右矛盾统一由 R2（跨段）与 R17-PERREGION
+        # （逐部位精确比对）负责，段内左右不一致场景仍会被 R17 段级兜底覆盖。
         # R15-3 同一病灶先见后无（描述段内跨句）
         for lw in LESION_WORDS:
             pres = absn = None
@@ -1982,7 +1932,30 @@ def _site_from_text(s: str) -> str:
     return ""
 
 
-_RISKY_SINGLE = {"脑"}  # 全文降级扫描时排除的高误判单字键
+_RISKY_SINGLE = {k for k in SITE_NORM if len(k) == 1}  # 全文降级扫描时排除的高误判单字键（脑/肺/胰/脾/肾）
+
+# 单字部位键的『病变/器官语境』后缀（计入 R6 的依据之一）
+_SITE_SINGLE_OK_RIGHT = ("结石", "囊肿", "占位", "脓肿", "肿瘤", "钙化", "积水",
+                         "梗死", "炎症", "炎性", "结核", "转移", "病变", "实质",
+                         "结节", "包膜", "门区", "叶内", "叶间", "上叶", "中叶", "下叶")
+
+
+def _r6_site_single_key_hits(body: str, k: str) -> bool:
+    """单字部位键（肾/肺/胰/脾/脑）是否构成『报告主体』依据（2026-08-18 修复）。
+
+    仅当满足其一才计入，避免正文偶发提及（如『未见脑转移』）把申请腹部误判为头颅：
+      1) 非否定语境（前 12 字无 _NEG_BEFORE_POS_RE 匹配）；
+      2) 且（左侧为左右双两 或 右侧 3 字内含病变/器官语境词，如『左肾见结石』『肺实质』）。
+    """
+    for m in re.finditer(re.escape(k), body):
+        pre = body[max(0, m.start() - 12): m.start()]
+        if _NEG_BEFORE_POS_RE.search(pre):
+            continue
+        left = body[m.start() - 1] if m.start() > 0 else ""
+        right3 = body[m.end(): m.end() + 3]
+        if left in "左右双两" or any(w in right3 for w in _SITE_SINGLE_OK_RIGHT):
+            return True
+    return False
 
 
 def _site_from_fulltext(s: str) -> str:

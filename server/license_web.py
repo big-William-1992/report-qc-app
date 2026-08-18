@@ -71,6 +71,10 @@ def _write_license(appdata_dir: str, data: dict) -> None:
     os.makedirs(appdata_dir, exist_ok=True)
     with open(_license_path(appdata_dir), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
+    try:
+        os.chmod(_license_path(appdata_dir), 0o600)  # 内含激活码，防他账号读取（2026-08-18）
+    except Exception:
+        pass
 
 
 # ---------------- 硬件标识（激活码绑定对象） ----------------
@@ -107,11 +111,23 @@ def machine_id() -> str:
 
 # ---------------- 试用期 ----------------
 
+def _activated_valid(lic: dict) -> bool:
+    """激活状态真实性校验（2026-08-18 防绕过，与 src/license_utils.py 同口径）：
+    ① 激活绑定的机器指纹必须与当前机器一致（防复制 license.json 一码多机）；
+    ② activation_code 必须仍能通过 Ed25519 验签（防手改 {activated:true} 伪造）。"""
+    if not lic.get("activated"):
+        return False
+    if lic.get("machine_id") != machine_id():
+        return False
+    code = (lic.get("activation_code") or "").strip()
+    return bool(code) and validate_activation_code(code)
+
+
 def check_trial(appdata_dir: str):
     """返回 (state, days_left)。
     state: 'activated' / 'trial' / 'expired'。"""
     lic = _read_license(appdata_dir)
-    if lic.get("activated"):
+    if _activated_valid(lic):
         return ("activated", 0)
     first_run = lic.get("first_run")
     if not first_run:
@@ -159,6 +175,8 @@ def activate(appdata_dir: str, code: str) -> bool:
         lic = _read_license(appdata_dir)
         lic["activated"] = True
         lic["activation_code"] = code
+        lic["machine_id"] = machine_id()   # 绑定机器指纹：防复制已激活文件一码多机（2026-08-18）
+        lic["activated_at"] = datetime.date.today().isoformat()
         _write_license(appdata_dir, lic)
         return True
     return False

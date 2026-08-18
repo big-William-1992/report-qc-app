@@ -29,6 +29,7 @@ import shutil
 import tarfile
 import subprocess
 import threading
+import hashlib
 import urllib.request
 
 APP_NAME = "星衍放射质控软件"
@@ -95,11 +96,15 @@ TMP = os.path.join(APP_DIR, "update", "_extract")
 shutil.rmtree(TMP, ignore_errors=True)
 os.makedirs(TMP, exist_ok=True)
 with tarfile.open(TAR) as tf:
-    # filter="data" 需 Python 3.12+；macOS 系统 Python（3.9）不支持会 TypeError，
-    # 这里做版本兼容，低版本退化为无过滤解包（tarball 来自自有仓库，信任源）。
+    # filter="data" 需 Python 3.12+；macOS 系统 Python（3.9）不支持会 TypeError。
+    # 低版本退化为手动路径穿越防护（2026-08-18 加固）：拒绝绝对路径与 .. 逃逸。
     try:
         tf.extractall(TMP, filter="data")
     except TypeError:
+        for _m in tf.getmembers():
+            _n = _m.name
+            if _n.startswith("/") or _n.split("/", 1)[0] in ("..", ".") or ".." in _n.split("/"):
+                raise RuntimeError("不安全的更新包路径: " + _n)
         tf.extractall(TMP)
 roots = [d for d in os.listdir(TMP) if os.path.isdir(os.path.join(TMP, d))]
 SRC = os.path.join(TMP, roots[0]) if roots else TMP
@@ -242,6 +247,28 @@ New-Item -ItemType Directory -Path $TMP -Force | Out-Null
 New-Item -ItemType Directory -Path $BAK -Force | Out-Null
 
 # 解包便携 zip（顶层为 报告质控软件.exe + _internal/）
+# 2026-08-18 加固：先校验成员路径，拒绝绝对路径 / .. 逃逸（与 macOS tar 分支对齐），
+# 防恶意 zip 或本地被替换的 update 缓存越界写出 APP_DIR。
+function Assert-ZipSafe {
+    param([string]$ZipPath, [string]$Dest)
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+        foreach ($entry in $zip.Entries) {
+            $n = $entry.FullName -replace '/', '\'
+            if ($n.StartsWith('\') -or $n -match '^[A-Za-z]:' -or ($n -split '\\' | Where-Object { $_ -eq '..' })) {
+                $zip.Dispose()
+                Log "ZIP UNSAFE PATH: $n"
+                exit 1
+            }
+        }
+        $zip.Dispose()
+    } catch {
+        Log "ZIP CHECK FAIL: $_"
+        exit 1
+    }
+}
+Assert-ZipSafe -ZipPath $Zip -Dest $TMP
 try {
     Expand-Archive -Path $Zip -DestinationPath $TMP -Force -ErrorAction Stop
     $extracted = @(Get-ChildItem $TMP)
@@ -339,6 +366,8 @@ def download(dest, progress_cb=None, timeout=180):
     """流式下载更新包到 dest。progress_cb(done, total) 回调（单位字节）。
 
     平台自动选择：macOS 下载源码 tarball，Windows 下载便携 zip。
+    2026-08-18 加固：下载后若发布物附带 `<url>.sha256` 校验文件则强制校验，
+    不匹配抛 RuntimeError 并删除（防 GitHub 被入侵/缓存被替换后执行任意代码）。
     """
     req = urllib.request.Request(
         _download_url(),
@@ -356,7 +385,34 @@ def download(dest, progress_cb=None, timeout=180):
                 done += len(chunk)
                 if progress_cb:
                     progress_cb(done, total)
+    _verify_download_sha256(dest)
     return dest
+
+
+def _verify_download_sha256(dest):
+    """若发布物附带 <下载URL>.sha256 则校验文件哈希；无校验文件时跳过（宽容）。"""
+    sha_url = _download_url() + ".sha256"
+    try:
+        req = urllib.request.Request(sha_url, headers={"User-Agent": "xingyan-qc-update"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            expected_raw = r.read(4096).decode("utf-8", "ignore").strip()
+    except Exception:
+        return  # 无校验文件：跳过（源码 tarball 等 GitHub 动态产物）
+    import re as _re
+    m = _re.match(r"([0-9a-fA-F]{64})", expected_raw)
+    if not m:
+        return
+    expected = m.group(1).lower()
+    h = hashlib.sha256()
+    with open(dest, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    if h.hexdigest() != expected:
+        try:
+            os.remove(dest)
+        except Exception:
+            pass
+        raise RuntimeError("更新包校验失败（sha256 不匹配），已删除，请勿安装被篡改的文件")
 
 
 def make_installer(app_dir_path, archive_path):

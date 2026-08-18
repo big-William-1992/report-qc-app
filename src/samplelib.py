@@ -29,49 +29,171 @@ def _appdata_db() -> str:
 
 
 def db_path() -> str:
+    """统一数据层（2026-08-18 收敛）：样本库并入 qc.db（与 server/db.py 的 SQLAlchemy 同库），
+    替代独立 samples.db。frozen 态仍落用户可写目录；init_db() 会自动建 samples 表。
+    QC_DB_OVERRIDE（E2E 测试隔离）优先于默认路径，与 server/db.py 收敛一致。"""
+    override = os.environ.get("QC_DB_OVERRIDE", "").strip()
+    if override:
+        return os.path.abspath(override)
     if getattr(sys, "frozen", False):
-        # 打包后：样本库放在用户可写目录，避免安装到 Program Files 后只读报错
-        user_db = _appdata_db()
-        if not os.path.exists(user_db):
-            # 首次运行：从 exe 同级 assets/ 复制初始库到用户目录
-            src = os.path.join(os.path.dirname(sys.executable), "assets", "samples.db")
-            try:
-                os.makedirs(os.path.dirname(user_db), exist_ok=True)
-                if os.path.exists(src):
-                    shutil.copyfile(src, user_db)
-            except Exception:
-                return src  # 兜底：仍用只读源
-        return user_db
+        user_dir = os.path.dirname(_appdata_db())  # MedicalReportQC 用户数据目录
+        os.makedirs(user_dir, exist_ok=True)
+        return os.path.join(user_dir, "qc.db")
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, "assets", "samples.db")
+    return os.path.join(base, "assets", "qc.db")
+
+
+def rescue_samples_conv(path: str = None) -> int:
+    """抢救 samples_conv_old 滞留数据（2026-08-18 P0 修复）：此前 user_id INTEGER→TEXT
+    重建迁移因旧表 created_at 列不匹配 INSERT 失败，历史样本滞留孤儿表（真实库取证：
+    samples_conv_old 含李四等旧行、user_id 被截断为 559）。幂等：成功迁移后 DROP 旧表。
+    返回迁回行数。"""
+    path = path or db_path()
+    try:
+        conn = sqlite3.connect(path)
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")]
+        if "samples_conv_old" not in tables or "samples" not in tables:
+            conn.close()
+            return 0
+        old_cols = [r[1] for r in conn.execute("PRAGMA table_info(samples_conv_old)")]
+        new_cols = [r[1] for r in conn.execute("PRAGMA table_info(samples)")]
+        common = [c for c in old_cols if c in new_cols]
+        if not common:
+            conn.close()
+            return 0
+        # user_id 校正：旧 INTEGER 截断（559 → 前导补零 0559），按 users.emp_id 匹配
+        emp_ids = [r[0] for r in conn.execute("SELECT emp_id FROM users")]
+        rows = conn.execute(
+            "SELECT " + ",".join(common) + " FROM samples_conv_old").fetchall()
+        n = 0
+        for r in rows:
+            d = dict(zip(common, r))
+            uid = d.get("user_id")
+            if uid is not None and str(uid).strip().isdigit():
+                cand = str(uid).strip()
+                fixed = next((e for e in emp_ids
+                              if str(e).lstrip("0") == cand.lstrip("0")), cand)
+                d["user_id"] = fixed
+            if conn.execute("SELECT 1 FROM samples WHERE id=?",
+                            (d.get("id"),)).fetchone():
+                d.pop("id", None)  # id 冲突：改自增插入
+            cols = ",".join(d.keys())
+            ph = ",".join("?" * len(d))
+            try:
+                conn.execute(f"INSERT INTO samples ({cols}) VALUES ({ph})",
+                             list(d.values()))
+                n += 1
+            except sqlite3.IntegrityError:
+                continue
+        conn.execute("DROP TABLE samples_conv_old")
+        conn.commit()
+        conn.close()
+        return n
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return 0
+
+
+def migrate_legacy_samples() -> None:
+    """把旧独立 samples.db 的数据一次性迁入统一 qc.db（2026-08-18 收敛，幂等）。
+
+    仅当旧库存在且有数据、目标 samples 表为空时执行；完成后旧库改名 samples.db.bak。
+    由 server 启动时（db.init_db 之后）调用一次。
+    """
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    old = os.path.join(base, "assets", "samples.db")
+    if not os.path.exists(old):
+        return
+    target = db_path()
+    if os.path.abspath(target) == os.path.abspath(old):
+        return
+    try:
+        with sqlite3.connect(old) as conn:
+            n = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+    except Exception:
+        n = 0
+    if n == 0:
+        try:
+            os.rename(old, old + ".bak")
+        except Exception:
+            pass
+        return
+    init_db(target)
+    try:
+        with sqlite3.connect(target) as conn:
+            tn = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+    except Exception:
+        tn = 0
+    if tn > 0:
+        return  # 目标已有数据，不重复迁移（幂等）
+    with sqlite3.connect(old) as src, sqlite3.connect(target) as dst:
+        rows = src.execute("SELECT * FROM samples").fetchall()
+        cols = [d[0] for d in src.execute("SELECT * FROM samples LIMIT 1").description]
+        cols_sql = ",".join(cols)
+        ph = ",".join("?" * len(cols))
+        dst.executemany(f"INSERT INTO samples ({cols_sql}) VALUES ({ph})", rows)
+        dst.commit()
+    try:
+        os.rename(old, old + ".bak")
+    except Exception:
+        pass
+
+
+# samples 表统一 schema（user_id 存工号 TEXT，2026-08-18 数据层收敛对齐 models.Sample）
+_SAMPLES_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        patient TEXT,
+        gender TEXT,
+        age TEXT,
+        modality TEXT,
+        applied_site TEXT,
+        report_text TEXT,
+        findings_json TEXT,
+        scores_json TEXT
+    )
+"""
 
 
 def init_db(path: str = None) -> None:
     path = path or db_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with sqlite3.connect(path) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS samples (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts TEXT NOT NULL,
-                patient TEXT,
-                gender TEXT,
-                age TEXT,
-                modality TEXT,
-                applied_site TEXT,
-                report_text TEXT,
-                findings_json TEXT,
-                scores_json TEXT
-            )
-        """)
-        # 向后兼容：旧库无 laterality 列时追加（SQLite 不支持 ADD COLUMN IF NOT EXISTS）
+        conn.execute(_SAMPLES_TABLE_SQL)
+        # 向后兼容：旧库无 laterality / user_id / dept_id 列时追加（SQLite 不支持 ADD COLUMN IF NOT EXISTS）
+        for _col, _decl in (("laterality", "TEXT"), ("user_id", "TEXT"), ("dept_id", "TEXT")):
+            try:
+                conn.execute(f"ALTER TABLE samples ADD COLUMN {_col} {_decl}")
+            except sqlite3.OperationalError:
+                pass
+        # 2026-08-18 收敛修正：早期 models.Sample.user_id 误配为 INTEGER FK，工号 '0559'
+        # 会被 SQLite 转为 559，导致样本归属/角色过滤失配。检测到 INTEGER 声明则重建为 TEXT（幂等）。
+        _pt = [r for r in conn.execute("PRAGMA table_info(samples)").fetchall() if r[1] == "user_id"]
+        if _pt and _pt[0][2].upper() == "INTEGER":
+            conn.execute("ALTER TABLE samples RENAME TO samples_conv_old")
+            conn.execute(_SAMPLES_TABLE_SQL)
+            for _col, _decl in (("laterality", "TEXT"), ("user_id", "TEXT"), ("dept_id", "TEXT")):
+                try:
+                    conn.execute(f"ALTER TABLE samples ADD COLUMN {_col} {_decl}")
+                except sqlite3.OperationalError:
+                    pass
+            _old_cols = [r[1] for r in conn.execute("PRAGMA table_info(samples_conv_old)").fetchall()]
+            _new_cols = [r[1] for r in conn.execute("PRAGMA table_info(samples)").fetchall()]
+            # 列交集（2026-08-18 P0 修复）：旧 ORM 表含 created_at 等新表没有的列，
+            # 全列直拷会 INSERT 失败且 DDL 已自动提交——历史样本滞留 samples_conv_old。
+            _common = [c for c in _old_cols if c in _new_cols]
+            if _common:
+                _cc = ",".join(_common)
+                conn.execute(f"INSERT INTO samples ({_cc}) SELECT {_cc} FROM samples_conv_old")
+            conn.execute("DROP TABLE samples_conv_old")
+        # 2026-08-18：samples 按 user_id/ts 过滤无索引，多用户/数据增长后列表与统计全表扫描
         try:
-            conn.execute("ALTER TABLE samples ADD COLUMN laterality TEXT")
-        except sqlite3.OperationalError:
-            pass
-        # 向后兼容：旧库无 user_id 列时追加（记录质控责任人工号）
-        try:
-            conn.execute("ALTER TABLE samples ADD COLUMN user_id TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_samples_user_ts ON samples(user_id, ts)")
         except sqlite3.OperationalError:
             pass
         conn.commit()
@@ -79,7 +201,7 @@ def init_db(path: str = None) -> None:
 
 def save_sample(report: str, meta: dict, findings: list, scores: dict,
                 path: str = None, anonymize: bool = False,
-                user_id: str = None) -> int:
+                user_id: str = None, dept_id: str = None) -> int:
     init_db(path)
     m = dict(meta)
     if anonymize:
@@ -88,8 +210,8 @@ def save_sample(report: str, meta: dict, findings: list, scores: dict,
         cur = conn.execute(
             """INSERT INTO samples
                (ts, patient, gender, age, modality, applied_site, laterality,
-                user_id, report_text, findings_json, scores_json)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                user_id, dept_id, report_text, findings_json, scores_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 datetime.datetime.now().isoformat(timespec="seconds"),
                 m.get("patient", ""),
@@ -99,6 +221,7 @@ def save_sample(report: str, meta: dict, findings: list, scores: dict,
                 m.get("applied_site", ""),
                 m.get("laterality", ""),
                 (user_id or "").strip(),
+                str(dept_id or m.get("dept_id", "") or "").strip(),
                 report,
                 json.dumps([f.__dict__ for f in findings], ensure_ascii=False),
                 json.dumps(scores, ensure_ascii=False),
@@ -126,18 +249,26 @@ def get_sample(sid: int, path: str = None) -> dict:
         return dict(r) if r else {}
 
 
-def list_samples_full(path: str = None, limit: int = None) -> list:
+def list_samples_full(path: str = None, limit: int = None, user_id: str = None) -> list:
     """返回样本全部字段（含 report_text / findings_json / scores_json），供导出报表使用。
-    limit 可选：>0 时只在 SQL 层取最近 N 条，避免全量载入长文本（扫描学习用）。"""
+    limit 可选：>0 时只在 SQL 层取最近 N 条，避免全量载入长文本（扫描学习用）。
+    user_id 可选：非空时只返回该责任人的样本（多用户隔离，2026-08-18）。"""
     init_db(path)
+    _where = ""
+    _args = []
+    if user_id:
+        _where = " WHERE user_id=?"
+        _args = [user_id]
     with sqlite3.connect(path or db_path()) as conn:
         conn.row_factory = sqlite3.Row
         if limit and limit > 0:
             rows = conn.execute(
-                "SELECT * FROM samples ORDER BY id DESC LIMIT ?", (int(limit),)
+                "SELECT * FROM samples" + _where + " ORDER BY id DESC LIMIT ?",
+                _args + [int(limit),]
             ).fetchall()
         else:
-            rows = conn.execute("SELECT * FROM samples ORDER BY id DESC").fetchall()
+            rows = conn.execute(
+                "SELECT * FROM samples" + _where + " ORDER BY id DESC").fetchall()
         return [dict(r) for r in rows]
 
 
@@ -146,12 +277,15 @@ def delete_sample(sid: int, path: str = None) -> None:
         conn.execute("DELETE FROM samples WHERE id=?", (sid,))
 
 
-def stats_by_error_type(path: str = None) -> dict:
-    """汇总所有样本的错误类型计数，供饼图"""
+def stats_by_error_type(path: str = None, user_id: str = None) -> dict:
+    """汇总样本的错误类型计数，供饼图。user_id 非空时仅统计该责任人样本。"""
     init_db(path)
     counts = {}
+    _where = " WHERE user_id=?" if user_id else ""
+    _args = (user_id,) if user_id else ()
     with sqlite3.connect(path or db_path()) as conn:
-        rows = conn.execute("SELECT findings_json FROM samples").fetchall()
+        rows = conn.execute(
+            "SELECT findings_json FROM samples" + _where, _args).fetchall()
     for (fj,) in rows:
         fj = fj or "[]"
         try:
@@ -164,12 +298,15 @@ def stats_by_error_type(path: str = None) -> dict:
     return counts
 
 
-def stats_by_date(path: str = None) -> dict:
-    """按日期汇总报告数与平均准确性，供趋势图"""
+def stats_by_date(path: str = None, user_id: str = None) -> dict:
+    """按日期汇总报告数与平均准确性，供趋势图。user_id 非空时仅统计该责任人样本。"""
     init_db(path)
     by_date = {}
+    _where = " WHERE user_id=?" if user_id else ""
+    _args = (user_id,) if user_id else ()
     with sqlite3.connect(path or db_path()) as conn:
-        rows = conn.execute("SELECT ts, scores_json FROM samples").fetchall()
+        rows = conn.execute(
+            "SELECT ts, scores_json FROM samples" + _where, _args).fetchall()
     for ts, sj in rows:
         day = ts[:10]
         sj = sj or "[]"
@@ -186,10 +323,12 @@ def stats_by_date(path: str = None) -> dict:
     return {d: {"n": v["n"], "avg_acc": round(v["acc_sum"] / v["n"], 1)} for d, v in by_date.items()}
 
 
-def stats_report(start: str = None, end: str = None, path: str = None) -> dict:
+def stats_report(start: str = None, end: str = None, path: str = None,
+                 user_id: str = None) -> dict:
     """质控问题分类统计报表（时间段筛选）。
 
     start / end : "YYYY-MM-DD"（含边界），None 表示不限。
+    user_id     : 非空时仅统计该责任人的样本（多用户隔离，2026-08-18）。
     返回：
       period        {start, end, total, n_critical, n_warning, n_info}
       error_type_top  [{name, count}] 按问题类型计数降序
@@ -198,10 +337,19 @@ def stats_report(start: str = None, end: str = None, path: str = None) -> dict:
       daily           [{date, count, acc}] 逐日趋势
     """
     init_db(path)
+    _where = ""
+    _args = ()
+    if user_id:
+        _where = " WHERE user_id=?"
+        _args = (user_id,)
     rows = []
     with sqlite3.connect(path or db_path()) as conn:
         conn.row_factory = sqlite3.Row
-        rows = [dict(r) for r in conn.execute("SELECT * FROM samples").fetchall()]
+        # 只取统计所需列（ts/user_id/findings_json/scores_json），
+        # 不载入 report_text 全文（2026-08-18 性能优化）
+        rows = [dict(r) for r in conn.execute(
+            "SELECT ts, user_id, findings_json, scores_json FROM samples"
+            + _where, _args).fetchall()]
 
     def _in_range(ts: str) -> bool:
         day = (ts or "")[:10]
@@ -288,16 +436,24 @@ FIELDS = ["id", "ts", "patient", "gender", "age", "modality",
           "report_text", "findings_json", "scores_json"]
 
 
-def export_samples(path: str = None, out_path: str = None, fmt: str = "csv") -> str:
+def export_samples(path: str = None, out_path: str = None, fmt: str = "csv",
+                   user_id: str = None, anonymize: bool = False) -> str:
     """导出样本库为 CSV（Excel 友好，utf-8-sig 带 BOM）/ JSON / DOCX / PDF。
 
-    path     : 源库路径，默认 db_path()
-    out_path : 输出文件，默认在源库同目录生成 samples_export_<时间戳>.<ext>
-    fmt      : 'csv' | 'json' | 'docx' | 'pdf'
+    path      : 源库路径，默认 db_path()
+    out_path  : 输出文件，默认在源库同目录生成 samples_export_<时间戳>.<ext>
+    fmt       : 'csv' | 'json' | 'docx' | 'pdf'
+    user_id   : 非空时仅导出该责任人的样本（多用户隔离，2026-08-18）。
+    anonymize : True 时剥离患者姓名/性别/年龄（医疗数据合规，2026-08-18）。
     返回输出文件路径。DOCX 用纯标准库生成（OOXML）；PDF 需要 reportlab（可选依赖，
     缺失时抛 RuntimeError 并给出安装提示）。
     """
-    rows = list_samples_full(path)
+    rows = list_samples_full(path, user_id=user_id)
+    if anonymize:
+        for r in rows:
+            r["patient"] = "已脱敏"
+            r["gender"] = ""
+            r["age"] = ""
     if out_path is None:
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_path = os.path.join(os.path.dirname(path or db_path()),
@@ -375,10 +531,30 @@ def export_qc_report(report_text: str, meta: dict, findings: list,
     return export_report_docx(sample)
 
 
+def _scores_of(r: dict) -> dict:
+    """解析样本行 scores_json 为 dict。
+
+    2026-08-18 修复：CSV 导入且无 scores 列时 _import_rows 默认写 "[]"，
+    json.loads 得 list，下游 scores.items() 抛 AttributeError（导出报告单 500）。
+    """
+    raw = r.get("scores_json") or "{}"
+    try:
+        v = json.loads(raw)
+    except Exception:
+        return {}
+    return v if isinstance(v, dict) else {}
+
+
+_XML_ILLEGAL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
 def _xml_escape(s: str) -> str:
     if s is None:
         return ""
-    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+    # 剥离 XML 1.0 非法控制字符（\x00-\x08\x0b\x0c\x0e-\x1f）：
+    # 报告文本含这些字符时直接写入 document.xml 会导致 Word 报"文档损坏"（2026-08-18）
+    return (_XML_ILLEGAL_RE.sub("", str(s))
+            .replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
@@ -415,7 +591,7 @@ def _write_docx(rows: list, out_path: str, single: bool = False) -> None:
                        color="1F4E79", align="center")] if single else []
     if single:
         r = rows[0]
-        scores = json.loads(r.get("scores_json") or "{}")
+        scores = _scores_of(r)
         body.append(_docx_para("", size=8))
         meta_lines = [
             f"报告 ID：{r.get('id', '')}", f"检查部位：{r.get('applied_site') or '—'}",
@@ -550,7 +726,7 @@ def _write_pdf(rows: list, out_path: str, single: bool = False) -> None:
     story = []
     if single:
         r = rows[0]
-        scores = json.loads(r.get("scores_json") or "{}")
+        scores = _scores_of(r)
         findings = json.loads(r.get("findings_json") or "[]")
         sev_cn = {"high": "严重", "medium": "警告", "low": "提示"}
         story.append(Paragraph("星衍 · 放射质控报告单", title_style))
@@ -688,15 +864,29 @@ def _import_rows(rows: list, target: str = None):
 
 
 def import_samples(src_path: str, target: str = None):
-    """从 CSV/JSON 文件导入样本到 target 库（默认当前库）。返回 (inserted, skipped)。"""
+    """从 CSV/JSON 文件导入样本到 target 库（默认当前库）。返回 (inserted, skipped)。
+
+    2026-08-18：CSV 表头缺必填列或含空 report_text 行时抛 ValueError（可读错误），
+    避免静默插入"空壳"样本污染样本库与统计。
+    """
     if src_path.lower().endswith(".json"):
         with open(src_path, encoding="utf-8") as fh:
             data = json.load(fh)
     else:
         with open(src_path, encoding="utf-8-sig") as fh:
-            data = [dict(r) for r in csv.DictReader(fh)]
+            reader = csv.DictReader(fh)
+            cols = set(reader.fieldnames or [])
+            if "report_text" not in cols:
+                raise ValueError(
+                    f"CSV 表头缺少必填列 report_text（当前列：{sorted(cols)}）")
+            data = [dict(r) for r in reader]
     if not data:
         return 0, 0
+    # 过滤空 report_text 行（表头不匹配/空行会产生空键行）
+    _before = len(data)
+    data = [r for r in data if (r.get("report_text") or "").strip()]
+    if _before != len(data):
+        raise ValueError(f"检测到 {_before - len(data)} 行无报告内容（空行或表头不符），已中止导入")
     return _import_rows(data, target)
 
 

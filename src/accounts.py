@@ -10,6 +10,7 @@ import os
 import sys
 import json
 import hashlib
+import hmac
 import secrets
 import datetime
 
@@ -107,7 +108,7 @@ def verify_account(emp_id: str, password: str) -> bool:
         u = s.query(User).filter(User.emp_id == emp_id).first()
         if not u:
             return False
-        return _hash_password(password or "", u.salt) == u.pwd_hash
+        return hmac.compare_digest(_hash_password(password or "", u.salt), u.pwd_hash)
 
 
 def account_exists(emp_id: str) -> bool:

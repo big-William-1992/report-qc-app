@@ -307,7 +307,7 @@ def find_homophone_suggestions(segment: str,
                                top_k: int = 3) -> List[Tuple[str, str, float]]:
     """给定一个可疑片段，返回读音相似的高频正确词候选。
 
-    返回 [(正确词, 类别, 相似度)]，按相似度降序；未安装 pypinyin 时返回空。
+    返回 [(正确词, 类别, 相似度, 类型)]（类型 exact=同音/near=近音/shape=形近），按相似度降序；未安装 pypinyin 时返回空。
     """
     if _PY is None or not segment:
         return []
@@ -326,9 +326,10 @@ def find_homophone_suggestions(segment: str,
                 continue
             dist = _edit_distance(seg_py, py)
             sim = 1.0 - dist / max(len(seg_py), len(py), 1)
+            kind = "exact" if dist == 0 else "near"  # 同音/近音（2026-08-18 加类型标记）
             for w in words:
                 cat = next((c for (x, c) in _HIGHFREQ_WORDS if x == w), "")
-                cand.append((w, cat, round(sim, 3)))
+                cand.append((w, cat, round(sim, 3), kind))
     # P1 形近字补充：读音不相似但形近（五笔/形码/OCR 误识）的候选也纳入，
     # 相似度记 0.9（低于同音 1.0 / 近音 0.98，但高于 R19 触发阈值时仍可检出）
     for ln in (n,):
@@ -336,18 +337,18 @@ def find_homophone_suggestions(segment: str,
         for py, words in bucket.items():
             for w in words:
                 if _shape_similar_word(segment, w):
-                    if w not in [x for x, _, _ in cand]:
+                    if w not in [x for x, _, _, _ in cand]:
                         cat = next((c for (x, c) in _HIGHFREQ_WORDS if x == w), "")
-                        cand.append((w, cat, 0.9))
+                        cand.append((w, cat, 0.9, "shape"))
     cand.sort(key=lambda t: -t[2])
     # 去重（同词多类别只留一个）
     seen: Set[str] = set()
-    dedup: List[Tuple[str, str, float]] = []
-    for w, c, s in cand:
+    dedup: List[Tuple[str, str, float, str]] = []
+    for w, c, s, k in cand:
         if w in seen:
             continue
         seen.add(w)
-        dedup.append((w, c, s))
+        dedup.append((w, c, s, k))
         if len(dedup) >= top_k:
             break
     return dedup
@@ -453,7 +454,8 @@ def segment_candidates(seg: str,
 
     返回 (命中与否, 候选列表)。命中条件：片段本身不在白名单里，
     但与某高频正确词读音相同/相似（相似度 ≥ 当前敏感度档位阈值）。
-    sensitivity ∈ {low, medium, high}：低=仅同音、中=近音(默认)、高=含形近。
+    sensitivity ∈ {low, medium, high}：低=仅同音、中=同音+近音(3字以上片段)、高=同音+近音+形近。
+    （2026-08-18 修正：medium 原仅同音——近音相似度达不到 0.98 阈值；现 3+ 字近音可抓，2 字保守防误报）
     """
     seg = seg.strip()
     if not seg:
@@ -465,16 +467,24 @@ def segment_candidates(seg: str,
     for w, _c in _HIGHFREQ_WORDS:
         if w == seg:
             return False, []
-    min_sim = SENSITIVITY_MIN_SIM.get(sensitivity, 0.98)
-    cand = [c for c in find_homophone_suggestions(seg) if c[2] >= min_sim]
-    # 形近候选（相似度记 0.9）来自人工精选形近字组（膈/隔、肋/胸、末/未…），
-    # 误报风险低；medium/high 敏感度下均纳入（仅 low 只报同音，避免误报）。
-    if sensitivity != "low":
-        _shape_only = [c for c in find_homophone_suggestions(seg)
-                       if c[2] == 0.9 and c not in cand]
-        if _shape_only:
-            cand.extend(_shape_only)
-            cand.sort(key=lambda t: -t[2])
+    # 档位按候选类型过滤（2026-08-18 修复）：候选带 kind 标记
+    #   exact=同音 / near=近音(编辑距离≤1) / shape=形近(人工表,sim 0.9)
+    # 此前用单一 sim 阈值（medium=0.98），近音相似度(0.83~0.92)永远达不到，
+    # medium 档实际等同 low（仅同音），近音错字在默认档漏检；且阈值与形近 0.9
+    # 区间重叠，无法用阈值区分近音与形近。
+    _cands = find_homophone_suggestions(seg)
+    if sensitivity == "low":
+        cand = [c for c in _cands if c[3] == "exact"]
+    elif sensitivity == "high":
+        cand = _cands  # 同音 + 近音 + 形近
+    else:  # medium（默认）：同音 + 近音——但 2 字片段只收同音。
+        # 2026-08-18：近音(拼音编辑距离≤1)对 2 字词过宽（『双肺→上肺』『晰肺→下肺』，
+        # 且『双肺/纹理/清晰』等极高频标准词不在白名单），一律收会大量误报；
+        # 3+ 字片段组合特异性高，近音错字（如『磨玻璃→膜玻璃』）可安全检出。
+        if len(seg) >= 3:
+            cand = [c for c in _cands if c[3] in ("exact", "near")]
+        else:
+            cand = [c for c in _cands if c[3] == "exact"]
     if cand:
         return True, cand
     return False, []

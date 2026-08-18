@@ -8,6 +8,7 @@ server/db.py — SQLAlchemy 统一数据层
 """
 import os
 import sys
+import hashlib
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -35,7 +36,7 @@ def _make_engine(url: str):
         @event.listens_for(eng, "connect")
         def _sqlite_pragmas(dbapi_conn, _record):
             cur = dbapi_conn.cursor()
-            cur.execute("PRAGMA busy_timeout=5000")
+            cur.execute("PRAGMA busy_timeout=30000")  # 写锁等待 30s（2026-08-18 由 5s 提高）
             cur.close()
 
         @event.listens_for(eng, "begin")
@@ -69,6 +70,49 @@ def init_db() -> None:
         if _dir:
             os.makedirs(_dir, exist_ok=True)
     Base.metadata.create_all(bind=engine)
+    _migrate_queue_hash(engine)
+
+
+def _migrate_queue_hash(eng) -> None:
+    """幂等迁移：旧 queue 表补 report_hash 列 + 唯一索引（数据库层并发去重）。
+
+    create_all 对已存在的表不会加新列，需手工 ALTER；SQLite 索引名全局唯一，
+    已存在时跳过（幂等）。补列后回填存量行的 hash（与 _queue_orm_all 同口径 MD5，
+    去空格后计算），重复 hash 只保留最早一条。
+    """
+    try:
+        with eng.connect() as c:
+            cols = [r[1] for r in c.execute("PRAGMA table_info(queue)").fetchall()]
+            if "report_hash" not in cols:
+                c.execute("ALTER TABLE queue ADD COLUMN report_hash VARCHAR(32)")
+                c.execute("COMMIT")
+            else:
+                # 新库：models.QueueItem.report_hash unique=True 已由 create_all 生成
+                # 唯一约束 autoindex，无需再手工建索引/清理（2026-08-18 双索引冗余修复）
+                return
+    except Exception:
+        return  # 表不存在等：由 create_all 兜底
+    try:
+        with eng.connect() as c:
+            rows = c.execute(
+                "SELECT id, report_text FROM queue "
+                "WHERE report_hash IS NULL OR report_hash = ''").fetchall()
+            for rid, rt in rows:
+                h = hashlib.md5("".join((rt or "").split()).encode("utf-8", "ignore")).hexdigest() \
+                    if (rt or "").strip() else None
+                if h:
+                    c.execute("UPDATE queue SET report_hash=? WHERE id=?", (h, rid))
+            c.execute("COMMIT")
+        with eng.begin() as c:
+            # 唯一索引冲突防御（仅旧库补列时执行一次）：重复 hash 只保留最早一条
+            c.execute(
+                "DELETE FROM queue WHERE id NOT IN "
+                "(SELECT MIN(id) FROM queue GROUP BY report_hash) "
+                "AND report_hash IS NOT NULL AND report_hash != ''")
+            c.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_queue_hash ON queue(report_hash)")
+    except Exception:
+        pass
 
 
 def get_db():

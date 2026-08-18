@@ -20,8 +20,10 @@
 - ROCOv2 为图文（caption）数据集，多模态，用于多器官描述风格覆盖。
 - 术语本体（RadLex / UMLS / SNOMED CT）仅作术语映射参考，原始术语库需授权下载。
 
-本模块是「单一事实来源」：质控引擎、回归测试、文档（README / docs）均从
-此处取数，避免多处硬编码导致不一致。
+【2026-08-18 更正】本模块是「数据集/术语资源目录」——仅作资源登记与测试引用，
+并非引擎词表的单一事实来源（引擎词表实际在 _lexicons.py / anatomy_lexicon.py /
+highfreq_lexicon.py / zh_radiology_synonyms.py，均已接入）。保留本文件供
+数据集回归测试与文档引用，勿再依据本文件修改引擎词表。
 """
 
 from __future__ import annotations
@@ -332,14 +334,14 @@ KNOWLEDGE_RESOURCES: Dict[str, Dict] = {
         "related": [],
     },
     "zh_radiology_synonyms": {
-        "name": "中文放射征象同义词表（项目自建，规划中）",
+        "name": "中文放射征象同义词表（项目自建，已实现）",
         "owner": "本项目自建（放射科医师维护）",
         "type": "nomenclature",
-        "scope": "规划中：将『增殖灶/纤维灶/斑片影/索条影/磨玻璃密度影』等中文征象词"
-                 "归一，补 RadLex 少量 zh 别名之不足；由放射科医师亲自维护",
-        "license": "项目内部（待实现）",
-        "access": "规划中：src/zh_radiology_synonyms.py（待实现）",
-        "use_in_app": "中文征象同义词归一，直接提升 R14 侧别 / R6 部位等规则的中文"
+        "scope": "已实现：将『增殖灶/纤维灶/斑片影/索条影/磨玻璃密度影』等中文征象词"
+                 "归一，补 RadLex 少量 zh 别名之不足",
+        "license": "项目内部",
+        "access": "src/zh_radiology_synonyms.py（已实现并接入引擎）",
+        "use_in_app": "中文征象同义词归一，提升 R14 侧别 / R6 部位等规则的中文"
                       "子串匹配准确率，是填补中英文术语鸿沟的关键内部资源",
         "related": [],
     },

@@ -41,7 +41,7 @@
 ANATOMY = {
     # —— 成对结构（B）：左右矛盾有意义，纳入比对 ——
     "lung":      {"rid": "RID5706", "lat": "B", "side_ok": True,
-                  "zh": ["肺", "左肺", "右肺", "上肺", "下肺", "肺尖", "肺野", "肺门"],
+                  "zh": ["肺", "左肺", "右肺", "上肺", "下肺", "肺尖", "肺野"],
                   "en": ["lung", "left lung", "right lung", "upper lobe", "lower lobe",
                          "apical", "apical zone"],
                   "padchest": "lung", "cui": "C0013654"},
@@ -58,7 +58,7 @@ ANATOMY = {
                   "en": ["ovary", "left ovary", "right ovary"],
                   "padchest": "ovary", "cui": "C0029927"},
     "tube":      {"rid": "RID5406", "lat": "B", "side_ok": True,
-                  "zh": ["输卵管", "左输卵管", "右输卵管", " Fallopian"],
+                  "zh": ["输卵管", "左输卵管", "右输卵管", "Fallopian"],
                   "en": ["fallopian tube", "left fallopian", "right fallopian"],
                   "padchest": "fallopian tube", "cui": "C0032650"},
     "testis":    {"rid": "RID5530", "lat": "B", "side_ok": True,
@@ -155,8 +155,10 @@ ANATOMY = {
 }
 
 # R2（NER 带 L-/R- 前缀规范节点）已跨段覆盖的器官——这些从 ORGAN_SIDE_LIST
-# （R14 跨段比对）中排除，避免与 R2 重复告警；仅保留在 INTERNAL（R15 段内比对）。
-R2_COVERED = {"肾", "股骨头"}
+# （R14 跨段文本级比对）中排除，避免与 R2 重复告警。
+# 2026-08-18：「股骨头」条目移除——SIDE_CHECK_ORGANS 用短名「股骨」，『股骨头』
+# 从不在列表，原排除永不触发（死条目）；R2 文本级已按「股骨」覆盖，无需排除。
+R2_COVERED = {"肾"}
 
 # 用于 R14/R15 中文左右比对的器官短名列表（作为 _organ_sides_in_text 的 organ 实参）
 # = 所有 side_ok 为 True 的器官，取其最具代表性的中文短名（与现引擎 regex 兼容）。

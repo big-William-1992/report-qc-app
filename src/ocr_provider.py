@@ -88,6 +88,16 @@ def _model_dir() -> str:
 
 _engine = None          # 已初始化的 RapidOCR 实例
 _engine_err = None      # 初始化失败原因（缓存，避免重复尝试）
+_ENGINE_LOCK = None     # 懒加载互斥锁（2026-08-18 新增：冷启动并发首请求会重复实例化数百 MB 引擎）
+
+
+def _ensure_engine_lock() -> "threading.Lock":
+    """模块级锁懒创建（避免顶层 import threading 副作用）。"""
+    global _ENGINE_LOCK
+    if _ENGINE_LOCK is None:
+        import threading
+        _ENGINE_LOCK = threading.Lock()
+    return _ENGINE_LOCK
 
 
 def availability() -> (bool, str):
@@ -129,12 +139,24 @@ def _check_rec_dict(rec_path: str, model_dir: str) -> None:
 
 
 def _get_engine():
-    """懒加载 RapidOCR 实例；失败只记录一次原因并返回 None（不抛异常）。"""
+    """懒加载 RapidOCR 实例；失败只记录一次原因并返回 None（不抛异常）。
+    2026-08-18 加互斥锁：冷启动并发首请求会重复实例化（每个数百 MB），锁后单例。"""
     global _engine, _engine_err
     if _engine is not None:
         return _engine
     if _engine_err is not None:
         return None
+    with _ensure_engine_lock():
+        if _engine is not None:
+            return _engine
+        if _engine_err is not None:
+            return None
+        return _init_engine_locked()
+
+
+def _init_engine_locked():
+    """在锁内执行实际初始化（_get_engine 持锁调用）。"""
+    global _engine, _engine_err
     try:
         from rapidocr_onnxruntime import RapidOCR
     except Exception as e:

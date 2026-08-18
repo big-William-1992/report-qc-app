@@ -52,8 +52,8 @@ class Sample(Base):
     modality = Column(String(64))
     applied_site = Column(String(120), comment="检查部位")
     laterality = Column(String(32), comment="侧别")
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, comment="质控责任人")
-    dept_id = Column(Integer, ForeignKey("departments.id"), nullable=True, comment="归属科室")
+    user_id = Column(String(64), nullable=True, comment="质控责任人（工号，与 samplelib 一致；2026-08-18 由 Integer FK 修正）")
+    dept_id = Column(String(64), nullable=True, comment="归属科室（samplelib 原生层为 TEXT，2026-08-18 统一声明）")
     report_text = Column(Text)
     findings_json = Column(Text, comment="质控发现（JSON 数组）")
     scores_json = Column(Text, comment="四维评分（JSON）")
@@ -67,6 +67,8 @@ class QueueItem(Base):
     meta_json = Column(Text, comment="病人信息/检查类型等（JSON）")
     status = Column(String(20), default="pending", comment="pending | done")
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, comment="提交人")
+    report_hash = Column(String(32), unique=True, nullable=True,
+                         comment="正文去重指纹（MD5，数据库层防并发重复入队，2026-08-18）")
     created_at = Column(DateTime, default=datetime.datetime.now)
 
 

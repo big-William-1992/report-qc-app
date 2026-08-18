@@ -112,13 +112,25 @@ def _connect(cfg: dict):
     if db == "sqlserver":
         import pyodbc
         port = cfg.get("port") or "1433"
-        conn_str = (
-            "DRIVER={ODBC Driver 18 for SQL Server};"
-            f"SERVER={cfg['host']},{port};DATABASE={cfg['database']};"
-            f"UID={cfg['user']};PWD={cfg['password']};"
-            "TrustServerCertificate=yes;Encrypt=optional"
-        )
-        return pyodbc.connect(conn_str, timeout=8)
+        # 2026-08-18：优先 Driver 18，失败回退 17/13（医院环境 ODBC 版本不一，
+        # 此前硬编码 18，仅装 17 的机器连接必失败）。
+        _drivers = getattr(pyodbc, "drivers", lambda: [])()
+        _pref = ["ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server",
+                 "ODBC Driver 13 for SQL Server", "SQL Server"]
+        _avail = [d for d in _pref if any(d in x for x in _drivers)] or ["ODBC Driver 18 for SQL Server"]
+        _last_err = None
+        for _drv in _avail:
+            conn_str = (
+                f"DRIVER={{{_drv}}};"
+                f"SERVER={cfg['host']},{port};DATABASE={cfg['database']};"
+                f"UID={cfg['user']};PWD={cfg['password']};"
+                "TrustServerCertificate=yes;Encrypt=optional"
+            )
+            try:
+                return pyodbc.connect(conn_str, timeout=8)
+            except Exception as e:  # noqa: BLE001
+                _last_err = e
+        raise RuntimeError(f"SQL Server 连接失败（已尝试驱动 {_avail}）：{_last_err}")
 
     if db == "oracle":
         import oracledb

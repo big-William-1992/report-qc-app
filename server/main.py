@@ -18,6 +18,7 @@ report_qc_app/server/main.py
 import os
 import sys
 import io
+import re
 import time
 import hmac
 import hashlib
@@ -57,6 +58,23 @@ if _SRC not in sys.path:
 if _SERVER not in sys.path:
     sys.path.insert(0, _SERVER)
 
+# E2E 测试隔离（2026-08-18 修复）：QC_DB_OVERRIDE 必须在 import server.db 之前
+# 转成 DATABASE_URL，否则 db.engine 已按默认路径创建，accounts._DB_OVERRIDE 的
+# 二次切换因 SQLAlchemy engine/SessionLocal 绑定引用而失效（此前实测不隔离、
+# 测试数据会写入真实 qc.db）。
+# 2026-08-18 增强：accounts.py 顶部 `from server import db` 可能在 main 之前
+# 触发 server.db 初始化（如 pytest 先收集 test_accounts.py），env 转换对已加载的
+# db 模块不生效 → 此处显式 set_database_override 强制切换（幂等，不依赖 import 顺序）。
+_qc_db_override = os.environ.get("QC_DB_OVERRIDE", "").strip()
+if _qc_db_override:
+    _qc_db_url = "sqlite:///" + os.path.abspath(_qc_db_override)
+    os.environ["DATABASE_URL"] = _qc_db_url
+    try:
+        import server.db as _sdb
+        _sdb.set_database_override(_qc_db_url)
+    except Exception:
+        pass
+
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -70,18 +88,23 @@ from server import license_web
 import ocr_provider
 from version import APP_VERSION
 from server import db  # SQLAlchemy 统一数据层（users/departments/queue/settings）
-
-# E2E 测试隔离：QC_DB_OVERRIDE 指向临时 sqlite 路径时，账号/队列等全部落该临时库，
-# 避免污染真实数据（accounts._DB_OVERRIDE 在每次建表前被消费）。
-_qc_db_override = os.environ.get("QC_DB_OVERRIDE", "").strip()
-if _qc_db_override:
-    accounts._DB_OVERRIDE = os.path.abspath(_qc_db_override)
-
-# 启动时确保表就绪（多用户/科室自托管核心表）
-db.init_db()
+from server.db import SessionLocal  # 会话工厂（队列/设置 ORM 读写，2026-08-18 task 229 收敛）
+from server.core import (  # 共享层（2026-08-18 拆分）：日志/响应封装/数据目录/队列与设置数据层
+    _log, _envelope, _eng_scores, _appdata_dir, _atomic_json_write, _JSON_IO_LOCK,
+    _queue_orm_all, _queue_orm_add, _queue_orm_add_dedup, _queue_orm_remove,
+    _queue_orm_clear, _load_queue,
+    _migrate_queue_to_db, _settings_orm_all, _settings_orm_save, _migrate_settings_to_db,
+)
 
 # ----------------------------- 鉴权（stdlib HMAC 签名 token） -----------------------------
-SECRET = os.environ.get("QC_API_SECRET", "change-me-in-prod")
+QC_API_SECRET = os.environ.get("QC_API_SECRET", "").strip()
+if QC_API_SECRET:
+    SECRET = QC_API_SECRET
+else:
+    # 本地演示/桌面单机默认值；公网/内网多用户部署必须设置强随机密钥。
+    SECRET = "change-me-in-prod"
+    print("\n[SECURITY] 警告: 未设置 QC_API_SECRET，使用内置默认密钥。"
+          "公网/内网多用户部署请 export QC_API_SECRET=<强随机串>。\n", file=sys.stderr)
 TOKEN_TTL = int(os.environ.get("QC_API_TTL", "86400"))  # 默认 24h
 
 
@@ -116,23 +139,18 @@ def _emp_from_auth(authorization: Optional[str]) -> Optional[str]:
     return verify_token(tok)
 
 
-def require_emp(authorization: Optional[str] = Header(None),
-                 x_emp_id: Optional[str] = Header(None)) -> str:
-    """写操作鉴权：Bearer token 或内网 X-Emp-Id 头，二选一。
-    回退到 X-Emp-Id 时必须校验工号真实存在，防止远程任意填头冒充他人。"""
-    emp = _emp_from_auth(authorization) or (x_emp_id or "").strip()
+def require_emp(request: Request,
+                authorization: Optional[str] = Header(None),
+                x_emp_id: Optional[str] = Header(None)) -> str:
+    """写操作鉴权：优先 Bearer token；X-Emp-Id 头仅限本机（127.0.0.1）调用时兜底。
+    远程请求一律拒绝 X-Emp-Id——该头无任何凭证，可被任意伪造冒充他人（2026-08-18 收紧）。"""
+    emp = _emp_from_auth(authorization)
+    if not emp and request.client and request.client.host in ("127.0.0.1", "::1", "localhost"):
+        emp = (x_emp_id or "").strip()
     if not emp:
-        raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token> 或 X-Emp-Id 头")
-    if not _emp_from_auth(authorization):
-        # 仅当来自 X-Emp-Id 头（非 Bearer token）时校验工号存在性
-        try:
-            import src.accounts as _acct
-            if not _acct.account_exists(emp):
-                raise HTTPException(401, "X-Emp-Id 工号不存在")
-        except HTTPException:
-            raise
-        except Exception:
-            pass
+        raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token>（远程访问不接受 X-Emp-Id 头）")
+    if not accounts.account_exists(emp):
+        raise HTTPException(401, "账号不存在或已注销")
     return emp
 
 
@@ -143,14 +161,58 @@ def require_emp_local(request: Request,
 
     - 来自 127.0.0.1/::1 的调用（桌面端 WebView、浏览器同源 localhost）自动放行，
       避免 SPA 必须携带鉴权头，保持本地"双击即用"体验；
-    - 公网/远程部署仍强制 Bearer token 或 X-Emp-Id，保持责任到人追溯。
+    - 公网/远程部署强制 Bearer token（不再接受 X-Emp-Id 头，防止伪造冒充）。
     """
     if request.client and request.client.host in ("127.0.0.1", "::1", "localhost"):
         return (x_emp_id or "local").strip() or "local"
-    emp = _emp_from_auth(authorization) or (x_emp_id or "").strip()
+    emp = _emp_from_auth(authorization)
     if not emp:
-        raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token> 或 X-Emp-Id 头")
+        raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token>（远程访问不接受 X-Emp-Id 头）")
+    if not accounts.account_exists(emp):
+        raise HTTPException(401, "账号不存在或已注销")
     return emp
+
+
+def require_admin(authorization: Optional[str] = Header(None)) -> str:
+    """管理员操作依赖：强制 Bearer token（不享受 localhost 放行，防止伪造 X-Emp-Id 提权）。
+    定义在认证区块（规则写接口之前），2026-08-18 由 731 行前移，避免默认参数求值顺序问题。"""
+    emp = _emp_from_auth(authorization)
+    if not emp:
+        raise HTTPException(401, "管理员操作需登录（Bearer token）")
+    if not accounts.account_exists(emp):
+        raise HTTPException(401, "账号不存在或已注销")
+    if accounts.get_role(emp) != "admin":
+        raise HTTPException(403, "需要管理员权限")
+    return emp
+
+
+def _scope_user_id(emp: str) -> Optional[str]:
+    """多用户数据隔离（2026-08-18）：admin/本机返回 None（看全部样本与统计）；
+    普通医生返回本人工号，样本读取/导出/统计仅限本人数据。"""
+    if not emp or emp == "local":
+        return None
+    try:
+        if accounts.get_role(emp) == "admin":
+            return None
+    except Exception:
+        pass
+    return emp
+
+
+def require_license_active():
+    """授权门服务端强制（2026-08-18 接入）：试用期结束且未激活时拒绝写操作。
+
+    与前端 gate 同源（license_web.check_trial，读 appdata/license.json）；
+    开发/内测试用期内（trial）放行，过期未激活返回 403。
+    仅用于产生/修改数据的写接口（读接口不拦，登录用户仍可查看历史数据）。
+    """
+    try:
+        state, _days = license_web.check_trial(_appdata_dir())
+    except Exception:
+        return True  # license 读取异常时放行，避免误锁
+    if state == "expired":
+        raise HTTPException(403, "试用期已结束，请输入激活码激活后继续使用")
+    return True
 
 
 # ----------------------------- 应用 -----------------------------
@@ -161,7 +223,9 @@ app = FastAPI(title="星衍放射质控 API", version=APP_VERSION)
 # require_emp_local 的本地放行）。内网/远程部署需要放行其它源时，用环境变量追加：
 #   QC_CORS_ORIGINS=http://192.168.1.10:8000,http://qc.example.com
 _cors_origins = [o.strip() for o in os.environ.get("QC_CORS_ORIGINS", "").split(",") if o.strip()]
-_LOCAL_ORIGIN_RE = r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$"
+# 仅放行本机实际服务端口（默认 8000，QC_PORT 可配置），避免任意 localhost 端口页面无凭据跨域
+_QC_PORT = os.environ.get("QC_PORT", "8000").strip()
+_LOCAL_ORIGIN_RE = rf"^https?://(127\.0\.0\.1|localhost|\[::1\]):{re.escape(_QC_PORT)}$"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -236,6 +300,7 @@ class RisConfigReq(BaseModel):
 class SampleExportReq(BaseModel):
     path: str = ""
     fmt: str = "csv"
+    anonymize: bool = False  # 导出脱敏（2026-08-18）：剥离患者姓名/性别/年龄
 
 
 class SampleImportReq(BaseModel):
@@ -243,24 +308,6 @@ class SampleImportReq(BaseModel):
 
 
 # ----------------------------- 辅助 -----------------------------
-def _envelope(ok: bool, code: str, data: Any, message: str = ""):
-    return {"ok": ok, "code": code, "data": data, "message": message}
-
-
-# 引擎 score_summary 输出中文维度键；前端（app.js）样本列表直接读英文键。
-# 在需要英文键的端点做一层翻译，qc/check 的实时结果由前端自行映射（幂等）。
-_SCORE_EN = {"准确性": "accuracy", "完整性": "completeness",
-             "规范性": "normalization", "及时性": "timeliness"}
-
-
-def _eng_scores(cn: dict) -> dict:
-    """把引擎中文维度键映射为前端期望的英文键；未知键透传。"""
-    out = {}
-    for k, v in (cn or {}).items():
-        out[_SCORE_EN.get(k, k)] = v
-    return out
-
-
 # 引擎 Finding.severity 用 high/medium/low；看板 by_severity 用 critical/warning/info。
 _SEV_MAP = {"high": "critical", "medium": "warning", "low": "info"}
 _SEV_RANK = {"high": 3, "medium": 2, "low": 1}
@@ -295,14 +342,16 @@ def _run_qc(report: str, meta: dict, auto_fix: bool) -> dict:
 
 # ----------------------------- 质控计算（无状态） -----------------------------
 @app.post("/api/v1/qc/check")
-def qc_check(req: CheckReq):
+def qc_check(req: CheckReq, _lic: bool = Depends(require_license_active)):
     if not req.report.strip():
         raise HTTPException(400, "report 不能为空")
+    if len(req.report) > 20000:
+        raise HTTPException(413, "报告文本过长（上限 20000 字符）")
     return _envelope(True, "OK", _run_qc(req.report, req.meta, req.auto_fix))
 
 
 @app.post("/api/v1/qc/batch")
-def qc_batch(req: BatchReq):
+def qc_batch(req: BatchReq, _lic: bool = Depends(require_license_active)):
     if len(req.items) > 50:
         raise HTTPException(400, "单次最多 50 条")
     results = []
@@ -310,35 +359,46 @@ def qc_batch(req: BatchReq):
         if not it.report.strip():
             results.append({"ok": False, "error": "report 不能为空"})
             continue
+        if len(it.report) > 20000:
+            results.append({"ok": False, "error": "report 过长（上限 20000 字符）"})
+            continue
         results.append({"ok": True, **_run_qc(it.report, it.meta, it.auto_fix)})
     return _envelope(True, "OK", {"results": results})
 
 
 @app.get("/api/v1/qc/rules")
 def qc_rules_get():
-    """返回规则元信息列表（供前端规则维护页展示；更新配置走 PUT）。"""
+    """返回规则元信息列表（供前端规则维护页展示；更新配置走 PUT）。
+    2026-08-18 同步：清单改为规则合并后的实际产出 rule_id，severity 与引擎口径
+    （high/medium/low）一致；R7/R11/R13/R20 已合并或预留，不再单列。"""
     rule_meta = [
-        {"rule_id": "R1",  "name": "性别一致性检查",   "category": "完整性", "severity": "warning",   "enabled": True},
-        {"rule_id": "R2",  "name": "侧别标注检查",     "category": "规范性", "severity": "warning",   "enabled": True},
-        {"rule_id": "R3",  "name": "评分单位规范",     "category": "规范性", "severity": "info",      "enabled": True},
-        {"rule_id": "R4",  "name": "单位实体识别",     "category": "准确性", "severity": "warning",   "enabled": True},
-        {"rule_id": "R5",  "name": "描述与结论一致性", "category": "准确性", "severity": "critical",  "enabled": True},
-        {"rule_id": "R6",  "name": "检查部位完整性",   "category": "完整性", "severity": "warning",   "enabled": True},
-        {"rule_id": "R7",  "name": "内部结构完整性",   "category": "完整性", "severity": "info",      "enabled": True},
-        {"rule_id": "R8",  "name": "错别字检测",       "category": "准确性", "severity": "warning",   "enabled": True},
-        {"rule_id": "R9",  "name": "矛盾信息检测",     "category": "准确性", "severity": "critical",  "enabled": True},
-        {"rule_id": "R10", "name": "模板符合度检查",   "category": "规范性", "severity": "warning",   "enabled": True},
-        {"rule_id": "R11", "name": "上下文合理性",     "category": "准确性", "severity": "warning",   "enabled": True},
-        {"rule_id": "R12", "name": "句子级质量评估",   "category": "规范性", "severity": "info",      "enabled": True},
-        {"rule_id": "R14", "name": "跨区域交叉验证",   "category": "准确性", "severity": "warning",   "enabled": True},
-        {"rule_id": "R15", "name": "内部术语规范化",   "category": "规范性", "severity": "info",      "enabled": True},
-        {"rule_id": "R16", "name": "随访时限缺失",     "category": "及时性", "severity": "info",      "enabled": False},
+        {"rule_id": "R1-GENDER",      "name": "性别矛盾",         "category": "准确性", "severity": "high",    "enabled": True},
+        {"rule_id": "R2-LATERALITY",  "name": "左右侧混淆",       "category": "准确性", "severity": "high",    "enabled": True},
+        {"rule_id": "R3-SCORE",       "name": "评分缺失",         "category": "规范性", "severity": "medium",  "enabled": True},
+        {"rule_id": "R4-UNIT",        "name": "计量单位错误",     "category": "准确性", "severity": "low",     "enabled": True},
+        {"rule_id": "R5-CONSISTENCY", "name": "描述-结论矛盾",    "category": "准确性", "severity": "high",    "enabled": True},
+        {"rule_id": "R6-SITE",        "name": "登记部位不符",     "category": "完整性", "severity": "high",    "enabled": True},
+        {"rule_id": "R8-TYPO",        "name": "同音错别字",       "category": "准确性", "severity": "medium",  "enabled": True},
+        {"rule_id": "R9-CONFLICT",    "name": "自定义互斥冲突",   "category": "准确性", "severity": "high",    "enabled": True},
+        {"rule_id": "R10-TEMPLATE",   "name": "模板合规",         "category": "规范性", "severity": "medium",  "enabled": True},
+        {"rule_id": "R12-SENTENCE",   "name": "句内自相矛盾",     "category": "准确性", "severity": "high",    "enabled": True},
+        {"rule_id": "R14-NATURE",     "name": "良恶性定性矛盾",   "category": "准确性", "severity": "high",    "enabled": True},
+        {"rule_id": "R14-COUNT",      "name": "病灶数量矛盾",     "category": "准确性", "severity": "medium",  "enabled": True},
+        {"rule_id": "R15-NORMAL",     "name": "段首正常段内阳性", "category": "准确性", "severity": "high",    "enabled": True},
+        {"rule_id": "R15-PRESENCE",   "name": "先见后无",         "category": "准确性", "severity": "medium",  "enabled": True},
+        {"rule_id": "R16-FOLLOWUP",   "name": "随访时限缺失",     "category": "及时性", "severity": "low",     "enabled": False},
+        {"rule_id": "R17-PERREGION",  "name": "逐部位描述-结论矛盾", "category": "准确性", "severity": "high", "enabled": True},
+        {"rule_id": "R18-COVERAGE",   "name": "部位器官漏写",     "category": "完整性", "severity": "medium",  "enabled": True},
+        {"rule_id": "R19-HOMOPHONE",  "name": "形近错字",         "category": "准确性", "severity": "low",     "enabled": True},
+        {"rule_id": "R21-GENDER-SITE","name": "性别-部位联动",    "category": "规范性", "severity": "medium",  "enabled": True},
+        {"rule_id": "R22-SIZE",       "name": "尺寸-术语一致性",  "category": "规范性", "severity": "medium",  "enabled": True},
+        {"rule_id": "R22-UNIT",       "name": "尺寸单位规范",     "category": "规范性", "severity": "low",     "enabled": True},
     ]
     return _envelope(True, "OK", rule_meta)
 
 
 @app.put("/api/v1/qc/rules")
-def qc_rules_put(cfg: Dict[str, Any], emp: str = Depends(require_emp_local)):
+def qc_rules_put(cfg: Dict[str, Any], emp: str = Depends(require_admin)):
     # 仅持久化已知键，避免客户端写入杂项
     clean = {
         "typos": cfg.get("typos", {}),
@@ -357,7 +417,8 @@ _OCR_MAX_BYTES = int(os.environ.get("QC_OCR_MAX_BYTES", str(20 * 1024 * 1024)))
 
 
 @app.post("/api/v1/ocr")
-async def ocr_upload(file: UploadFile = File(...), emp: str = Depends(require_emp_local)):
+async def ocr_upload(file: UploadFile = File(...), emp: str = Depends(require_emp_local),
+                  _lic: bool = Depends(require_license_active)):
     from PIL import Image
     import ocr_provider
     ok, why = ocr_provider.availability()
@@ -371,12 +432,16 @@ async def ocr_upload(file: UploadFile = File(...), emp: str = Depends(require_em
         img = Image.open(io.BytesIO(data))
     except Exception as e:
         raise HTTPException(400, f"图片解析失败：{e}")
-    text = ocr_provider.ocr_image(img)
+    # 推理串行（2026-08-18）：RapidOCR 单次峰值约 610MB，与 /screen/ocr 共用
+    # _OCR_LOCK，避免并发推理在同一实例上内存叠加导致医院低配桌面 OOM。
+    with _OCR_LOCK:
+        text = ocr_provider.ocr_image(img)
     return _envelope(True, "OK", {"text": text})
 
 
 @app.post("/api/v1/ocr/base64")
-def ocr_base64(req: OCRB64, emp: str = Depends(require_emp_local)):
+def ocr_base64(req: OCRB64, emp: str = Depends(require_emp_local),
+               _lic: bool = Depends(require_license_active)):
     from PIL import Image
     import ocr_provider
     import base64 as _b64
@@ -391,11 +456,39 @@ def ocr_base64(req: OCRB64, emp: str = Depends(require_emp_local)):
         img = Image.open(io.BytesIO(raw))
     except Exception as e:
         raise HTTPException(400, f"图片解析失败：{e}")
-    text = ocr_provider.ocr_image(img)
+    with _OCR_LOCK:
+        text = ocr_provider.ocr_image(img)
     return _envelope(True, "OK", {"text": text})
 
 
 # ----------------------------- RIS / PACS 直连（迁移自 web/api/ris.py） -----------------------------
+@app.get("/api/v1/ris/config")
+def ris_config_get(emp: str = Depends(require_emp_local)):
+    """读取已保存的 RIS 连接配置（password 脱敏不回传）。
+    2026-08-18 新增：此前 save_config 仅被 Tkinter 版调用，SPA 配置后轮询线程读不到。"""
+    cfg = dict(ris.load_config())
+    if cfg.get("password"):
+        cfg["password"] = "******"
+    return _envelope(True, "OK", cfg)
+
+
+@app.put("/api/v1/ris/config")
+def ris_config_put(req: RisConfigReq, emp: str = Depends(require_admin)):
+    """保存 RIS 连接配置（轮询/拉取复用；管理权限）。"""
+    cfg = ris.load_config()
+    cfg.update({
+        "db_type": req.db_type or "sqlserver",
+        "host": req.host or "",
+        "port": req.port or "",
+        "database": req.database or "",
+        "user": req.user or "",
+        "password": req.password or cfg.get("password", ""),  # 未填则保留原值
+        "query": req.query_sql or cfg.get("query", ""),
+    })
+    ris.save_config(cfg)
+    return _envelope(True, "OK", {}, "RIS 连接配置已保存")
+
+
 @app.get("/api/v1/ris/drivers")
 def ris_drivers(emp: str = Depends(require_emp_local)):
     """返回支持的数据库驱动列表及可用性。"""
@@ -411,7 +504,7 @@ def ris_test_connection(req: RisConfigReq, emp: str = Depends(require_emp_local)
     config = {
         "db_type": req.db_type, "host": req.host, "port": req.port,
         "database": req.database, "user": req.user,
-        "password": req.password, "query_sql": req.query_sql,
+        "password": req.password, "query": req.query_sql,
     }
     ok, msg = ris.test_connection(config)
     return _envelope(True, "OK", {"ok": ok, "message": msg})
@@ -423,9 +516,13 @@ def ris_fetch_reports(req: RisConfigReq, limit: int = Query(50, ge=1, le=200),
     config = {
         "db_type": req.db_type, "host": req.host, "port": req.port,
         "database": req.database, "user": req.user,
-        "password": req.password, "query_sql": req.query_sql,
+        "password": req.password, "query": req.query_sql,
     }
-    reports = ris.fetch_reports(config, limit=limit)
+    try:
+        reports = ris.fetch_reports(config, limit=limit)
+    except Exception as exc:
+        # 统一错误封装（与 poll-now 失败路径对齐），避免 FastAPI 默认 500 破坏前端 data.ok 判定
+        return _envelope(False, "RIS_ERR", {}, f"RIS 拉取失败：{type(exc).__name__}：{exc}")
     items = [{
         "report_text": (r.get("report_text", "") or "")[:500],
         "patient": r.get("patient", ""),
@@ -464,12 +561,21 @@ _POLL_DEFAULT = {
 }
 
 
+def _atomic_json_write(path: str, obj) -> None:
+    """临时文件 + os.replace 原子写，配合 _JSON_IO_LOCK 防并发撕裂/覆盖。"""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
 def _poll_config() -> dict:
     cfg = dict(_POLL_DEFAULT)
     cfg["seen"] = list(cfg["seen"])
     try:
-        with open(_poll_path(), encoding="utf-8") as fh:
-            data = json.load(fh) or {}
+        with _JSON_IO_LOCK:
+            with open(_poll_path(), encoding="utf-8") as fh:
+                data = json.load(fh) or {}
         for k in _POLL_DEFAULT:
             if k in data:
                 cfg[k] = data[k]
@@ -481,8 +587,8 @@ def _poll_config() -> dict:
 def _save_poll_config(cfg: dict) -> None:
     try:
         os.makedirs(os.path.dirname(_poll_path()), exist_ok=True)
-        with open(_poll_path(), "w", encoding="utf-8") as fh:
-            json.dump(cfg, fh, ensure_ascii=False, indent=2)
+        with _JSON_IO_LOCK:
+            _atomic_json_write(_poll_path(), cfg)
     except Exception:
         pass
 
@@ -535,11 +641,24 @@ def ris_poll_now(emp: str = Depends(require_emp_local)):
         result = _ris_poll_once(manual=True)
         return _envelope(True, "OK", result)
     except Exception as exc:
-        return _envelope(False, "POLL_ERR", {"error": str(exc)}, f"轮询失败：{exc}")
+        return _envelope(False, "POLL_ERR", {"error": type(exc).__name__}, f"轮询失败：{exc}")
 
 
 def _ris_poll_once(manual: bool = False) -> dict:
-    """执行一次轮询：拉取 RIS → 质控 → 入库 + 入队。返回统计。"""
+    """执行一次轮询：拉取 RIS → 质控 → 入库 + 入队。返回统计。
+
+    互斥：非阻塞获取全局锁；若另一路（后台线程/手动）正在轮询则直接返回
+    {"skipped": True}，避免并发拉取同一批报告重复入库/入队。
+    """
+    if not _RIS_POLL_LOCK.acquire(blocking=False):
+        return {"skipped": True, "reason": "已有轮询在进行中"}
+    try:
+        return _ris_poll_once_locked(manual)
+    finally:
+        _RIS_POLL_LOCK.release()
+
+
+def _ris_poll_once_locked(manual: bool = False) -> dict:
     cfg = _poll_config()
     config = ris.load_config()
     if not config.get("host"):
@@ -585,7 +704,8 @@ def _ris_poll_once(manual: bool = False) -> dict:
                          "age": r.get("age", ""), "modality": r.get("modality", ""),
                          "applied_site": r.get("applied_site", "")},
                         findings, qc.get("score") or {},
-                        anonymize=False, user_id=emp_id)
+                        anonymize=False, user_id=emp_id,
+                        dept_id=accounts.get_dept_id(emp_id))
                 except Exception:
                     continue
         if cfg.get("auto_enqueue"):
@@ -614,29 +734,18 @@ def datetime_now_iso() -> str:
 
 
 def _queue_add_text(text: str, meta: dict, source: str = "RIS轮询"):
-    """复用 queue 去重逻辑（正文 MD5）。返回条目 id 或 None。"""
-    norm = "".join((text or "").split())
-    if not norm:
-        return None
-    h = hashlib.md5(norm.encode("utf-8", "ignore")).hexdigest()
-    items = _load_queue()
-    for it in items:
-        if it.get("hash") == h:
-            return it.get("id")
-    item = {
-        "id": _uuid.uuid4().hex[:8], "hash": h,
-        "patient": (meta or {}).get("patient", "").strip(),
-        "site": (meta or {}).get("applied_site", "").strip(),
-        "text": text, "source": source,
-        "ts": time.strftime("%Y-%m-%d %H:%M"), "meta": meta or {},
-    }
-    items.append(item)
-    _save_queue(items)
-    return item["id"]
+    """复用 queue 去重逻辑（正文 MD5，数据库层原子去重）。返回条目 id 或 None。"""
+    m = dict(meta or {})
+    m.setdefault("source", source)
+    m.setdefault("_emp", "ris-poll")  # RIS 自动入队：公共复核队列（医生可见，2026-08-18）
+    _id, _dup = _queue_orm_add_dedup(text, m)
+    return str(_id) if _id else None
 
 
 def _ris_poll_loop(stop_event: threading.Event):
-    """后台守护线程：按 interval_min 周期轮询。sleep 分片避免阻塞退出。"""
+    """后台守护线程：按 interval_min 周期轮询。sleep 分片避免阻塞退出。
+    2026-08-18 修复：此前固定每 60s 一轮，interval_min（默认 30 分钟）完全不参与调度，
+    对医院 RIS 库造成 30 倍无谓查询压力。"""
     while not stop_event.is_set():
         try:
             cfg = _poll_config()
@@ -645,6 +754,7 @@ def _ris_poll_loop(stop_event: threading.Event):
         except Exception:
             # 记录最近错误，供前端展示；不崩溃线程
             try:
+                _log("error", f"RIS 轮询异常: {type(sys.exc_info()[1]).__name__}: {sys.exc_info()[1]}")
                 cfg = _poll_config()
                 cfg["last_error"] = str(sys.exc_info()[1])[:300]
                 cfg["last_run"] = datetime_now_iso()
@@ -652,11 +762,39 @@ def _ris_poll_loop(stop_event: threading.Event):
             except Exception:
                 pass
         # 分片 sleep（每 5s 检查一次停止事件），interval 在循环内实时读取
-        for _i in range(12):
+        interval_sec = max(15, int((_poll_config().get("interval_min") or 30) * 60))
+        for _i in range(max(1, interval_sec // 5)):
             if stop_event.is_set():
                 return
             time.sleep(5)
 
+
+# 模块级建表 + 存量数据迁移（import 即就绪，不依赖 __main__ 入口：
+# TestClient / uvicorn / 桌面壳 import server.main 均需要表已存在，2026-08-18 修复）。
+#   - db.init_db()            ：users/departments/queue/settings/samples 建表（幂等）
+#   - migrate_legacy_samples  ：assets/samples.db → qc.db.samples（旧库归档 .bak）
+#   - _migrate_queue_to_db    ：qc_queue.json → qc.db.queue
+#   - _migrate_settings_to_db ：web_settings.json → qc.db.settings
+db.init_db()
+try:
+    samplelib.migrate_legacy_samples()
+    samplelib.rescue_samples_conv()   # 抢救 samples_conv_old 滞留历史样本（2026-08-18 P0）
+    _migrate_queue_to_db()
+    _migrate_settings_to_db()
+    # 导出产物兜底清理（2026-08-18）：下载中断/未触发下载时文件残留，
+    # 启动时清理超过 3 天的 samples_export_*/质控报告_*（仅导出前缀，安全）。
+    _export_dir = os.path.dirname(samplelib.db_path())
+    _now = time.time()
+    for _fn in os.listdir(_export_dir):
+        if _fn.startswith(("samples_export_", "质控报告_")):
+            _fp = os.path.join(_export_dir, _fn)
+            try:
+                if _now - os.path.getmtime(_fp) > 3 * 86400:
+                    os.remove(_fp)
+            except Exception:
+                pass
+except Exception:
+    pass
 
 # 模块加载即启动轮询守护线程（daemon，进程退出自动终止）
 _RIS_POLL_STOP = threading.Event()
@@ -668,14 +806,22 @@ _RIS_POLL_THREAD.start()
 
 # ----------------------------- 账号（责任到人） -----------------------------
 @app.post("/api/v1/accounts")
-def account_create(req: AccountCreate,
+def account_create(req: AccountCreate, request: Request,
                    authorization: Optional[str] = Header(None),
                    x_emp_id: Optional[str] = Header(None)):
-    # 首个账号免鉴权引导（boot）；已存在账号则必须登录后才能创建（防滥用）
+    # 首个账号免鉴权引导（boot）；已存在账号则必须登录后才能创建（防滥用）。
+    # X-Emp-Id 头仅限本机（127.0.0.1）兜底：内网 --host 0.0.0.0 部署时，
+    # 任意客户端伪造 X-Emp-Id 即可批量创建账号（2026-08-18 修复）。
     if accounts.count_accounts() > 0:
-        emp = _emp_from_auth(authorization) or (x_emp_id or "").strip()
+        emp = _emp_from_auth(authorization)
         if not emp:
-            raise HTTPException(401, "创建账号需登录：Authorization: Bearer <token> 或 X-Emp-Id 头")
+            _local = request.client and request.client.host in ("127.0.0.1", "::1", "localhost")
+            if _local:
+                emp = (x_emp_id or "").strip()
+        if not emp:
+            raise HTTPException(401, "创建账号需登录：Authorization: Bearer <token>")
+        if accounts.get_role(emp) != "admin":
+            raise HTTPException(403, "仅管理员可创建账号")
     ok, msg = accounts.create_account(req.emp_id, req.password, req.name)
     if not ok:
         return _envelope(False, "ERR", {}, msg)
@@ -687,25 +833,46 @@ def account_create(req: AccountCreate,
                       "role": accounts.get_role(req.emp_id)}, msg)
 
 
+# 登录失败限速（内存态）：连续失败 5 次锁定该工号 5 分钟，防弱口令爆破（2026-08-18 新增）
+_LOGIN_FAIL: Dict[str, List] = {}
+_LOGIN_MAX_FAIL = 5
+_LOGIN_LOCK_SEC = 300
+
+
+def _login_locked(emp_id: str) -> bool:
+    rec = _LOGIN_FAIL.get(emp_id)
+    if not rec:
+        return False
+    fails, first_ts, locked_until = rec
+    if locked_until:
+        if time.time() < locked_until:
+            return True
+        # 锁定期满：清除记录（此前不清 fails 会退化为"锁 10 分钟窗口"，与 5 分钟承诺不符）
+        _LOGIN_FAIL.pop(emp_id, None)
+        return False
+    if time.time() - first_ts > 600:  # 10 分钟窗口内累计，超窗重置
+        _LOGIN_FAIL.pop(emp_id, None)
+        return False
+    return fails >= _LOGIN_MAX_FAIL
+
+
 @app.post("/api/v1/accounts/login")
 def account_login(req: LoginReq):
-    if not accounts.verify_account(req.emp_id, req.password):
+    emp_id = (req.emp_id or "").strip()
+    if _login_locked(emp_id):
+        return _envelope(False, "ERR", {}, "登录失败次数过多，请稍后再试")
+    if not accounts.verify_account(emp_id, req.password):
+        rec = _LOGIN_FAIL.setdefault(emp_id, [0, time.time(), None])
+        rec[0] += 1
+        if rec[0] >= _LOGIN_MAX_FAIL:
+            rec[2] = time.time() + _LOGIN_LOCK_SEC
         return _envelope(False, "ERR", {}, "工号或密码错误")
-    token = make_token(req.emp_id)
+    _LOGIN_FAIL.pop(emp_id, None)
+    token = make_token(emp_id)
     return _envelope(True, "OK",
-                      {"token": token, "emp_id": req.emp_id,
-                       "name": accounts.get_name(req.emp_id),
-                       "role": accounts.get_role(req.emp_id)})
-
-
-def require_admin(authorization: Optional[str] = Header(None)) -> str:
-    """管理员操作依赖：强制 Bearer token（不享受 localhost 放行，防止伪造 X-Emp-Id 提权）。"""
-    emp = _emp_from_auth(authorization)
-    if not emp:
-        raise HTTPException(401, "管理员操作需登录（Bearer token）")
-    if accounts.get_role(emp) != "admin":
-        raise HTTPException(403, "需要管理员权限")
-    return emp
+                      {"token": token, "emp_id": emp_id,
+                       "name": accounts.get_name(emp_id),
+                       "role": accounts.get_role(emp_id)})
 
 
 @app.get("/api/v1/accounts/me")
@@ -820,8 +987,13 @@ def license_activate(req: ActivateReq):
 
 # ----------------------------- 样本库（持久化 + 统计） -----------------------------
 @app.post("/api/v1/samples")
-def sample_create(req: SampleCreate, emp: str = Depends(require_emp_local)):
-    user_id = (req.user_id or emp).strip()
+def sample_create(req: SampleCreate, request: Request, emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
+    # 样本归属以服务端鉴权为准：远程强制用鉴权工号，本地桌面保留客户端 user_id 兜底
+    # （2026-08-18 修复：此前客户端 body 的 user_id 可直接覆盖鉴权工号，可篡改样本归属）。
+    if request.client and request.client.host in ("127.0.0.1", "::1", "localhost"):
+        user_id = (req.user_id or emp).strip() or emp
+    else:
+        user_id = emp
     raw_findings = list(req.findings) if req.findings else []
     # 入库即质控：未显式提供 findings 时，自动跑引擎生成发现与评分
     if not raw_findings and req.report.strip():
@@ -847,7 +1019,8 @@ def sample_create(req: SampleCreate, emp: str = Depends(require_emp_local)):
             continue
     sid = samplelib.save_sample(
         req.report, req.meta, findings, score,
-        anonymize=req.anonymize, user_id=user_id)
+        anonymize=req.anonymize, user_id=user_id,
+        dept_id=accounts.get_dept_id(user_id))
     return _envelope(True, "OK", {"id": sid})
 
 
@@ -858,13 +1031,9 @@ def sample_list(page: int = Query(1, ge=1),
                 error_type: Optional[str] = None,
                 emp: str = Depends(require_emp)):
     role = accounts.get_role(emp)
-    rows = samplelib.list_samples_full()
-    if role != "admin":
-        # 普通医生仅看自己导入的样本（历史无归属样本归管理员管辖）
-        rows = [r for r in rows if (r.get("user_id") or "") == emp]
-    elif user_id:
-        # 管理员可按工号筛选
-        rows = [r for r in rows if r.get("user_id") == user_id]
+    # 归属过滤提前到 SQL 层（2026-08-18 性能优化）：避免全表载入长文本再 Python 过滤
+    scope = user_id if (role == "admin" and user_id) else _scope_user_id(emp)
+    rows = samplelib.list_samples_full(user_id=scope)
     if error_type:
         kept = []
         for r in rows:
@@ -905,10 +1074,14 @@ def sample_list(page: int = Query(1, ge=1),
 @app.get("/api/v1/samples/{sid}")
 def sample_get(sid: int, emp: str = Depends(require_emp_local)):
     """样本详情（含患者信息与报告全文）：本地 WebView 放行；
-    远程（如内网 --host 0.0.0.0）强制凭证，避免无鉴权读取患者隐私。"""
+    远程（如内网 --host 0.0.0.0）强制凭证，避免无鉴权读取患者隐私。
+    多用户隔离：普通医生仅可读自己导入的样本（2026-08-18）。"""
     s = samplelib.get_sample(sid)
     if not s:
         raise HTTPException(404, "样本不存在")
+    scope = _scope_user_id(emp)
+    if scope and s.get("user_id") and s.get("user_id") != scope:
+        raise HTTPException(403, "无权查看他人样本")
     return _envelope(True, "OK", s)
 
 
@@ -926,18 +1099,23 @@ def sample_delete(sid: int, emp: str = Depends(require_emp_local)):
 
 
 @app.post("/api/v1/samples/export")
-def sample_export(req: SampleExportReq, emp: str = Depends(require_emp_local)):
+def sample_export(req: SampleExportReq, emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
     """导出样本库为 CSV / JSON / DOCX / PDF（修正 Flask 版把输出路径误传为库路径参数的问题）。"""
     try:
         fmt = (req.fmt or "csv").lower()
         if fmt not in ("csv", "json", "docx", "pdf"):
             raise HTTPException(400, "fmt 仅支持 csv/json/docx/pdf")
-        result_path = samplelib.export_samples(out_path=req.path or None, fmt=fmt)
+        # 安全收紧（2026-08-18）：忽略客户端 body 中的 path，固定写到样本库目录下的
+        # 自动命名文件（samples_export_<时间戳>.<ext>），杜绝任意路径写入。
+        # 多用户隔离：普通医生仅导出自己导入的样本（2026-08-18）。
+        result_path = samplelib.export_samples(out_path=None, fmt=fmt,
+                                               user_id=_scope_user_id(emp),
+                                               anonymize=bool(req.anonymize))
         return _envelope(True, "OK", {"path": result_path, "fmt": fmt})
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, type(exc).__name__)
 
 
 class SampleReportExportReq(BaseModel):
@@ -955,7 +1133,7 @@ class QcReportExportReq(BaseModel):
 
 
 @app.post("/api/v1/qc/export-report")
-def qc_report_export(req: QcReportExportReq, emp: str = Depends(require_emp_local)):
+def qc_report_export(req: QcReportExportReq, emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
     """把当前质控结果直接导出为质控报告单（PDF/Word），无需先入库。"""
     if not req.report.strip():
         raise HTTPException(400, "report 不能为空")
@@ -968,16 +1146,19 @@ def qc_report_export(req: QcReportExportReq, emp: str = Depends(require_emp_loca
             req.scores or {}, fmt=fmt)
         return _envelope(True, "OK", {"path": path, "fmt": fmt})
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, type(exc).__name__)
 
 
 @app.post("/api/v1/samples/{sid}/export-report")
 def sample_report_export(sid: int, req: SampleReportExportReq,
-                         emp: str = Depends(require_emp_local)):
+                         emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
     """导出单份样本的质控报告单（PDF/Word）：标题、检查部位、原报告、质控发现、建议修正。"""
     s = samplelib.get_sample(sid)
     if not s:
         raise HTTPException(404, "样本不存在")
+    scope = _scope_user_id(emp)
+    if scope and s.get("user_id") and s.get("user_id") != scope:
+        raise HTTPException(403, "无权导出他人样本")
     fmt = (req.fmt or "docx").lower()
     try:
         if fmt == "pdf":
@@ -986,39 +1167,62 @@ def sample_report_export(sid: int, req: SampleReportExportReq,
             path = samplelib.export_report_docx(s)
         return _envelope(True, "OK", {"path": path, "fmt": fmt})
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, type(exc).__name__)
 
 
 @app.get("/api/v1/files/download")
 def file_download(file: str = Query(...), emp: str = Depends(require_emp_local)):
-    """下载服务端生成的导出文件（按 basename 限定到导出目录，防任意路径读取）。
+    """下载服务端生成的导出文件（限定文件名前缀 + 导出目录，防任意路径读取/删除）。
 
     前端把导出接口返回的 path 的 basename 传回即可拿到文件流。
+    下载完成后自动删除服务端文件，避免导出文件在资产目录无限累积（2026-08-18）。
+    2026-08-18 加固：仅允许导出产物前缀（samples_export_*/质控报告_*）——此前仅按
+    basename 限定目录，构造 ?file=qc.db 即可下载并删除整个样本库（数据丢失级风险）。
     """
     from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
     name = os.path.basename(file or "")
     if not name or name in (".", ".."):
         raise HTTPException(400, "无效的文件名")
+    # 白名单：仅导出产物可被下载（下载后删除），禁止任何库/配置/模型文件
+    if not (name.startswith("samples_export_") or name.startswith("质控报告_")):
+        raise HTTPException(404, "仅支持下载导出产物文件")
     # 限定在样本库所在目录 / 临时导出目录，防路径穿越
     export_dir = os.path.dirname(samplelib.db_path())
     full = os.path.join(export_dir, name)
     if not os.path.exists(full):
         raise HTTPException(404, "文件不存在或已被清理")
-    return FileResponse(full, filename=name)
+
+    def _cleanup():
+        try:
+            os.remove(full)
+        except Exception:
+            pass
+
+    return FileResponse(full, filename=name, background=BackgroundTask(_cleanup))
 
 
 @app.post("/api/v1/samples/import")
-def sample_import(req: SampleImportReq, emp: str = Depends(require_emp_local)):
-    """导入样本库文件（按服务端路径）。"""
+def sample_import(req: SampleImportReq, emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
+    """导入样本库文件（仅限样本库目录下已存在的 csv/json，取 basename 防任意路径读取）。"""
     try:
-        inserted, skipped = samplelib.import_samples(req.path)
+        name = os.path.basename((req.path or "").strip())
+        if not name or os.path.splitext(name)[1].lower() not in (".csv", ".json"):
+            raise HTTPException(400, "导入仅支持 csv/json 文件（文件名取 basename）")
+        full = os.path.join(os.path.dirname(samplelib.db_path()), name)
+        if not os.path.exists(full):
+            raise HTTPException(404, "文件不存在或已被清理")
+        inserted, skipped = samplelib.import_samples(full)
         return _envelope(True, "OK", {"inserted": inserted, "skipped": skipped})
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, type(exc).__name__)
 
 
 @app.post("/api/v1/samples/import/upload")
-async def sample_import_upload(file: UploadFile = File(...), emp: str = Depends(require_emp_local)):
+async def sample_import_upload(file: UploadFile = File(...), emp: str = Depends(require_emp_local),
+                          _lic: bool = Depends(require_license_active)):
     """浏览器端上传 CSV/JSON 文件导入样本库。"""
     import tempfile
     suffix = os.path.splitext(file.filename or "import.csv")[1] or ".csv"
@@ -1034,7 +1238,7 @@ async def sample_import_upload(file: UploadFile = File(...), emp: str = Depends(
         inserted, skipped = samplelib.import_samples(tf.name)
         return _envelope(True, "OK", {"inserted": inserted, "skipped": skipped})
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, type(exc).__name__)
     finally:
         try:
             os.remove(tf.name)
@@ -1045,12 +1249,14 @@ async def sample_import_upload(file: UploadFile = File(...), emp: str = Depends(
 # ----------------------------- 统计 -----------------------------
 @app.get("/api/v1/stats/error-types")
 def stats_error_types(emp: str = Depends(require_emp_local)):
-    return _envelope(True, "OK", samplelib.stats_by_error_type())
+    return _envelope(True, "OK", samplelib.stats_by_error_type(
+        user_id=_scope_user_id(emp)))
 
 
 @app.get("/api/v1/stats/trend")
 def stats_trend(emp: str = Depends(require_emp_local)):
-    return _envelope(True, "OK", samplelib.stats_by_date())
+    return _envelope(True, "OK", samplelib.stats_by_date(
+        user_id=_scope_user_id(emp)))
 
 
 @app.get("/api/v1/stats/report")
@@ -1061,17 +1267,19 @@ def stats_report(start: Optional[str] = None, end: Optional[str] = None,
     start / end 格式 YYYY-MM-DD，缺省不限。
     """
     try:
-        data = samplelib.stats_report(start=start, end=end)
+        data = samplelib.stats_report(start=start, end=end,
+                                      user_id=_scope_user_id(emp))
         return _envelope(True, "OK", data)
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, type(exc).__name__)
 
 
 @app.get("/api/v1/samples/stats/dashboard")
 def sample_dashboard(emp: str = Depends(require_emp_local)):
-    """看板页聚合统计（迁移自 web/api/samples.py 的 dashboard_stats）。"""
+    """看板页聚合统计（迁移自 web/api/samples.py 的 dashboard_stats）。
+    多用户隔离：普通医生仅统计本人样本（2026-08-18）。"""
     from datetime import datetime, timedelta
-    rows = samplelib.list_samples_full()
+    rows = samplelib.list_samples_full(user_id=_scope_user_id(emp))
     total = len(rows)
     by_modality = {}
     by_severity = {"critical": 0, "warning": 0, "info": 0}
@@ -1101,6 +1309,23 @@ def health():
     return _envelope(True, "OK", {"status": "up", "version": APP_VERSION})
 
 
+@app.get("/api/v1/update/check")
+def update_check(emp: str = Depends(require_emp_local)):
+    """检查更新（2026-08-18 接入：update_check.check_update_sync 此前无任何生产调用方）。
+
+    返回 {status: update|latest|unknown|error, message, url, published_at}。
+    仅读取 GitHub Release，幂等、无副作用。
+    """
+    import update_check as _uc
+    result = _uc.check_update_sync(timeout=5)
+    return _envelope(True, "OK", {
+        "status": result.get("status", "error"),
+        "message": result.get("message", ""),
+        "url": result.get("url", ""),
+        "published_at": result.get("published_at", ""),
+    })
+
+
 # ============================================================================
 # 以下为「SPA 功能追平桌面版」新增能力（P0/P1）
 #   1) 待质控队列   —— 与 Tkinter 版共用 ~/.medical_report_qc/qc_queue.json
@@ -1110,40 +1335,6 @@ def health():
 # 注意：必须注册在文件末尾的 SPA catch-all 路由「之前」，否则 GET 会被兜底吞掉。
 # ============================================================================
 import uuid as _uuid
-
-
-def _appdata_dir() -> str:
-    """跨平台数据目录（与 src/app.py 的 _appdata_dir 保持完全一致，实现队列互通）。
-
-    QC_APPDATA 环境变量可覆盖数据目录（E2E 测试隔离用，生产不设置则用默认路径）。"""
-    override = os.environ.get("QC_APPDATA", "").strip()
-    if override:
-        base = os.path.abspath(override)
-    else:
-        ap = os.path.expandvars("%APPDATA%")
-        if ap and os.path.isabs(ap):
-            base = os.path.join(ap, "MedicalReportQC")
-        else:
-            base = os.path.join(os.path.expanduser("~"), ".medical_report_qc")
-    os.makedirs(base, exist_ok=True)
-    return base
-
-
-def _queue_path() -> str:
-    return os.path.join(_appdata_dir(), "qc_queue.json")
-
-
-def _load_queue() -> list:
-    try:
-        with open(_queue_path(), encoding="utf-8") as fh:
-            return json.load(fh) or []
-    except Exception:
-        return []
-
-
-def _save_queue(items: list) -> None:
-    with open(_queue_path(), "w", encoding="utf-8") as fh:
-        json.dump(items, fh, ensure_ascii=False, indent=2)
 
 
 class QueueItemReq(BaseModel):
@@ -1157,50 +1348,60 @@ class QueueItemReq(BaseModel):
 @app.get("/api/v1/queue")
 def queue_list(emp: str = Depends(require_emp_local)):
     items = _load_queue()
+    # 归属过滤（2026-08-18）：非 admin 仅看自己提交的队列项 + RIS 公共复核项（_emp=ris-poll）
+    if accounts.get_role(emp) != "admin":
+        items = [it for it in items
+                 if (it.get("meta") or {}).get("_emp") in (emp, "ris-poll")]
     return _envelope(True, "OK", {"items": items, "count": len(items)})
 
 
 @app.post("/api/v1/queue")
-def queue_add(req: QueueItemReq, emp: str = Depends(require_emp_local)):
-    """加入待质控队列；按正文 MD5 去重（与桌面版同一去重口径）。"""
+def queue_add(req: QueueItemReq, emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
+    """加入待质控队列；按正文 MD5 去重（2026-08-18 收敛：落 qc.db QueueItem 表，
+    数据库层唯一索引原子去重，杜绝并发重复入队）。"""
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(400, "text 不能为空")
-    norm = "".join(text.split())
-    h = hashlib.md5(norm.encode("utf-8", "ignore")).hexdigest()
+    meta = dict(req.meta or {})
+    meta.setdefault("patient", (req.patient or "").strip())
+    meta.setdefault("applied_site", (req.site or "").strip())
+    meta.setdefault("source", req.source or "手动")
+    meta.setdefault("_emp", emp)  # 记录提交人工号，供 queue_list 归属过滤（2026-08-18）
+    new_id, duplicated = _queue_orm_add_dedup(text, meta)
+    if duplicated:
+        return _envelope(True, "OK", {"id": str(new_id), "duplicated": True}, "该报告已在队列中")
     items = _load_queue()
-    for it in items:
-        if it.get("hash") == h:
-            return _envelope(True, "OK", {"id": it["id"], "duplicated": True}, "该报告已在队列中")
-    item = {
-        "id": _uuid.uuid4().hex[:8],
-        "hash": h,
-        "patient": (req.patient or req.meta.get("patient", "")).strip(),
-        "site": (req.site or req.meta.get("applied_site", "")).strip(),
-        "text": text,
-        "source": req.source or "手动",
-        "ts": time.strftime("%Y-%m-%d %H:%M"),
-        "meta": req.meta or {},
-    }
-    items.append(item)
-    _save_queue(items)
-    return _envelope(True, "OK", {"id": item["id"], "duplicated": False, "count": len(items)})
+    return _envelope(True, "OK", {"id": str(new_id), "duplicated": False, "count": len(items) + 1})
 
 
 @app.delete("/api/v1/queue")
-def queue_clear(emp: str = Depends(require_emp_local)):
-    _save_queue([])
+def queue_clear(emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
+    # 归属校验（2026-08-18）：清空是破坏性操作，仅 admin 可整表清空；
+    # 普通医生只能清掉自己的条目（走逐条删除）。
+    if accounts.get_role(emp) != "admin":
+        raise HTTPException(403, "仅管理员可清空队列，可逐条移出自己提交的条目")
+    _queue_orm_clear()
     return _envelope(True, "OK", {"count": 0}, "队列已清空")
 
 
 @app.delete("/api/v1/queue/{qid}")
-def queue_remove(qid: str, emp: str = Depends(require_emp_local)):
-    items = _load_queue()
-    kept = [it for it in items if it.get("id") != qid]
-    if len(kept) == len(items):
+def queue_remove(qid: str, emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
+    try:
+        qid_int = int(qid)
+    except (TypeError, ValueError):
         raise HTTPException(404, "队列条目不存在")
-    _save_queue(kept)
-    return _envelope(True, "OK", {"count": len(kept)}, "已移出队列")
+    items = _load_queue()
+    it = next((x for x in items if str(x.get("id")) == qid), None)
+    if not it:
+        raise HTTPException(404, "队列条目不存在")
+    # 归属校验：非 admin 仅可移出自己提交（meta._emp == 工号）或 RIS 公共复核项
+    if accounts.get_role(emp) != "admin":
+        owner = (it.get("meta") or {}).get("_emp")
+        if owner not in (emp, "ris-poll"):
+            raise HTTPException(403, "只能移出自己提交的条目")
+    if not _queue_orm_remove(qid_int):
+        raise HTTPException(404, "队列条目不存在")
+    return _envelope(True, "OK", {"count": len(_load_queue())}, "已移出队列")
 
 
 # ----------------------------- 屏幕采集（真·框选 PACS 屏幕） -----------------------------
@@ -1218,6 +1419,9 @@ _OCR_CACHE_MAX = 12
 # 截屏/识别共享全局（_SHOT/_OCR_CACHE）并发锁：热键连按 + SPA 同时触发时，
 # 防止「一个请求重抓屏覆盖另一个正在裁剪的原图」「缓存读写非原子」的竞态。
 _OCR_LOCK = threading.Lock()
+# RIS 轮询互斥：后台守护线程与 /ris/poll-now 手动触发共用 _ris_poll_once，
+# 无锁时两路并发会把同一批报告各自识别为"新报告"重复入库/入队（2026-08-18 修复）。
+_RIS_POLL_LOCK = threading.Lock()
 
 
 class ScreenRegion(BaseModel):
@@ -1254,7 +1458,7 @@ def _grab_fullscreen():
 
 
 @app.post("/api/v1/screen/capture")
-def screen_capture(emp: str = Depends(require_emp_local)):
+def screen_capture(emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
     """抓取整屏，返回缩略图 base64（原图缓存于服务端供后续高精度裁剪）。"""
     try:
         with _OCR_LOCK:
@@ -1262,7 +1466,7 @@ def screen_capture(emp: str = Depends(require_emp_local)):
             _SHOT["img"], _SHOT["w"], _SHOT["h"], _SHOT["ts"] = img, img.width, img.height, time.time()
     except Exception as exc:
         return JSONResponse(status_code=503,
-                            content=_envelope(False, "SCREEN_UNAVAILABLE", None, str(exc)))
+                            content=_envelope(False, "SCREEN_UNAVAILABLE", None, type(exc).__name__))
     thumb = img
     if img.width > _SHOT_MAX_W:
         ratio = _SHOT_MAX_W / float(img.width)
@@ -1278,7 +1482,7 @@ def screen_capture(emp: str = Depends(require_emp_local)):
 
 
 @app.post("/api/v1/screen/ocr")
-def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local)):
+def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
     """按比例框在缓存的整屏原图上裁剪并 OCR，返回三区文本 + 结构化 meta。"""
     import ocr_provider
     ok, why = ocr_provider.availability()
@@ -1294,7 +1498,7 @@ def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local)):
                     img, img.width, img.height, time.time()
             except Exception as exc:
                 return JSONResponse(status_code=503,
-                                    content=_envelope(False, "SCREEN_UNAVAILABLE", None, str(exc)))
+                                    content=_envelope(False, "SCREEN_UNAVAILABLE", None, type(exc).__name__))
         W, H = img.width, img.height
         texts: Dict[str, str] = {}
         errors: Dict[str, str] = {}
@@ -1319,7 +1523,7 @@ def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local)):
                 full = ocr_provider.ocr_image(ocr_img) or ""
                 texts, errors = _split_dynamic(full)
             except Exception as exc:
-                errors["_dynamic"] = str(exc)
+                errors["_dynamic"] = type(exc).__name__
         else:
             # ---- 固定框位模式（原逻辑，供精确框选场景）----
             for role, r in (req.regions or {}).items():
@@ -1345,7 +1549,7 @@ def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local)):
                         _OCR_CACHE.pop(next(iter(_OCR_CACHE)))
                 except Exception as exc:
                     texts[role] = ""
-                    errors[role] = str(exc)
+                    errors[role] = type(exc).__name__
     meta = {}
     try:
         meta = engine.extract_meta_full(texts.get("basic", ""),
@@ -1455,7 +1659,7 @@ def ocr_meta(req: OCRMetaReq, emp: str = Depends(require_emp_local)):
     try:
         meta = engine.extract_meta_full(req.basic or "", req.findings or "", req.impression or "")
     except Exception as exc:
-        return _envelope(False, "META_ERR", None, str(exc))
+        return _envelope(False, "META_ERR", None, type(exc).__name__)
     return _envelope(True, "OK", {"meta": meta})
 
 
@@ -1483,6 +1687,19 @@ def screen_regions_get(emp: str = Depends(require_emp_local)):
 
 @app.put("/api/v1/screen/regions")
 def screen_regions_put(regions: Dict[str, Any], emp: str = Depends(require_emp_local)):
+    # 坐标校验（2026-08-18）：0<=x,y<=1 且 0<w,h<=1 且非 NaN——此前原样持久化坏值，
+    # 越界/NaN 会在 /screen/ocr 的 int(r.x*W) 抛 ValueError 500。
+    import math
+    for _k, r in (regions or {}).items():
+        if not isinstance(r, dict):
+            raise HTTPException(400, "区域格式应为 {key: {x,y,w,h}}")
+        for _f in ("x", "y", "w", "h"):
+            v = r.get(_f)
+            if not isinstance(v, (int, float)) or math.isnan(v):
+                raise HTTPException(400, f"区域坐标 {_f} 非法")
+        if not (0 <= r["x"] <= 1 and 0 <= r["y"] <= 1
+                and 0 < r["w"] <= 1 and 0 < r["h"] <= 1):
+            raise HTTPException(400, "区域坐标越界（x/y 0~1，w/h 0~1 且 >0）")
     try:
         with open(_ocr_config_path(), encoding="utf-8") as fh:
             cfg = json.load(fh) or {}
@@ -1524,29 +1741,20 @@ def _settings_path() -> str:
 @app.get("/api/v1/settings")
 def settings_get(emp: str = Depends(require_emp_local)):
     data = dict(_DEFAULT_SETTINGS)
-    try:
-        with open(_settings_path(), encoding="utf-8") as fh:
-            data.update(json.load(fh) or {})
-    except Exception:
-        pass
+    data.update(_settings_orm_all())
     return _envelope(True, "OK", data)
 
 
 @app.put("/api/v1/settings")
 def settings_put(cfg: Dict[str, Any], emp: str = Depends(require_emp_local)):
     data = dict(_DEFAULT_SETTINGS)
-    try:
-        with open(_settings_path(), encoding="utf-8") as fh:
-            data.update(json.load(fh) or {})
-    except Exception:
-        pass
+    data.update(_settings_orm_all())
     for k in _DEFAULT_SETTINGS:          # 只接受已知键，避免写入杂项
         if k == "shortcuts":
             continue                     # shortcuts 走下方逐条合并，避免整体覆盖
         if k in cfg:
             data[k] = cfg[k]
-    # shortcuts 为嵌套字典：以「默认值+已持久化」为基线，逐条合并已知动作键，
-    # 避免只重绑某一个动作时丢失其它动作（如只改 run_qc 却把 save_sample 清零）
+    # shortcuts 为嵌套字典：以「默认值+已持久化」为基线，逐条合并已知动作键
     if isinstance(cfg.get("shortcuts"), dict):
         known = set((_DEFAULT_SETTINGS.get("shortcuts") or {}).keys())
         cur = dict(data.get("shortcuts") or {})
@@ -1554,8 +1762,7 @@ def settings_put(cfg: Dict[str, Any], emp: str = Depends(require_emp_local)):
             if act in known:
                 cur[act] = sc
         data["shortcuts"] = cur
-    with open(_settings_path(), "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=2)
+    _settings_orm_save(data)
     return _envelope(True, "OK", data, "设置已保存")
 
 
@@ -1567,24 +1774,24 @@ def qc_rules_config_get(emp: str = Depends(require_emp_local)):
 
 
 @app.put("/api/v1/qc/rules/config")
-def qc_rules_config_put(cfg: Dict[str, Any], emp: str = Depends(require_emp_local)):
+def qc_rules_config_put(cfg: Dict[str, Any], emp: str = Depends(require_admin)):
     """覆盖保存规则配置（typos/conflicts/ignores/template）。"""
     try:
         engine.save_rules_config(cfg)
         return _envelope(True, "OK", engine.load_rules_config(), "规则配置已保存")
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, type(exc).__name__)
 
 
 @app.post("/api/v1/qc/rules/config/reset")
-def qc_rules_config_reset(emp: str = Depends(require_emp_local)):
+def qc_rules_config_reset(emp: str = Depends(require_admin)):
     """恢复出厂默认规则库（覆盖用户自定义）。"""
     try:
         cfg = engine.default_rules_config()
         engine.save_rules_config(cfg)
         return _envelope(True, "OK", engine.load_rules_config(), "已恢复默认规则库")
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, type(exc).__name__)
 
 
 class LearnTypoReq(BaseModel):
@@ -1593,7 +1800,7 @@ class LearnTypoReq(BaseModel):
 
 
 @app.post("/api/v1/qc/rules/learn-typo")
-def qc_rules_learn_typo(req: LearnTypoReq, emp: str = Depends(require_emp_local)):
+def qc_rules_learn_typo(req: LearnTypoReq, emp: str = Depends(require_admin)):
     """P0 修正反馈闭环：用户确认的「错词→正确词」写入规则库，下次自动识别。"""
     ok = engine.learn_typo(req.wrong, req.correct)
     if not ok:
@@ -1613,7 +1820,7 @@ class TypoBatchImportReq(BaseModel):
 
 
 @app.post("/api/v1/qc/rules/typos")
-def qc_rules_typo_add(req: TypoItemReq, emp: str = Depends(require_emp_local)):
+def qc_rules_typo_add(req: TypoItemReq, emp: str = Depends(require_admin)):
     """新增单条错字对（若已存在则更新正确词并自动启用）。"""
     ok = engine.learn_typo(req.wrong, req.correct)
     if not ok:
@@ -1628,7 +1835,7 @@ def qc_rules_typo_add(req: TypoItemReq, emp: str = Depends(require_emp_local)):
 
 
 @app.post("/api/v1/qc/rules/typos/toggle")
-def qc_rules_typo_toggle(req: TypoItemReq, emp: str = Depends(require_emp_local)):
+def qc_rules_typo_toggle(req: TypoItemReq, emp: str = Depends(require_admin)):
     """启用/停用单条错字：enabled=false 时把错词加入 disabled_typos，true 时移出。"""
     wrong = (req.wrong or "").strip()
     if not wrong:
@@ -1648,7 +1855,7 @@ def qc_rules_typo_toggle(req: TypoItemReq, emp: str = Depends(require_emp_local)
 
 
 @app.post("/api/v1/qc/rules/typos/delete")
-def qc_rules_typo_delete(req: TypoItemReq, emp: str = Depends(require_emp_local)):
+def qc_rules_typo_delete(req: TypoItemReq, emp: str = Depends(require_admin)):
     """删除单条错字（同时从停用列表移除）。"""
     wrong = (req.wrong or "").strip()
     if not wrong:
@@ -1665,7 +1872,7 @@ def qc_rules_typo_delete(req: TypoItemReq, emp: str = Depends(require_emp_local)
 
 
 @app.post("/api/v1/qc/rules/typos/batch-import")
-def qc_rules_typo_batch_import(req: TypoBatchImportReq, emp: str = Depends(require_emp_local)):
+def qc_rules_typo_batch_import(req: TypoBatchImportReq, emp: str = Depends(require_admin)):
     """批量导入错字对：自动跳过无效/反向冲突项，返回成功与失败数。"""
     cfg = engine.load_rules_config()
     typos = cfg.get("typos") or {}
@@ -1699,13 +1906,13 @@ def qc_rules_typo_batch_import(req: TypoBatchImportReq, emp: str = Depends(requi
 
 
 @app.post("/api/v1/qc/rules/scan-reports")
-def qc_rules_scan_reports(emp: str = Depends(require_emp_local)):
+def qc_rules_scan_reports(emp: str = Depends(require_admin)):
     """P0 历史报告词频学习：扫描样本库，自动发现候选错字对，供一键采纳。"""
     try:
         cands = engine.scan_reports_for_typos()
         return _envelope(True, "OK", {"candidates": cands}, f"发现 {len(cands)} 个候选错字")
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, type(exc).__name__)
 
 
 # ----------------------------- 静态前端托管（SPA） -----------------------------
@@ -1753,4 +1960,5 @@ if __name__ == "__main__":
     _p.add_argument("--host", default=os.environ.get("QC_HOST", "127.0.0.1"))
     _p.add_argument("--port", type=int, default=int(os.environ.get("QC_PORT", "8000")))
     _args = _p.parse_args()
+    _log("info", f"星衍放射质控服务启动 v{APP_VERSION} @ http://{_args.host}:{_args.port}")
     uvicorn.run(app, host=_args.host, port=_args.port)
