@@ -14,8 +14,10 @@ import os
 import sys
 import time
 import unittest
+import tempfile
 
-_TMP = "/tmp/qc_api_guard_tests"
+# 2026-08-18：/tmp 硬编码在 Windows 不存在（CI 单元测试闸失败根因），改系统临时目录
+_TMP = os.path.join(tempfile.gettempdir(), "qc_api_guard_tests")
 os.makedirs(_TMP, exist_ok=True)
 os.environ["QC_DB_OVERRIDE"] = os.path.join(_TMP, "guard.db")
 os.environ["QC_APPDATA"] = os.path.join(_TMP, "appdata")
