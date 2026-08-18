@@ -25,7 +25,7 @@ TRIAL_DAYS = 90
 
 # 与 src/license_utils.py 内嵌公钥、keys/public_key.pem 完全一致
 _PUBLIC_KEY_PEM = b"""-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEACsb0q9A7E3oRfw/DNkMf1UKoxKWzeK6xP2ZaNLbpnto=
+MCowBQYDK2VwAyEAwDFmQmjTcrHbayI4kjiirpuj+1DtpAAh3H33Gvc5VoQ=
 -----END PUBLIC KEY-----
 """
 

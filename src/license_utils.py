@@ -229,7 +229,7 @@ def check_trial():
 # 机制：开发者用私钥对硬件标识签名生成激活码；客户端用内置公钥验签。
 # 客户端仅持有公钥，没有私钥即无法伪造激活码。
 _PUBLIC_KEY_PEM = b"""-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEACsb0q9A7E3oRfw/DNkMf1UKoxKWzeK6xP2ZaNLbpnto=
+MCowBQYDK2VwAyEAwDFmQmjTcrHbayI4kjiirpuj+1DtpAAh3H33Gvc5VoQ=
 -----END PUBLIC KEY-----
 """
 def _stable_hw_id():
