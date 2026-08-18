@@ -1,3 +1,5 @@
+# 2026-08-18：Node 20 弃用迁移——actions 全部升级到 Node 24 版本
+#   （checkout v5 / setup-python v6 / upload-download-artifact v5 / gh-release v3）
 name: Build Windows (exe + installer)
 
 # 触发：手动点一下 / 推到 main / 打 v* tag
@@ -15,10 +17,10 @@ jobs:
     runs-on: windows-latest   # 真实 x64 Windows Server，产物兼容绝大多数 PC
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -71,7 +73,7 @@ jobs:
 
       # ---- 产物先上传，避免后续校验告警导致丢失 exe ----
       - name: Upload exe artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: report-qc-exe
           path: dist/报告质控软件/
@@ -311,7 +313,7 @@ jobs:
           "INSTALLER BUILD OK" | Add-Content $diag
 
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: report-qc-installer
           path: installer/*.exe
@@ -347,7 +349,7 @@ jobs:
           } > RELEASE_BODY.md
 
       - name: Publish latest Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: latest
           name: 报告质控软件（最新版）
@@ -367,13 +369,13 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Download portable bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: report-qc-exe
           path: dist-app
@@ -460,9 +462,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Run Windows auto-update end-to-end test
