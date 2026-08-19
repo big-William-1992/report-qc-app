@@ -1608,13 +1608,13 @@ class RuleEngine:
         cfg = (self.rules_config.get("template") or dict(DEFAULT_TEMPLATE))
         required = cfg.get("required_sections", ["findings", "impression"])
         sev = cfg.get("severity", "low")
-        has_findings = bool(re.search(r"检查所见|影像描述|表现", text))
+        has_findings = bool(re.search(r"检查所见|影像描述|影像所见|表现", text))
         # 结论段判定限定『行首标题 + 冒号』（2026-08-18 修复）：此前子串"结论"会误匹配
         # 『临床初步结论』『结论尚待』等正文词，导致真缺结论段时漏检模板缺失。
         has_impression = bool(re.search(r"(?m)^\s*(?:诊断印象|印象|诊断意见|影像结论|影像诊断|结论)\s*[:：]", text))
         if "findings" in required and not has_findings:
             out.append(Finding("R10-TEMPLATE", "模板缺失-描述段", sev,
-                "报告缺少『检查所见/影像描述』段，不符合结构化报告规范", "", (-1, -1)))
+                "报告缺少『检查所见/影像描述/影像所见』段，不符合结构化报告规范", "", (-1, -1)))
         if "impression" in required and not has_impression:
             out.append(Finding("R10-TEMPLATE", "模板缺失-结论段", sev,
                 "报告缺少『诊断印象/结论』段，不符合结构化报告规范", "", (-1, -1)))
@@ -1760,10 +1760,20 @@ class RuleEngine:
         found = False
         for region in sorted(set(f_assert) | set(i_assert),
                              key=lambda r: (r[0], r[1] or "")):
-            d = f_assert.get(region, set())
-            c = i_assert.get(region, set())
-            d_eff = set(d)
-            c_eff = set(c)
+            organ, _ = region
+            d = set(f_assert.get(region, set()))
+            c = set(i_assert.get(region, set()))
+            # 器官级正常声明（side 为 None/bilateral/both/double，如结论『心肺未见异常』
+            # 『肺未见异常』『双肺未见异常』『双乳未见异常』）视作覆盖该器官所有侧别，
+            # 兼容高发结论写法——此前因点名器官/双侧被 _is_segment_global_normal 排除而漏报 R17 矛盾。
+            for (o, s), v in f_assert.items():
+                if o == organ and s in (None, "bilateral", "both", "double") and "normal" in v:
+                    d.add("normal")
+            for (o, s), v in i_assert.items():
+                if o == organ and s in (None, "bilateral", "both", "double") and "normal" in v:
+                    c.add("normal")
+            d_eff = d
+            c_eff = c
             if f_global_normal:
                 d_eff.add("normal")
             if i_global_normal:
