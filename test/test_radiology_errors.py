@@ -278,3 +278,58 @@ def test_r6_multi_region_applied():
     # 『胸部、上腹部』多区域申请 + 正文覆盖胸部 → 不报 R6（此前单族归一误报）
     f = _run("影像描述：双肺纹理清晰。\n影像诊断：未见异常。", {"applied_site": "胸部、上腹部"})
     assert not _has(f, "R6-SITE")
+
+
+# ----------------------------- 2026-08-19 P2 修复回归 -----------------------------
+
+def test_r12_negation_unified_no_false_positive():
+    # R12 否定判定已统一为 _NEG_BEFORE_POS_RE（原 pre.endswith(neg) 仅看紧邻 5 字）：
+    # 『右肺见结节，左肺未见异常』异侧正常声明不得误报 R12 内部矛盾
+    f = _run("影像描述：右肺上叶见结节，左肺未见异常。\n影像诊断：右肺上叶结节。")
+    assert not _has(f, "R12-SENTENCE"), [x.message for x in f]
+    # 同侧（左肺）结节+未见异常 仍应报
+    f2 = _run("影像描述：左肺上叶见结节，左肺上叶未见异常。\n影像诊断：左肺上叶结节。")
+    assert _has(f2, "R12-SENTENCE"), [x.message for x in f2]
+
+
+def test_r19_lesion_xing_not_false_positive():
+    # 『实质性病变/炎性病变』中的「性病变」为合法词尾，不得被 R19 近音误判为「恶性病变」
+    f = _run("影像描述：右肺上叶见实质性病变，边界清。\n影像诊断：右肺上叶炎性病变。")
+    assert not _has(f, "R19-HOMOPHONE"), [x.message for x in f]
+    # 真错字（膜玻璃→磨玻璃）仍应报
+    f2 = _run("影像描述：右肺上叶见膜玻璃样密度影。\n影像诊断：右肺上叶磨玻璃结节。")
+    assert _has(f2, "R19-HOMOPHONE"), [x.message for x in f2]
+
+
+def test_cross_rule_dedup_consistency():
+    # 描述阳性 + 结论阴性 同一事实：R5-CONSISTENCY 与 R17-PERREGION 同根，去重后仅留 R17
+    f = _run("影像描述：左肺上叶见一结节。\n影像诊断：未见异常。")
+    ids = _ids(f)
+    assert "R17-PERREGION" in ids
+    assert "R5-CONSISTENCY" not in ids, f"跨规则去重失效，R5 未抑制：{ids}"
+
+
+def test_cross_rule_dedup_site():
+    # 申请上腹部却写胸部：R6-SITE 与 R18-COVERAGE 同根，去重后仅留 R6
+    f = _run("影像描述：右肺上叶见结节。\n影像诊断：右肺上叶结节。",
+             {"applied_site": "上腹部"})
+    ids = _ids(f)
+    assert "R6-SITE" in ids
+    assert "R18-COVERAGE" not in ids, f"跨规则去重失效，R18 未抑制：{ids}"
+
+
+def test_cross_rule_dedup_nature():
+    # 良恶性矛盾：R9-CONFLICT 与 R14-NATURE 同根，去重后仅留 R14
+    f = _run("影像描述：右肺上叶占位，考虑恶性。\n影像诊断：右肺上叶良性结节。")
+    ids = _ids(f)
+    assert "R14-NATURE" in ids
+    assert "R9-CONFLICT" not in ids, f"跨规则去重失效，R9 未抑制：{ids}"
+
+
+def test_cross_rule_dedup_keeps_lone_secondary():
+    # 仅冗余来源单独出现时不误删：R18 单独触发（无 R6）应保留
+    f = _run("影像描述：肝实质密度均匀。\n影像诊断：脂肪肝。",
+             {"applied_site": "上腹部"})
+    assert not _has(f, "R6-SITE")  # 上腹部写肝，部位相符，无 R6
+    assert not _has(f, "R18-COVERAGE"), [x.message for x in f]
+

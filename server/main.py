@@ -1130,8 +1130,11 @@ def sample_list(page: int = Query(1, ge=1),
     role = accounts.get_role(emp)
     # 归属过滤提前到 SQL 层（2026-08-18 性能优化）：避免全表载入长文本再 Python 过滤
     scope = user_id if (role == "admin" and user_id) else _scope_user_id(emp)
-    rows = samplelib.list_samples_full(user_id=scope)
+    # M10（2026-08-19）：无 error_type 过滤时，分页直接下沉到 SQL 层
+    # （LIMIT/OFFSET + COUNT），避免为分页而全表载入长文本；
+    # 带 error_type 过滤时仍需在 Python 侧按 findings_json 过滤，故全量载入（该路径低频）。
     if error_type:
+        rows = samplelib.list_samples_full(user_id=scope)
         kept = []
         for r in rows:
             fj = r.get("findings_json") or "[]"
@@ -1142,9 +1145,14 @@ def sample_list(page: int = Query(1, ge=1),
             if error_type in ets:
                 kept.append(r)
         rows = kept
-    total = len(rows)
-    start = (page - 1) * page_size
-    page_rows = rows[start:start + page_size]
+        total = len(rows)
+        start = (page - 1) * page_size
+        page_rows = rows[start:start + page_size]
+    else:
+        total = samplelib.count_samples(user_id=scope)
+        start = (page - 1) * page_size
+        page_rows = samplelib.list_samples_full(
+            user_id=scope, limit=page_size, offset=start)
     items = []
     for r in page_rows:
         scores = _eng_scores(json.loads(r.get("scores_json") or "{}"))

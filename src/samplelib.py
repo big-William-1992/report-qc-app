@@ -260,9 +260,11 @@ def get_sample(sid: int, path: str = None) -> dict:
         return dict(r) if r else {}
 
 
-def list_samples_full(path: str = None, limit: int = None, user_id: str = None) -> list:
+def list_samples_full(path: str = None, limit: int = None, offset: int = 0,
+                      user_id: str = None) -> list:
     """返回样本全部字段（含 report_text / findings_json / scores_json），供导出报表使用。
     limit 可选：>0 时只在 SQL 层取最近 N 条，避免全量载入长文本（扫描学习用）。
+    offset 可选：与 limit 配合做 SQL 层分页（M10，2026-08-19）。
     user_id 可选：非空时只返回该责任人的样本（多用户隔离，2026-08-18）。"""
     init_db(path)
     _where = ""
@@ -272,15 +274,23 @@ def list_samples_full(path: str = None, limit: int = None, user_id: str = None) 
         _args = [user_id]
     with sqlite3.connect(path or db_path()) as conn:
         conn.row_factory = sqlite3.Row
+        _sql = "SELECT * FROM samples" + _where + " ORDER BY id DESC"
         if limit and limit > 0:
-            rows = conn.execute(
-                "SELECT * FROM samples" + _where + " ORDER BY id DESC LIMIT ?",
-                _args + [int(limit),]
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM samples" + _where + " ORDER BY id DESC").fetchall()
+            _sql += " LIMIT ? OFFSET ?"
+            _args = _args + [int(limit), int(max(0, offset))]
+        rows = conn.execute(_sql, _args).fetchall()
         return [dict(r) for r in rows]
+
+
+def count_samples(path: str = None, user_id: str = None) -> int:
+    """返回样本总数（SQL COUNT，避免为分页而全表载入长文本，M10，2026-08-19）。
+    user_id 非空时仅统计该责任人样本（与 list_samples_full 隔离口径一致）。"""
+    init_db(path)
+    _where = " WHERE user_id=?" if user_id else ""
+    _args = (user_id,) if user_id else ()
+    with sqlite3.connect(path or db_path()) as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM samples" + _where, _args).fetchone()[0]
 
 
 def delete_sample(sid: int, path: str = None) -> None:

@@ -521,6 +521,47 @@ def _word_effectively_present(target: str, word: str) -> bool:
     return False
 
 
+# 跨规则去重（2026-08-19）：同一事实被多条规则从不同角度重复告警时，
+# 仅保留「主规则」产出的一条，抑制同组其他冗余来源，避免同一矛盾在 UI 刷屏。
+# 分组依据为语义同根，而非简单按 rule_id 去重：
+#   consistency —— R5(描述-结论器官一致性) 与 R17(逐部位描述↔结论) 同述描述-结论矛盾，
+#                  设计上 R17 已统一接管描述-结论一致性产出，故主规则为 R17-PERREGION。
+#   site        —— R6(登记部位错配) 与 R18(区域器官漏写) 同述「申请部位与正文不符」，
+#                  主规则取更高严重度、语义更直接的 R6-SITE。
+#   nature      —— R9(用户自定义互斥) 与 R14(良恶性定性矛盾) 同述良恶性冲突，
+#                  主规则取内置专用的 R14-NATURE。
+# 仅当组内主规则存在时才抑制同组其他来源；主规则单独出现（无冗余）时不误删。
+_DEDUP_GROUPS = {
+    "consistency": {"R5-CONSISTENCY", "R17-PERREGION"},
+    "site": {"R6-SITE", "R18-COVERAGE"},
+    "nature": {"R9-CONFLICT", "R14-NATURE"},
+}
+_DEDUP_PRIMARY = {
+    "consistency": "R17-PERREGION",
+    "site": "R6-SITE",
+    "nature": "R14-NATURE",
+}
+
+
+def _dedup_findings(findings: list) -> list:
+    """按语义同根分组抑制冗余告警；返回去重后的 findings（保持原序）。"""
+    by_group = {}
+    for f in findings:
+        g = next((k for k, v in _DEDUP_GROUPS.items() if f.rule_id in v), None)
+        if g is None:
+            continue
+        by_group.setdefault(g, []).append(f)
+    drop = set()
+    for g, fs in by_group.items():
+        primary = _DEDUP_PRIMARY[g]
+        if not any(f.rule_id == primary for f in fs):
+            continue  # 仅冗余来源单独出现，不抑制
+        for f in fs:
+            if f.rule_id != primary:
+                drop.add(id(f))
+    return [f for f in findings if id(f) not in drop]
+
+
 def _r12_same_region(sent: str) -> bool:
     """R12 句级矛盾辅助：判断句中『部位+正常』与阳性征是否指向同一部位。
 
@@ -535,13 +576,16 @@ def _r12_same_region(sent: str) -> bool:
     region_spans = _region_spans_in_text(sent)   # [(key, side, start, end)]
     # 正常声明所对应的部位提及
     normal_spans = [sp for sp in region_spans if sp[2] >= norm_s and sp[3] <= norm_e]
-    # 收集未被否定的阳性征位置
+    # 收集未被否定的阳性征位置（统一采用全引擎的否定判定 _NEG_BEFORE_POS_RE，
+    # 与 _has_positive / _is_negative_claim / _word_effectively_present 保持一致；
+    # 旧逻辑用 pre.endswith(neg) 仅看紧邻结尾 5 字，无法识别『未见实质性病变』式
+    # 带修饰间隔的否定，会导致异侧/带修饰词的阳性征误判或漏判）
     pos_idx = []
     for k in POSITIVE_STRONG:
         i = sent.find(k)
         while i != -1:
-            pre = sent[max(0, i - 5): i]
-            if not any(pre.endswith(neg) for neg in _NEG_PREFIXES):
+            pre = sent[max(0, i - 12): i]
+            if not _NEG_BEFORE_POS_RE.search(pre):
                 pos_idx.append(i)
             i = sent.find(k, i + 1)
     if not pos_idx:
@@ -964,6 +1008,8 @@ class RuleEngine:
                 f"检测到繁体/异体字（{'、'.join(_trad)}…），质控词典为简体，"
                 f"相关规则识别可能不完整，建议转简体后重试",
                 "", (-1, -1)))
+        # 跨规则去重：同一事实的多规则冗余告警仅保留主规则一条（见 _DEDUP_GROUPS）
+        _finds = _dedup_findings(_finds)
         return _finds
 
     def _traditional_hits(self, text: str) -> list:
