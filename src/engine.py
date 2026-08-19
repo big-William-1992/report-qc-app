@@ -1181,7 +1181,7 @@ class RuleEngine:
             mentioned = any(o in i_txt for o in fam_organs) or \
                 any((p + b) in i_txt for p in ("双", "两", "双侧") for b in _base)
             concluded = any(k in i_txt for k in
-                            ["占位", "结节", "癌", "瘤", "恶性", "病变", "异常",
+                            ["占位", "肿块", "肿物", "结节", "癌", "瘤", "恶性", "病变", "异常",
                              "增大", "扩张", "囊肿", "结石", "水肿", "出血",
                              # 阴性/概括性结论：印象段已对该器官族给出结论（未见异常/正常/良性等），
                              # 视为"已结论"，避免『描述有结节 + 印象称未见异常』被 R5 误报

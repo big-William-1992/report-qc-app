@@ -231,6 +231,15 @@ def test_r14_negative_prefix_no_override():
     assert _has(f, "R5-CONSISTENCY") or _has(f, "R14-NATURE"), [x.message for x in f]
 
 
+def test_r5_impression_mass_not_false_positive():
+    # NER 知识图谱 R5 对齐修复：印象段写『肿块/肿物』属已就该器官给出对应结论，
+    # 不得被 R5-CONSISTENCY 误报『描述-结论矛盾』（此前 concluded 词表缺 肿块/肿物）。
+    f = _run("影像描述：右肺上叶见结节，直径约2cm。\n影像诊断：右肺上叶见肿块。")
+    assert not _has(f, "R5-CONSISTENCY"), [x.message for x in f]
+    f2 = _run("影像描述：左乳见结节。\n影像诊断：左乳肿物，BI-RADS 4a。")
+    assert not _has(f2, "R5-CONSISTENCY"), [x.message for x in f2]
+
+
 def test_r14_multi_vs_single_count():
     # 多发 vs 1 枚矛盾应报；多发 vs 2 枚不报
     f = _run("影像描述：双肺见多发结节。\n影像诊断：见 1 枚结节。")
