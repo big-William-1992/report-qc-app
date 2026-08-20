@@ -192,8 +192,9 @@ def test_severity_assignment_by_rule():
     assert not _has(f_side, "R2-LATERALITY")
     assert not _has(f_side, "R17-PERREGION")
 
-    # 提示(low)：模板缺失-随访建议（R10-TEMPLATE 默认 low）
-    f_tpl = _run("影像描述：右肺上叶见结节。\n影像结论：右肺上叶结节。")
+    # 提示(low)：模板缺失-描述/结论段标题（R10-TEMPLATE 默认 low；
+    # 随访建议已于 2026-08-20 默认关闭，故改用缺失段标题场景演示 low 级）
+    f_tpl = _run("右肺上叶见结节，边界清，余肺未见异常。右肺上叶结节，建议结合临床。")
     assert _has(f_tpl, "R10-TEMPLATE")
     assert any(x.severity == "low" for x in f_tpl if x.rule_id == "R10-TEMPLATE")
 
@@ -332,4 +333,78 @@ def test_cross_rule_dedup_keeps_lone_secondary():
              {"applied_site": "上腹部"})
     assert not _has(f, "R6-SITE")  # 上腹部写肝，部位相符，无 R6
     assert not _has(f, "R18-COVERAGE"), [x.message for x in f]
+
+
+# ----------------------- 2026-08-20 修复回归（核心规则审核） -----------------------
+
+def test_r23_traditional_simplified_homograph_no_false():
+    # P1：简体同形字（限/空/境/系/液/置/作/登/疑/操）不再误报繁体
+    cases = [
+        "检查所见：右乳外上象限见低回声结节，边界清。\n诊断印象：右乳外上象限低回声结节。",
+        "检查所见：脑室系统大小形态正常。\n诊断印象：颅脑未见异常。",
+        "检查所见：患者操作中配合良好，系统登录后完成扫描。\n诊断印象：检查顺利。",
+        "检查所见：盆腔积液已引流。\n诊断印象：处置妥当。",  # 积液/处置
+        "检查所见：颅内环境稳定。\n诊断印象：未见异常。",      # 环境
+        "检查所见：权限校验通过，空间充足。\n诊断印象：正常。",  # 权限/空间
+        "检查所见：患者疑虑已解除。\n诊断印象：未见异常。",      # 疑虑
+    ]
+    for c in cases:
+        f = _run(c)
+        assert not _has(f, "R23-TRADITIONAL"), f"简体同形字误报 R23：{c[:30]}… 触发={_ids(f)}"
+
+
+def test_r23_traditional_real_still_fires():
+    # P1 正向：真繁体独有字（顯/異/竈）仍应报 R23
+    f = _run("檢查所見：右肺上葉可見顯異竈。\n診斷印象：右肺上葉佔位。")
+    assert _has(f, "R23-TRADITIONAL")
+
+
+def test_r18_focused_pelvic_no_false():
+    # P2：盆腔聚焦报告（卵巢囊肿/子宫肌瘤）不再误报必查要素漏写
+    f1 = _run("检查所见：子宫前位，左卵巢囊肿，大小约3cm，壁薄。\n诊断印象：左卵巢囊肿。",
+              {"gender": "女", "applied_site": "盆腔"})
+    f2 = _run("检查所见：子宫前位，肌层见低回声肌瘤，大小约2cm。\n诊断印象：子宫肌瘤。",
+              {"gender": "女", "applied_site": "盆腔"})
+    assert not _has(f1, "R18-COVERAGE"), [x.message for x in f1]
+    assert not _has(f2, "R18-COVERAGE"), [x.message for x in f2]
+
+
+def test_r18_blank_pelvic_still_fires():
+    # P2 正向：盆腔报告完全空白（未描述任何盆腔器官）仍应报 R18
+    f = _run("检查所见：\n诊断印象：", {"gender": "女", "applied_site": "盆腔"})
+    assert _has(f, "R18-COVERAGE")
+
+
+def test_r1_r12_cross_gender_negated_no_false():
+    # P2：女性盆腔报告写『前列腺区未见异常』属合法否定表述，不升为 high 级矛盾
+    f = _run("检查所见：子宫前位，前列腺区未见异常，双侧附件区未见异常。\n诊断印象：盆腔未见异常。",
+             {"gender": "女"})
+    assert not _has(f, "R1-GENDER"), [x.message for x in f]
+    assert not _has(f, "R12-SENTENCE"), [x.message for x in f]
+
+
+def test_r1_female_real_prostate_fires():
+    # P2 正向：女性 + 真前列腺增大（非否定）仍应报 R1-GENDER
+    f = _run("检查所见：子宫前位，前列腺增大，约4cm。\n诊断印象：前列腺增大。",
+             {"gender": "女"})
+    assert _has(f, "R1-GENDER")
+
+
+def test_r5_patch_pneumonia_no_false():
+    # P3：描述斑片影 + 结论肺炎 临床一致，不误报 R5 描述-结论矛盾
+    f = _run("检查所见：右肺下叶见斑片状密度增高影，边缘模糊。\n诊断印象：右肺下叶肺炎。")
+    assert not _has(f, "R5-CONSISTENCY"), [x.message for x in f]
+
+
+def test_r8_same_typo_reported_once():
+    # P3：同一错字在描述段+结论段多次出现，仅报一次（去重降噪）
+    f = _run("检查所见：右肺姐姐，左肺姐姐。\n诊断印象：双肺姐姐。")  # 姐姐=结节 错写
+    n = sum(1 for x in f if x.rule_id == "R8-TYPO")
+    assert n == 1, f"R8 同一错字应仅报一次，实际 {n} 条"
+
+
+def test_r10_followup_default_off():
+    # P3：随访建议默认关闭，缺『随访/复查』字样的报告不再默认触发 R10-TEMPLATE
+    f = _run("检查所见：右肺上叶见结节。\n诊断印象：右肺上叶结节。")
+    assert not _has(f, "R10-TEMPLATE"), [x.message for x in f]
 

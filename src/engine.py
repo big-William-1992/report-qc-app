@@ -105,11 +105,13 @@ class Finding:
 
 
 # 确凿繁体独有字（简体不使用这些字形；放射报告高频，2026-08-18 新增检测用）。
-# 注意：只收录「简体绝不会出现」的字形——简繁同形字（描/查/告/囊/腺/骨等）
-# 若误收会在简体报告上误报（已修正）。
+# 注意：只收录「简体绝不会出现」的字形。简繁同形字（描/查/告/囊/腺/骨、以及
+# 象限/系统/空间/环境/液体/处置/操作/登录/疑虑/权限 中的
+# 限/空/境/系/液/置/作/登/疑/操）若误收会在简体报告上系统性误报。
+# 2026-08-20 复核：原字符串声称「已修正」但本体仍含上述同形字，本次全量剔除。
 _TRADITIONAL_CHARS = ("雙紋門結節顯異竈腫塊縱斷層動脈靜診療預質掃強寬鈣瀰潤轉圍"
-                      "氣腸膽攝護宮狀實幹顱鎖葉葉聲腫據臨牀檢驗檢視術後疑慮蓋約"
-                      "數滿積液處置監測網絡環境時間空間數據系統設備操作權限登錄")
+                      "氣腸膽攝護宮狀實幹顱鎖葉葉聲腫據臨牀檢驗檢視術後慮蓋約"
+                      "數滿積處監測網絡環時間間數據統設備權錄")
 
 
 # ----------------------------- 词典 / 知识图谱 -----------------------------
@@ -253,6 +255,14 @@ REPORT_TYPE_REQUIREMENTS = {
         "要素": ["股骨", "胫骨", "髌骨", "半月板", "交叉韧带", "关节囊", "髌上囊"],
         "提示": "膝关节报告应描述股骨/胫骨/髌骨、半月板、交叉韧带、关节腔等",
     },
+}
+
+# 聚焦型检查：描述了下列主器官即视为报告已覆盖，豁免结构要素清单误报
+# （如盆腔报告描述子宫/卵巢/前列腺，不再因缺膀胱/直肠/盆壁而误报子宫肌瘤/卵巢囊肿等
+# 聚焦性合法报告）。普查型检查（胸部CT/头颅CT/腰椎等）不在此表，要素清单为强制项。
+FOCUSED_TYPE_PRIMARY = {
+    "盆腔": ["子宫", "卵巢", "前列腺", "宫颈", "阴道", "附件", "输卵管", "精囊", "盆底"],
+    "乳腺": ["腺体", "导管", "乳管", "乳头", "皮肤", "乳房"],
 }
 
 # 检查类型关键词 → 规范类型（从登记部位/检查方式匹配）
@@ -521,6 +531,29 @@ def _word_effectively_present(target: str, word: str) -> bool:
     return False
 
 
+def _organ_asserted(text: str, organ: str) -> bool:
+    """organ 在 text 中是否有『未被否定修饰』的真实出现（与 R9/R17 否定口径统一）。
+
+    处理两种语序：① 前否定『未见前列腺』（否定前缀在前）；② 后否定『前列腺未见异常』
+    （否定前缀紧接器官之后 ≤4 字内）。用于 R1/R12 跨性别器官告警豁免——
+    女性盆腔报告写『前列腺区未见异常』属合法否定表述，不应升为 high 级矛盾。"""
+    if not text or not organ:
+        return False
+    _neg_after = re.compile(
+        r"[^，。；;、\n]{0,4}("
+        + "|".join(re.escape(n) for n in sorted(_NEG_PREFIXES, key=len, reverse=True))
+        + r")")
+    idx = text.find(organ)
+    while idx != -1:
+        pre = text[max(0, idx - 12):idx]
+        post = text[idx + len(organ): idx + len(organ) + 12]
+        neg = bool(_NEG_BEFORE_POS_RE.search(pre)) or bool(_neg_after.search(post))
+        if not neg:
+            return True
+        idx = text.find(organ, idx + 1)
+    return False
+
+
 # 跨规则去重（2026-08-19）：同一事实被多条规则从不同角度重复告警时，
 # 仅保留「主规则」产出的一条，抑制同组其他冗余来源，避免同一矛盾在 UI 刷屏。
 # 分组依据为语义同根，而非简单按 rule_id 去重：
@@ -713,7 +746,7 @@ RULES_CONFIG_PATH = _rules_config_path()
 # 结构化报告模板默认规范（可在 rules_config.json 的 template 字段覆盖）
 DEFAULT_TEMPLATE = {
     "required_sections": ["findings", "impression"],  # 必须含「检查所见」与「诊断印象/结论」段
-    "require_followup": True,                          # 建议给出随访/复查建议
+    "require_followup": False,                         # 随访建议默认关闭（2026-08-20）：避免每份缺"随访/复查"字样的报告都触发 low 级噪声；可在设置中按需开启
     "severity": "low",
     "note": "结构化报告建议含『检查所见』与『诊断印象/结论』段，并给出随访/复查建议",
 }
@@ -1085,6 +1118,11 @@ class RuleEngine:
                 continue
             expect = self.kg.expected_gender_for_organ(e.text)  # "male"/"female"
             if expect and expect != rg and e.text not in seen:
+                # 否定豁免（2026-08-20）：该异性别器官在文本中出现且被『未见/无…』修饰
+                # （如『前列腺未见异常』）属合法否定表述，不报性别矛盾；与 R9/R17 否定口径统一。
+                # 注意：器官仅经 NER 实体识别、文本无字面词时，实体即断言，不豁免。
+                if e.text in text and not _organ_asserted(text, e.text):
+                    continue
                 seen.add(e.text)
                 box = {"findings": "影像描述段", "impression": "影像结论段"}.get(e.section, "报告正文")
                 out.append(Finding("R1-GENDER", "性别矛盾", "high",
@@ -1229,6 +1267,9 @@ class RuleEngine:
             concluded = any(k in i_txt for k in
                             ["占位", "肿块", "肿物", "结节", "癌", "瘤", "恶性", "病变", "异常",
                              "增大", "扩张", "囊肿", "结石", "水肿", "出血",
+                             # 疾病名结论（2026-08-20）：『描述斑片影 + 结论肺炎/结核』临床一致，
+                             # 此前 concluded 词表缺疾病名导致误报
+                             "肺炎", "结核", "炎症", "感染", "渗出", "实变", "纤维化",
                              # 阴性/概括性结论：印象段已对该器官族给出结论（未见异常/正常/良性等），
                              # 视为"已结论"，避免『描述有结节 + 印象称未见异常』被 R5 误报
                              # （此类矛盾交由 R17 逐部位精确比对处理）
@@ -1360,11 +1401,21 @@ class RuleEngine:
         if req is not None:
             elems = req["要素"]
             missing = [e for e in elems if e not in combined]
-            if missing and not _claims_normal(combined):
-                sample = "、".join(missing[:6])
-                out.append(Finding("R18-COVERAGE", "报告必查要素漏写", "medium",
-                    f"「{matched_type}」报告缺少必查要素：{sample}。{req['提示']}",
-                    matched_type, (-1, -1)))
+            if missing:
+                # 必查要素告警口径（2026-08-20 修正）：
+                # - 普查型检查（胸部CT/头颅CT/腰椎/腹部CT/颈椎/膝关节等）要素清单为强制项，
+                #   只要任一结构要素缺失且报告未整体声明正常，即报漏写（沿用 R20 原设计，
+                #   确保『只报一个结节却漏评肺纹理/纵隔/胸膜』等不完整报告被抓出）。
+                # - 聚焦型检查（盆腔/乳腺）只要描述了该类型主器官（如盆腔报告提到子宫/卵巢/
+                #   前列腺），即视为报告已覆盖，不再因未逐字点名「膀胱/直肠/盆壁」等结构
+                #   而误报聚焦性合法报告（子宫肌瘤/卵巢囊肿等）。
+                _relaxed = FOCUSED_TYPE_PRIMARY.get(matched_type)
+                _covered = bool(_relaxed) and any(o in combined for o in _relaxed)
+                if not _covered and not _claims_normal(combined):
+                    sample = "、".join(missing[:6])
+                    out.append(Finding("R18-COVERAGE", "报告必查要素漏写", "medium",
+                        f"「{matched_type}」报告缺少必查要素：{sample}。{req['提示']}",
+                        matched_type, (-1, -1)))
         return out
 
     # R22 病灶尺寸-术语一致性：称『结节』但测量值 >3cm（应称肿块），或
@@ -1475,22 +1526,29 @@ class RuleEngine:
         # 停用单条错字：disabled_typos 中列出的错词跳过（词库可视化维护的「停用」动作）
         disabled = set(self.rules_config.get("disabled_typos") or [])
         seen = set()
+        reported = set()  # 每个错词仅报一次（2026-08-20）：同一错字在描述段+结论段各出现
+                          # 一次时不再重复告警，降低 low 级噪声
         # 按错词长度降序匹配，优先命中更长的错写（如"淋巴结解"先于"结解"），避免重复告警
         for wrong in sorted(typo_map.keys(), key=len, reverse=True):
             if wrong in disabled:
                 continue  # 用户已停用该词条
+            if wrong in reported:
+                continue  # 该错词已报过，不再重复
             if wrong == typo_map.get(wrong):
                 continue  # 自映射无意义项
             correct = typo_map[wrong]
-            for m in re.finditer(re.escape(wrong), text):
-                s, e = m.start(), m.end()
-                # 跳过已被更长错词覆盖的区间
-                if any(ms <= s < me or ms < e <= me for ms, me in seen):
-                    continue
-                seen.add((s, e))
-                out.append(Finding("R8-TYPO", "同音错别字", "medium",
-                    f"检出疑似错别字「{wrong}」，疑为「{correct}」（常见语音录入误写）",
-                    wrong, (s, e), correct))
+            m = re.search(re.escape(wrong), text)  # 仅取首个出现位置
+            if not m:
+                continue
+            s, e = m.start(), m.end()
+            # 跳过已被更长错词覆盖的区间
+            if any(ms <= s < me or ms < e <= me for ms, me in seen):
+                continue
+            seen.add((s, e))
+            reported.add(wrong)
+            out.append(Finding("R8-TYPO", "同音错别字", "medium",
+                f"检出疑似错别字「{wrong}」，疑为「{correct}」（常见语音录入误写）",
+                wrong, (s, e), correct))
         return out
 
     # R19 读音相似错字（高频词组锚定 + pypinyin 自动推导）
@@ -1683,8 +1741,16 @@ class RuleEngine:
         within_found = False
         for sent in _split_sentences(f_txt):
             # 1) 同一句内男女专属器官混用（如『子宫…前列腺…』）
-            s_genders = {g for organ, g in GENDER_ORGANS.items() if organ in sent}
-            if len(s_genders) > 1:
+            #    矛盾成立的判据：句内出现一个『被真实断言（非否定）』的男性专属器官，
+            #    且同时提及任一女性专属器官（提及即可，因『子宫未见异常』仍意味着患者具子宫）。
+            #    『前列腺区未见异常』等被否定修饰的男性器官不计入，避免女性盆腔报告的
+            #    合法否定表述被升为 high 级矛盾（与 R9/R17 否定口径统一，2026-08-20）。
+            s_has_male = any(organ in sent and GENDER_ORGANS.get(organ) == "male"
+                             and _organ_asserted(sent, organ)
+                             for organ in GENDER_ORGANS)
+            s_has_female = any(organ in sent and GENDER_ORGANS.get(organ) == "female"
+                               for organ in GENDER_ORGANS)
+            if s_has_male and s_has_female:
                 out.append(Finding("R12-SENTENCE", "同一句话逻辑错误", "high",
                     f"同一句话内同时出现男女专属器官（自相矛盾）：『{sent[:30]}…』",
                     sent[:30], (-1, -1)))
@@ -1702,12 +1768,14 @@ class RuleEngine:
         # 3) 跨句（整段）男女专属器官混用：原 R7-INTERNAL 的段级逻辑，并入 R12 以避免双规则重复。
         #    若句内已捕获男女器官混用（within_found），不再重复报整段级；仅当矛盾分散在不同句子时补充。
         if not within_found:
-            sec_genders = {g for organ, g in GENDER_ORGANS.items() if organ in f_txt}
-            # 并入 NER 识别的 gender_organ 实体（覆盖文本级子串未命中、但 NER 已侧别的器官）
+            sec_genders = {g for organ, g in GENDER_ORGANS.items()
+                           if organ in f_txt and _organ_asserted(f_txt, organ)}
+            # 并入 NER 识别的 gender_organ 实体（覆盖文本级子串未命中、但 NER 已侧别的器官）；
+            # 同样豁免被否定修饰的器官（如『前列腺区未见异常』，2026-08-20）。
             for e in ents:
                 if e.label == "gender_organ" and e.section == "findings":
                     g = self.kg.expected_gender_for_organ(e.text)
-                    if g:
+                    if g and _organ_asserted(f_txt, e.text):
                         sec_genders.add(g)
             if len(sec_genders) > 1:
                 out.append(Finding("R12-SENTENCE", "同一句话逻辑错误", "medium",
