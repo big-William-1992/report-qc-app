@@ -67,6 +67,117 @@ _IMPRESSION_HEADERS = (
     r"impression|diagnosis"
 )
 
+# 段落切分单一数据源（2026-08-21 架构收敛）：NER._split_sections 与 R5._split_for_r5
+# 共用同一 (正则, section) 列表，杜绝「标题集合各处各写一遍」导致 R2/R5/R17 跨段比对
+# 静默破坏。修改段落标题只改 _FINDINGS_HEADERS/_IMPRESSION_HEADERS 两处即可。
+_SECTION_SPANS_SRC = [
+    (re.compile(_FINDINGS_HEADERS, re.I), "findings"),
+    (re.compile(_IMPRESSION_HEADERS, re.I), "impression"),
+    (re.compile(r"患者信息|患者|性别|年龄|检查部位|申请"), "meta"),
+]
+
+
+def _sectionize(text: str) -> list:
+    """按段落标题把 text 切成 (section, start, end) 区间列表（单一实现）。
+    供 NER 实体标注与 R5 描述/印象切分共用；REF：NER._split_sections 的语义。"""
+    spans = []
+    for pat, sec in _SECTION_SPANS_SRC:
+        for m in pat.finditer(text):
+            spans.append((m.start(), sec))
+    spans.sort()
+    sections = []
+    for i, (start, sec) in enumerate(spans):
+        end = spans[i + 1][0] if i + 1 < len(spans) else len(text)
+        sections.append((sec, start, end))
+    if not sections:
+        sections = [("findings", 0, len(text))]
+    return sections
+
+
+# ---- 整屏 OCR 文本流的「行级」三段切分（2026-08-23 自 server/main.py 收敛至此）----
+# 与上方 _SECTION_SPANS_SRC 的分工：_SECTION_SPANS_SRC 是对连续正文做字符级正则
+# 切分（服务 NER/R5 跨段比对），标题词均为长且明确的词组；此处面向 OCR 整屏文本
+# 流按行匹配短标题词（如「描述」「诊断」单独出现），若并入字符级数据源会把正文
+# 中的高频词误判为段起点、破坏 R5/R17 区间，故保持独立表、同文件单一实现。
+# 消费方：server /api/v1/qc/ocr-dynamic（动态模式整屏 OCR → basic/findings/impression）。
+_DYNAMIC_FINDINGS_TITLES = ("检查所见", "影像所见", "影像描述", "所见", "检查描述", "描述")
+_DYNAMIC_IMPRESSION_TITLES = ("诊断印象", "影像诊断", "诊断意见", "诊断结论", "印象", "结论", "诊断")
+_DYNAMIC_BASIC_TITLES = ("患者", "病人", "姓名", "检查号", "影像号", "登记")
+
+
+def _strip_dynamic_title(line: str, pats) -> str:
+    """剥离行首的段落标题词，保留正文。如『检查所见：双肺纹理增多』→『双肺纹理增多』。
+    标题可能后接中文冒号/空格/顿点；也可能标题在行中（罕见），统一只剥行首。"""
+    s = line.strip()
+    for p in sorted(pats, key=len, reverse=True):
+        if s.startswith(p):
+            rest = s[len(p):].lstrip("：:：: .、\t")
+            return rest.strip()
+        # 兼容『所见：』『描述 :』等带空格的标题写法
+        if s.startswith(p + " ") or s.startswith(p + "："):
+            rest = s[len(p):].lstrip(" ：: .、\t")
+            return rest.strip()
+    return s
+
+
+def split_dynamic(full: str):
+    """动态模式：整屏 OCR 文本流 → 按标题切分三区。
+    顺序遍历所有行，命中标题关键词的行作为段起点：
+      basic=患者信息 / findings=检查所见·影像描述 / impression=诊断印象·影像诊断·结论
+    若找不到某标题，则该段并入相邻段或留空，由 extract_meta_full / 前端兜底。
+    返回 (texts, errors)，texts 键为 basic/findings/impression。"""
+    texts = {"basic": "", "findings": "", "impression": ""}
+    errors = {}
+    lines = [ln for ln in (full or "").splitlines() if ln.strip()]
+    if not lines:
+        return texts, errors
+    # 找各段标题行下标（首个命中）
+    def _first_idx(pats):
+        for i, ln in enumerate(lines):
+            for p in pats:
+                if p in ln:
+                    return i
+        return -1
+    f_idx = _first_idx(_DYNAMIC_FINDINGS_TITLES)
+    i_idx = _first_idx(_DYNAMIC_IMPRESSION_TITLES)
+    b_idx = _first_idx(_DYNAMIC_BASIC_TITLES)
+    # 修正：诊断标题若出现在描述标题之前（PACS 常把「诊断」列在患者信息区），
+    # 以描述标题为基准重排——取描述之后首个诊断标题。
+    if f_idx >= 0 and i_idx >= 0 and i_idx < f_idx:
+        for j in range(f_idx, len(lines)):
+            if any(p in lines[j] for p in _DYNAMIC_IMPRESSION_TITLES):
+                i_idx = j
+                break
+    # basic：起始（或患者标题）→ 描述标题（或诊断标题）
+    # 注意：若「患者」标题出现在描述/诊断之后（部分 PACS 布局），b_start > end，
+    # 直接取起始段即可（lines[0:end]），避免 basic 被截成空串。
+    if f_idx >= 0:
+        end = i_idx if i_idx > f_idx else len(lines)
+    elif i_idx >= 0:
+        end = i_idx
+    else:
+        end = len(lines)
+    b_start = b_idx if 0 <= b_idx < end else 0
+    texts["basic"] = "\n".join(lines[b_start:end]).strip()
+    # findings：从描述标题行开始（含该行正文，标题词被剥掉）→ 诊断标题行前
+    # 注意跳过中间的患者标题行（部分 PACS 布局把患者信息插在描述段里），
+    # 避免「患者：张三」等 basic 内容混入描述正文。
+    if f_idx >= 0:
+        end = i_idx if i_idx > f_idx else len(lines)
+        head = _strip_dynamic_title(lines[f_idx], _DYNAMIC_FINDINGS_TITLES)
+        body = [head]
+        for ln in lines[f_idx + 1:end]:
+            if b_idx >= 0 and b_idx != f_idx and any(p in ln for p in _DYNAMIC_BASIC_TITLES):
+                continue
+            body.append(ln)
+        texts["findings"] = "\n".join(body).strip()
+    # impression：从诊断标题行开始（含该行正文，标题词被剥掉）→ 末尾
+    if i_idx >= 0:
+        head = _strip_dynamic_title(lines[i_idx], _DYNAMIC_IMPRESSION_TITLES)
+        body = [head] + [ln for ln in lines[i_idx + 1:]]
+        texts["impression"] = "\n".join(body).strip()
+    return texts, errors
+
 
 def _is_common_word(w: str) -> bool:
     """错词是否为高频合法词（2026-08-18 H6）：R8 词条 wrong 命中高频白名单
@@ -430,6 +541,43 @@ _ABSENCE_VERBS = ["未见", "消失", "吸收", "已吸收", "消退"]
 LESION_WORDS = ["结节", "占位", "肿块", "病灶", "囊肿", "结石", "骨折", "积液",
                 "阴影", "斑片", "异常信号"]
 
+# R5 文本级兜底：NER 易漏标的高频器官 → 器官族（2026-08-21）。
+# 仅当描述段该器官词附近出现阳性征、而印象段未就该器官族给结论时，补报 R5，
+# 解决「NER 漏标『肝』等致整条规则失明」的漏报。
+R5_TEXT_ORGANS = {
+    "肝": "liver", "肝脏": "liver",
+    "肺": "lung", "肺脏": "lung",
+    "肾": "kidney", "肾脏": "kidney",
+    "肾上腺": "adrenal",
+    "胰腺": "pancreas", "胰": "pancreas",
+    "脾": "spleen", "脾脏": "spleen",
+    "脑": "brain",
+    "甲状腺": "thyroid",
+    "卵巢": "ovary",
+    "子宫": "uterus",
+    "前列腺": "prostate",
+    "乳腺": "breast", "乳房": "breast",
+    "腮腺": "parotid",
+    "胸膜": "pleura",
+    "食管": "esophagus",
+    "胃": "stomach",
+    "肠": "bowel",
+    "膀胱": "bladder",
+    "胆囊": "gallbladder",
+    "淋巴结": "lymphnode",
+    "纵隔": "mediastinum",
+    "气管": "trachea", "支气管": "bronchus",
+}
+
+# R5 印象段「已结论」词表（描述阳性征后，印象段出现这些词视为已就该器官给结论）。
+_R5_CONCLUDED = (
+    "占位", "肿块", "肿物", "结节", "癌", "瘤", "恶性", "病变", "异常",
+    "增大", "扩张", "囊肿", "结石", "水肿", "出血",
+    "肺炎", "结核", "炎症", "感染", "渗出", "实变", "纤维化",
+    "未见异常", "未见明显异常", "正常", "未见占位", "良性",
+    "未见明确异常", "未见确切异常",
+)
+
 # 需做左右侧一致性比对的成对解剖结构
 # —— 跨段比对(R14)用此表：文本级兜底，覆盖 R2（NER 带 L-/R- 前缀规范节点）未能可靠覆盖的器官。
 #    来源：src/anatomy_lexicon.py（RadLex 器官族 + 侧别建模）动态派生；保留原有的 R2 跨段覆盖分离，
@@ -660,57 +808,50 @@ def _organ_sides_in_text(text: str, organ: str) -> set:
         sides.add("right")
     return sides
 
-# 放射报告常见同音/近音错别字（多由语音录入产生）：错词 → 正确词
-# 该词典现由 assets/rules_config.json 维护（用户可在 GUI 中增删）；此处为读取失败的兜底默认值。
-TYPO_MAP_DEFAULT = {
-    "姐姐": "结节", "结解": "结节",
-    "战位": "占位", "占为": "占位",
-    "改化": "钙化", "盖化": "钙化", "钙话": "钙化", "钙划": "钙化",
-    "病造": "病灶", "病燥": "病灶",
-    "增墙": "增强", "墙化": "强化",
-    "迷漫": "弥漫", "弥慢": "弥漫",
-    "摩玻璃": "磨玻璃", "磨破璃": "磨玻璃",
-    "深出": "渗出", "胸模": "胸膜",
-    "般片": "斑片", "斑偏": "斑片", "政象": "征象",
-    "纵格": "纵隔", "临吧": "淋巴", "淋巴结解": "淋巴结节",
-    "囊中": "囊肿", "水种": "水肿",
-    # —— 器官名形近/音近错字（typed + voice）——
-    "子官": "子宫", "字宫": "子宫",
-    "前裂腺": "前列腺", "前例腺": "前列腺",
-    "腮线": "腮腺",
-    "骨拆": "骨折",
-    "蜘蛛膜": "蛛网膜",
-    "申状腺": "甲状腺",
-    "食官": "食管",
-    "兰尾": "阑尾",
-    "纵膈": "纵隔",
-    # —— 疾病/征象名错字 ——
-    "肺结合": "肺结核", "费炎": "肺炎",
-    "曾生": "增生", "积夜": "积液",
-    "息内": "息肉", "精脉曲张": "静脉曲张",
-    "动肪瘤": "动脉瘤", "哽死": "梗死",
-    "坎影": "龛影", "憩事": "憩室",
-    "溃殇": "溃疡", "浸闰": "浸润",
-    "珍断": "诊断", "征像": "征象",
-    "曾强": "增强", "造形": "造影",
-    "覆查": "复查", "随防": "随访",
-    "坐肺": "左肺",
-    # —— P2 形近字错字（五笔/形码/OCR 误识别：形近但不同音）——
-    "未梢": "末梢", "末见": "未见",
-    # （2026-08-18 移除 "已见":"未见"：『病灶较前已见好转』是正确表达，误报会进 auto_fix 自动替换）
-    "结节边绿": "结节边缘", "边绿": "边缘",
-    "末分化": "未分化", "己经": "已经", "巳经": "已经",
-    "主干增租": "主干增粗", "末见明确": "未见明确", "末见异常": "未见异常",
-    # —— P2 输入法常见错（拼音重码）——
-    "费部": "肺部", "费纹理": "肺纹理", "费门": "肺门",
-    "双废纹理": "双肺纹理", "废纹理": "肺纹理", "纵阁": "纵隔", "临门": "肺门",
-    "实便": "实变", "便变": "实变",
-    "曩肿": "囊肿", "曩性": "囊性", "曩壁": "囊壁",
-    "低回升": "低回声", "高回升": "高回声", "回升区": "回声区",
-    "强升": "强回声",
-    "腺体曾生": "腺体增生", "曾生": "增生",
-    "边缘毛皂": "边缘毛糙", "毛皂": "毛糙",
+# 放射报告常见同音/近音错别字兜底词典已外置至 typo_lexicon.py（单一数据源，2026-08-23
+# 去重 47 个重复键后迁出）。此处 import 并保留同名 re-export，维持
+# `from engine import TYPO_MAP_DEFAULT`（如 tools/cn_error_synth.py）对外兼容。
+from typo_lexicon import TYPO_MAP_DEFAULT  # noqa: F401
+
+# R8 上下文安全闸（2026-08-22）：下列错词的「错写」本身也是常见合法字/词
+# （如『坐/又/费/纵/前/子/卵』等），在无关语境下易误命中。仅当错词周围 ±16 字内
+# 出现任一放射语境词（解剖/方位/征象/检查/测量）时才放行，避免把『坐火车』『又肺部』
+# 这类偶发组合误报为错别字。其余『错写本身几乎不可能作为正确词出现』的条目
+# （姐节/战位/结解/病造…）不进此表，保持高检出零误报。
+TYPO_CONTEXT_REQUIRED = {
+    "坐肺", "又肺", "由肺", "费炎", "费部", "废部", "纵哥", "纵膈", "纵阁",
+    "前裂腺", "前例腺", "前腺", "子官", "字官", "字宫", "卵曹", "卵槽",
+    "申状腺", "申壮腺", "腮线", "腮泉", "骨拆", "食官", "食到", "食通",
 }
+
+# 放射语境锚定词（供 TYPO_CONTEXT_REQUIRED 判定）；取自解剖/方位/征象/检查/测量高频词。
+_TYPO_CTX_TOKENS = (
+    list(ANATOMY_SYNONYMS.keys()) + list(GENDER_ORGANS.keys())
+    + ["左", "右", "双侧", "上叶", "下叶", "上肺", "下肺", "见", "示", "可见",
+       "占位", "结节", "肿块", "肿物", "囊肿", "钙化", "增生", "强化", "增强",
+       "密度", "信号", "cm", "mm", "CT", "MR", "超声", "检查", "影像", "描述",
+       "诊断", "报告", "正常", "异常", "纹理", "征象", "模糊", "清晰", "毛糙"]
+)
+
+def _typo_in_medical_context(text: str, s: int, e: int) -> bool:
+    """错词 (s,e) 周围 ±16 字是否含放射语境锚定词。"""
+    win = text[max(0, s - 16): e + 16]
+    return any(tok in win for tok in _TYPO_CTX_TOKENS)
+
+
+# R19 安全词表（2026-08-22，降误报）：下列常见中文词与某医学高频词「完全同音」
+# （如『印象/影响』↔影像、『姐姐』↔结节、『造型』↔造影、『现象/想象』↔显像、
+# 『两性』↔良性、『事变』↔实变、『解释』↔结石、『边远』↔边缘、『鲜味』↔纤维…）。
+# 中文同音字极多，R19 的 exact（同音）命中会把这些合法用词误判为错字。本表
+# 列出确为常见合法词、且与医学词同音的串，exact 命中时直接放行（不报）。
+# 注意：本表绝不收录 TYPO_MAP_DEFAULT 中的错写（那些确是错字，须照常报）。
+# 用户可在 rules_config.json 的 r19_safe_words 追加机构特有安全词。
+R19_SAFE_WORDS = {
+    "印象", "影响", "姐姐", "转义", "转椅", "造型", "现象", "想象",
+    "两性", "量性", "事变", "边远", "鲜味", "解释", "揭示", "接受",
+    "结束", "已经", "一线", "自供", "乱抄", "古哲", "魔狐", "揭示",
+    "器官",  # 常见词，与「气管」(qìguǎn) 完全同音，极易误报
+} - set(TYPO_MAP_DEFAULT.keys())  # 确保不与错别字表冲突（错别字优先）
 
 # 规则配置文件路径（与 samples.db 同目录：assets/rules_config.json）
 # 兼容 PyInstaller 打包：打包后资源位于 exe 同级的 assets/ 下。
@@ -757,7 +898,8 @@ def default_rules_config() -> dict:
     return {"typos": dict(TYPO_MAP_DEFAULT), "conflicts": [],
             "ignores": [], "template": dict(DEFAULT_TEMPLATE),
             "enable_r19": True, "r19_sensitivity": "medium",
-            "disabled_typos": []}
+            "r19_safe_words": list(R19_SAFE_WORDS),
+            "disabled_typos": [], "require_lesion_size": False}
 
 
 def load_rules_config(path: str = RULES_CONFIG_PATH) -> dict:
@@ -771,6 +913,11 @@ def load_rules_config(path: str = RULES_CONFIG_PATH) -> dict:
         cfg.setdefault("template", dict(DEFAULT_TEMPLATE))
         cfg.setdefault("r19_sensitivity", "medium")
         cfg.setdefault("enable_r19", True)
+        # R19 安全词（2026-08-22）：用户可在配置中追加机构特有同音合法词，
+        # 与内置 R19_SAFE_WORDS 合并，exact 同音命中时放行，降低误报。
+        cfg.setdefault("r19_safe_words", [])
+        # 病灶必报尺寸（默认关）：开启后描述段阳性病灶无测量值则提示（R22-SIZE-MISSING）
+        cfg.setdefault("require_lesion_size", False)
         # 启用/停用单条错字：disabled_typos 为「停用的错词」列表（P0 词库可视化管理）
         cfg.setdefault("disabled_typos", [])
         # typos 升级合并：默认错字表的新增词自动并入（用户自定义映射优先保留），
@@ -905,28 +1052,12 @@ def scan_reports_for_typos(path: str = RULES_CONFIG_PATH, limit: int = 200) -> l
 
 # ----------------------------- NER -----------------------------
 class ChineseRadiologyNER:
-    SECTION_MAP = [
-        (re.compile(_FINDINGS_HEADERS, re.I), "findings"),
-        # 与 _split_for_r5 的 impression 标题集合对齐（2026-08-18 修复：
-        # 此前缺『影像诊断/诊断结论/影像结论/diagnosis』，NER 把结论段整段标为 findings，
-        # 导致 R2 分支1/R5 依赖实体 section 的跨段比对失效）
-        (re.compile(_IMPRESSION_HEADERS, re.I), "impression"),
-        (re.compile(r"患者信息|患者|性别|年龄|检查部位|申请"), "meta"),
-    ]
+    # 2026-08-21 架构收敛：段落切分统一走模块级 _sectionize()（与 R5._split_for_r5 同源），
+    # SECTION_MAP 保留为兼容别名（指向同一数据源 _SECTION_SPANS_SRC）。
+    SECTION_MAP = _SECTION_SPANS_SRC
 
     def _split_sections(self, text: str):
-        spans = []
-        for pat, sec in self.SECTION_MAP:
-            for m in pat.finditer(text):
-                spans.append((m.start(), sec))
-        spans.sort()
-        sections = []
-        for i, (start, sec) in enumerate(spans):
-            end = spans[i + 1][0] if i + 1 < len(spans) else len(text)
-            sections.append((sec, start, end))
-        if not sections:
-            sections = [("findings", 0, len(text))]
-        return sections
+        return _sectionize(text)
 
     def _section_of(self, sections, pos: int) -> str:
         for sec, s, e in sections:
@@ -1000,9 +1131,11 @@ class RuleEngine:
         self.rules_config = load_rules_config()
 
     def run(self, text: str, meta: dict) -> List[Finding]:
-        # 实际启用规则：R1、R2、R3、R4、R5、R6、R8、R9、R10、R11、R12、R14、R15、R17、R18、R21、R22；
+        # 实际启用规则：R1、R2、R3、R4、R5、R6、R8、R9、R10、R12、R14、R15、R17、R18、R21、R22；
         #   R7（描述段男女专属器官混用）已并入 R12-SENTENCE；R20（必查要素漏写）已并入 R18-COVERAGE
         #   （见 _r18_region_coverage 类型级分支），二者均不再单独启用。
+        # R11（信息框-正文跨框矛盾）已全部并入 R1-GENDER / R2-LATERALITY / R17-PERREGION，
+        #   引擎无 _r11_* 实现，不再单独产出。
         # R16（随访时限缺失）、R19（读音/形近错字）为可选规则，分别由 rules_config.enable_r16 / enable_r19 控制（默认关闭/开启）。
         # R13 为预留编号（当前无对应规则），故不调用 _r13_*。
         # R17 为逐部位精确比对（描述段↔结论段按 器官+侧别 精确到同一部位，承接原 R11-2/R14-1 段级逻辑）；
@@ -1180,6 +1313,8 @@ class RuleEngine:
             "乳腺": "breast", "腮腺": "parotid", "膝关节": "knee", "髋关节": "hip",
             "肩关节": "shoulder", "肝": "liver", "输卵管": "tube", "精囊": "testis",
             "锁骨": "clavicle", "肋骨": "rib",
+            # 2026-08-21 补全：单字高危器官此前不在文本分支覆盖，致游离文本侧别矛盾漏报
+            "肾": "kidney", "胰": "pancreas", "脾": "spleen",
         }
         zh_fired = False
         for o in ORGAN_SIDE_LIST:
@@ -1213,8 +1348,11 @@ class RuleEngine:
     # R3 评分缺失
     def _r3_score(self, text, meta) -> List[Finding]:
         out = []
-        modality = meta.get("modality") or meta.get("applied_site")
+        modality = (meta.get("modality") or meta.get("applied_site") or "").strip().lower()
         # 2026-08-18：modality 为空时回退 applied_site（临床常只填申请部位）
+        # 2026-08-21：归一别名（乳腺X线/乳腺钼靶/双乳/乳房… → 乳腺），否则 MODALITY_SCORE
+        # 查不到返回 None，乳腺报告无 BI-RADS 不告警（漏报 R3）。
+        modality = MODALITY_ALIASES.get(modality, modality)
         if not modality:
             return out
         required = self.kg.required_score_for_modality(modality)
@@ -1264,48 +1402,50 @@ class RuleEngine:
             _base = {w.lstrip("左右双两") for w in fam_organs if len(w) >= 2 and w.lstrip("左右双两")}
             mentioned = any(o in i_txt for o in fam_organs) or \
                 any((p + b) in i_txt for p in ("双", "两", "双侧") for b in _base)
-            concluded = any(k in i_txt for k in
-                            ["占位", "肿块", "肿物", "结节", "癌", "瘤", "恶性", "病变", "异常",
-                             "增大", "扩张", "囊肿", "结石", "水肿", "出血",
-                             # 疾病名结论（2026-08-20）：『描述斑片影 + 结论肺炎/结核』临床一致，
-                             # 此前 concluded 词表缺疾病名导致误报
-                             "肺炎", "结核", "炎症", "感染", "渗出", "实变", "纤维化",
-                             # 阴性/概括性结论：印象段已对该器官族给出结论（未见异常/正常/良性等），
-                             # 视为"已结论"，避免『描述有结节 + 印象称未见异常』被 R5 误报
-                             # （此类矛盾交由 R17 逐部位精确比对处理）
-                             "未见异常", "未见明显异常", "正常", "未见占位", "良性",
-                             "未见明确异常", "未见确切异常"])
+            concluded = any(k in i_txt for k in _R5_CONCLUDED)
             if mentioned and concluded:
                 continue
             out.append(Finding("R5-CONSISTENCY", "描述-结论矛盾", "medium",
                 f"影像描述段器官「{name}」（族={fam}）提示阳性征，但诊断印象段未就该器官给出对应结论",
                 name, (-1, -1)))
+        # 文本级兜底：NER 漏标的高频器官（如「肝」）在描述段有阳性征、印象段未结论时仍报 R5。
+        # 仅对 NER 路径未覆盖的器官族补报，避免与上方 NER 路径重复。
+        _r5_fired = set(fam_mk.keys())
+        for w, fam in R5_TEXT_ORGANS.items():
+            if fam in _r5_fired:
+                continue
+            pos = f_txt.find(w)
+            if pos == -1:
+                continue
+            seg = f_txt[max(0, pos - 20): pos + 20]
+            if not any(_word_effectively_present(seg, k) for k in POSITIVE_MARKERS):
+                continue
+            # 印象段是否就同族器官给结论（复用同族词表 + _R5_CONCLUDED）
+            fam_words = [ow for ow, f in R5_TEXT_ORGANS.items() if f == fam]
+            mentioned = any(ow in i_txt for ow in fam_words)
+            concluded = any(k in i_txt for k in _R5_CONCLUDED)
+            if mentioned and concluded:
+                continue
+            out.append(Finding("R5-CONSISTENCY", "描述-结论矛盾", "medium",
+                f"影像描述段器官「{w}」（族={fam}）提示阳性征，但诊断印象段未就该器官给出对应结论",
+                w, (-1, -1)))
         return out
 
     @staticmethod
     def _split_for_r5(text: str) -> dict:
-        """按段落标题切分描述/印象原文（与 NER 段落划分一致）。
+        """按段落标题切分描述/印象原文（单一实现 _sectionize，与 NER 同一数据源）。
         返回 dict 额外含 findings_start：findings 段在原始 text 中的起始偏移，
-        供 R5 用相对偏移取实体附近窗口（避免用绝对偏移索引子串导致错位）。"""
-        spans = []
-        for pat, sec in [("(?i)" + _FINDINGS_HEADERS, "findings"),
-                         ("(?i)" + _IMPRESSION_HEADERS, "impression")]:
-            for m in re.finditer(pat, text):
-                spans.append((m.start(), sec))
-        spans.sort()
+        供 R5 用相对偏移取实体附近子段（避免用绝对偏移索引子串导致错位）。"""
+        sections = _sectionize(text)
+        f0 = next((s for s in sections if s[0] == "findings"), None)
+        i0 = next((s for s in sections if s[0] == "impression"), None)
         res = {"findings": text, "impression": "", "findings_start": 0}
-        if spans:
-            # 从第一个标题起往后切：findings 取首个 findings 起 ~ 下一个 impression；impression 取首个 impression 起
-            f0 = next((s for s in spans if s[1] == "findings"), None)
-            i0 = next((s for s in spans if s[1] == "impression"), None)
-            if f0 and i0 and i0[0] > f0[0]:
-                res["findings"] = text[f0[0]:i0[0]]
-                res["impression"] = text[i0[0]:]
-                res["findings_start"] = f0[0]
-            elif i0:
-                res["impression"] = text[i0[0]:]
-                res["findings"] = text[:i0[0]]
-                # findings 取全文前半，起点为 0
+        if f0 and i0 and i0[1] > f0[1]:
+            res["findings"] = text[f0[1]:i0[1]]
+            res["impression"] = text[i0[1]:]
+            res["findings_start"] = f0[1]
+        elif i0:
+            res["impression"] = text[i0[1]:]
         return res
 
     # R6 登记部位不符（申请部位 vs 报告主体解剖）
@@ -1474,6 +1614,69 @@ class RuleEngine:
                     f"测量最大径约 {cm:.1f}cm，超出常见病灶量级，疑为长度单位误写"
                     f"（mm 误写为 cm）或数值录入有误，请核对",
                     m.group(0), (-1, -1)))
+        # 可配置：要求阳性病灶必须报告尺寸（默认关，避免常规报告过度告警）。
+        # 仅对描述段明确阳性（非否定、附近无测量值）却无尺寸的病灶提示（2026-08-21）。
+        if self.rules_config.get("require_lesion_size", False):
+            _fbody = secs.get("findings", "")
+            _size_re = re.compile(
+                r"\d+(?:\.\d+)?\s*(?:×|x|\*)\s*\d*(?:\.\d+)?\s*(?:cm|毫米|mm)"
+                r"|\d+(?:\.\d+)?\s*(?:cm|毫米|mm)")
+            for term in ("结节", "肿块", "占位", "肿物"):
+                _hit = False
+                for m in re.finditer(term, _fbody):
+                    pre = _fbody[max(0, m.start() - 12): m.start()]
+                    if any(re.search(re.escape(v), pre) for v in _NEG_PREFIXES):
+                        continue
+                    post = _fbody[m.end(): m.end() + 25]
+                    if _size_re.search(post):
+                        continue
+                    out.append(Finding("R22-SIZE-MISSING", "病灶缺尺寸", "low",
+                        f"描述『{term}』但未给出测量尺寸，建议补充长径/大小等信息",
+                        term, (-1, -1)))
+                    _hit = True
+                    break
+                if _hit:
+                    break
+        # R22 定性-尺寸矛盾（2026-08-22，术语召回）：病灶定性形容词与实测尺寸自相矛盾。
+        # 如『巨大/较大/明显 结节/肿块』却仅测 <1cm，或『微小/小 结节』却测 >3cm——
+        # 这种内部不一致是放射术语质控的高频漏报点，且判定明确、误报极低。
+        _QUAL_LARGE = ("巨大", "较大", "明显", "大")
+        _QUAL_SMALL = ("微小", "小", "细小")
+        _qual_pat = re.compile(
+            r"(巨大|较大|明显|大|微小|小|细小)\s*"
+            r"(结节|肿块|占位|肿物)[^0-9]{0,14}?"
+            r"(?:大小|直径|径线|体积|最长径)?\s*约?\s*"
+            r"(\d+(?:\.\d+)?)\s*(?:×|x|\*)\s*(\d+(?:\.\d+)?)?\s*(cm|毫米|mm)"
+            r"|(巨大|较大|明显|大|微小|小|细小)\s*"
+            r"(结节|肿块|占位|肿物)[^0-9]{0,14}?"
+            r"(?:大小|直径|径线|体积|最长径)?\s*约?\s*"
+            r"(\d+(?:\.\d+)?)\s*(cm|毫米|mm)",
+            re.I)
+        for m in _qual_pat.finditer(combined):
+            if m.group(2) is not None:           # 双径线分支
+                qual, term = m.group(1), m.group(2)
+                v1 = float(m.group(3))
+                v2 = float(m.group(4)) if m.group(4) else None
+                unit = (m.group(5) or "").lower()
+            else:                                 # 单径线分支
+                qual, term = m.group(6), m.group(7)
+                v1 = float(m.group(8))
+                v2 = None
+                unit = (m.group(9) or "").lower()
+            cm = v1 if unit == "cm" else v1 / 10.0
+            if v2 is not None:
+                v2cm = v2 if unit == "cm" else v2 / 10.0
+                cm = max(cm, v2cm)
+            if qual in _QUAL_LARGE and cm < 1.0:
+                out.append(Finding("R22-QUAL", "定性-尺寸矛盾", "medium",
+                    f"称「{qual}{term}」但测量最大径仅约 {cm:.1f}cm（<1cm），"
+                    f"定性描述与测量尺寸矛盾，请核对描述或测量",
+                    m.group(0), (-1, -1)))
+            elif qual in _QUAL_SMALL and cm > 3.0:
+                out.append(Finding("R22-QUAL", "定性-尺寸矛盾", "medium",
+                    f"称「{qual}{term}」但测量最大径达约 {cm:.1f}cm（>3cm），"
+                    f"定性描述与测量尺寸矛盾，请核对描述或测量",
+                    m.group(0), (-1, -1)))
         return out
 
     # R20 模板完整性校验已并入 R18-COVERAGE（见 _r18_region_coverage：原 R20 的「必查要素」
@@ -1541,6 +1744,10 @@ class RuleEngine:
             if not m:
                 continue
             s, e = m.start(), m.end()
+            # 上下文安全闸（2026-08-22）：错写本身是常见字/词的条目，
+            # 仅当出现在放射语境附近才判为错别字，避免无关组合误报。
+            if wrong in TYPO_CONTEXT_REQUIRED and not _typo_in_medical_context(text, s, e):
+                continue
             # 跳过已被更长错词覆盖的区间
             if any(ms <= s < me or ms < e <= me for ms, me in seen):
                 continue
@@ -1587,6 +1794,9 @@ class RuleEngine:
         sensitivity = str(self.rules_config.get("r19_sensitivity", "medium")).lower()
         if sensitivity not in ("low", "medium", "high"):
             sensitivity = "medium"
+        # 安全词集合（内置 R19_SAFE_WORDS ∪ 用户配置 r19_safe_words），exact 同音命中时放行。
+        _r19_safe_words = set(R19_SAFE_WORDS)
+        _r19_safe_words.update(self.rules_config.get("r19_safe_words") or [])
         def _in_covered(s, e):
             return any(ms <= s and e <= me for ms, me in covered)
         def _in_seen(s, e):
@@ -1634,6 +1844,12 @@ class RuleEngine:
                         # 内部（如「未见明显异常」切出「见明」）→ 豁免，
                         # 消除『切词切出伪词』的误报。
                         if _inside_covered(s, e, covered):
+                            continue
+                        # 安全词抑制（2026-08-22）：exact（同音）命中且片段本身是常见合法词
+                        # （如『印象』『姐姐』等与医学词同音的常见中文词），判定为正常用词而非
+                        # 错字，直接跳过——这是 R19 同音误报的主要来源，显著降噪。
+                        # （shape/near 是字形或近音差异，更可能是真错字，不在此抑制范围内。）
+                        if _kind == "exact" and seg in _r19_safe_words:
                             continue
                         # 判定错字类型：exact=同音 / near=近音 / shape=形近
                         if _kind == "shape":
@@ -1838,19 +2054,28 @@ class RuleEngine:
         # R15-2（已删除 2026-08-18）：同器官描述段内前后左右矛盾——与 R2-LATERALITY
         # 同属左右矛盾检测，用户确认删除；左右矛盾统一由 R2（跨段）与 R17-PERREGION
         # （逐部位精确比对）负责，段内左右不一致场景仍会被 R17 段级兜底覆盖。
-        # R15-3 同一病灶先见后无（描述段内跨句）
+        # R15-3 同一病灶先见后无（描述段内，同句或跨句均判：任一阳性征出现位置早于
+        # 任一消失/吸收类词出现位置即视为矛盾）。2026-08-21 放宽：原仅跨句（句序 absn>pres），
+        # 现同句内『先见阳性词、后出现消失类词』也判定（如『左肺见结节，但结节已吸收』）。
         for lw in LESION_WORDS:
-            pres = absn = None
-            for idx, sent in enumerate(sents):
-                has_pres = (lw in sent
-                            and any(re.search(re.escape(v), sent) for v in _PRESENCE_VERBS)
-                            and not any(re.search(re.escape(v), sent) for v in _ABSENCE_VERBS))
-                has_abs = lw in sent and any(re.search(re.escape(v), sent) for v in _ABSENCE_VERBS)
-                if has_pres:
-                    pres = idx
-                if has_abs:
-                    absn = idx
-            if pres is not None and absn is not None and absn > pres:
+            pres_pos, abs_pos = [], []
+            for m in re.finditer(re.escape(lw), f_txt):
+                # 方向性窗口：阳性征动词（见/示/可见…）应在病灶词之前；
+                # 消失/吸收类词（未见/消失/吸收…）应在病灶词之后（含紧邻前缀）。
+                # 2026-08-21 修复：旧实现用对称 ±15 字窗口，『左肺见结节。上述结节未见』
+                # 两次出现均被同时标记 pres/abs 致 min 相等、误不触发；改为方向性判定后，
+                # 同句『见结节，但…已吸收』与跨句『见结节。…未见』均正确触发。
+                before = f_txt[max(0, m.start() - 12): m.start()]
+                after = f_txt[m.end(): m.end() + 4]
+                near = f_txt[max(0, m.start() - 4): m.end() + 4]
+                is_pres = (any(re.search(re.escape(v), before) for v in _PRESENCE_VERBS)
+                           and not any(re.search(re.escape(v), near) for v in _ABSENCE_VERBS))
+                is_abs = any(re.search(re.escape(v), after) for v in _ABSENCE_VERBS)
+                if is_pres:
+                    pres_pos.append(m.start())
+                if is_abs:
+                    abs_pos.append(m.start())
+            if pres_pos and abs_pos and min(abs_pos) > min(pres_pos):
                 out.append(Finding("R15-PRESENCE", "上下文逻辑错误-先见后无", "medium",
                     f"影像描述段内对同一「{lw}」先描述存在、后又称未见/消失，前后矛盾",
                     "", (-1, -1)))

@@ -150,10 +150,14 @@ def test_reg_normal_chinese_no_false_positive():
 
 # ----------------------------- 知识图谱（RadLex + PadChest）集成断言 -----------------------------
 def test_lexicon_drives_side_lists():
-    # ORGAN_SIDE_LIST / INTERNAL 由 anatomy_lexicon 派生，且保留了 R2 对肾/股骨头的跨段分离
+    # ORGAN_SIDE_LIST 由 anatomy_lexicon.SIDE_CHECK_ORGANS 派生（去除 R2_COVERED）。
+    # 2026-08-21：肾/胰/脾 改由 R2 文本分支直接覆盖（NER 对「左侧肾脏」等带"侧"写法
+    # 规范化不可靠），故从 R2_COVERED 移除、重新纳入 ORGAN_SIDE_LIST。
     assert "输卵管" in engine.ORGAN_SIDE_LIST          # 新增成对器官已纳入
     assert "锁骨" in engine.ORGAN_SIDE_LIST
-    assert "肾" not in engine.ORGAN_SIDE_LIST          # R2 已跨段覆盖 → 排除
+    assert "肾" in engine.ORGAN_SIDE_LIST             # 文本分支现覆盖肾（侧别矛盾可检）
+    assert "胰" in engine.ORGAN_SIDE_LIST             # P2 修复：胰/脾纳入侧别比对
+    assert "脾" in engine.ORGAN_SIDE_LIST
 
 
 def test_radlex_padchest_reference():

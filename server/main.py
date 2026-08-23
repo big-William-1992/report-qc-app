@@ -80,7 +80,8 @@ if _qc_db_override:
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+
+from server.schemas import *  # 请求/响应模型（2026-08-21 T56 收敛：内联模型已抽离到 schemas.py）
 
 import engine
 import ris
@@ -282,75 +283,27 @@ app.add_middleware(
 
 
 # ----------------------------- 请求模型 -----------------------------
-class FindingOut(BaseModel):
-    rule_id: str
-    error_type: str
-    severity: str
-    message: str
-    snippet: str = ""
-    span: list = [-1, -1]
-    suggestion: str = ""
 
 
-class CheckReq(BaseModel):
-    report: str
-    meta: Dict[str, str] = {}
-    auto_fix: bool = False
 
 
-class BatchItem(BaseModel):
-    report: str
-    meta: Dict[str, str] = {}
-    auto_fix: bool = False
 
 
-class BatchReq(BaseModel):
-    items: List[BatchItem]
 
 
-class AccountCreate(BaseModel):
-    emp_id: str
-    password: str
-    name: str = ""
 
 
-class LoginReq(BaseModel):
-    emp_id: str
-    password: str
 
 
-class SampleCreate(BaseModel):
-    report: str
-    meta: Dict[str, str] = {}
-    findings: List[dict] = []
-    score: Dict[str, Any] = {}
-    anonymize: bool = False
-    user_id: Optional[str] = None
 
 
-class OCRB64(BaseModel):
-    image_base64: str
 
 
 # ----------------------------- 请求模型（Phase1 补充） -----------------------------
-class RisConfigReq(BaseModel):
-    db_type: str = "sqlserver"
-    host: str = ""
-    port: int = 0
-    database: str = ""
-    user: str = ""
-    password: str = ""
-    query_sql: str = ""
 
 
-class SampleExportReq(BaseModel):
-    path: str = ""
-    fmt: str = "csv"
-    anonymize: bool = False  # 导出脱敏（2026-08-18）：剥离患者姓名/性别/年龄
 
 
-class SampleImportReq(BaseModel):
-    path: str = ""
 
 
 # ----------------------------- 辅助 -----------------------------
@@ -464,9 +417,54 @@ def qc_batch(req: BatchReq, request: Request,
     return _envelope(True, "OK", {"results": results})
 
 
+# ----------------------------- LLM 语义质控（异步/可降级） -----------------------------
+# 大模型的语义发现作为「第二阅片人」，不单独定错：结果经 llm_fusion 门控
+# （高置信建议 / 待确认 / 人工复核）。本地 Ollama/vLLM 未启动时优雅降级（available=False），
+# 不影响 /qc/check 主流程。耗时较长，前端建议异步调用并在 UI 分色展示。
+@app.post("/api/v1/qc/llm")
+def qc_llm(req: CheckReq, request: Request,
+           emp: str = Depends(require_emp_local),
+           _lic: bool = Depends(require_license_active)):
+    if not req.report.strip():
+        raise HTTPException(400, "report 不能为空")
+    if len(req.report) > 20000:
+        raise HTTPException(413, "报告文本过长（上限 20000 字符）")
+    from llm_qc import run_full_qc
+    result = run_full_qc(req.report, req.meta, run_rules=False, run_llm=True)
+    return _envelope(True, "OK", {
+        "available": result.get("llm_available", False),
+        "error": result.get("llm_error"),
+        "model": result.get("llm_model"),
+        "llm_findings": result.get("llm_findings", []),
+        "counts": result.get("counts", {}),
+    })
+
+
+# 融合质控：规则 + LLM 一次性返回（规则即时、LLM 同步等待）。超时由 llm_client 控制。
+@app.post("/api/v1/qc/full")
+def qc_full(req: CheckReq, request: Request,
+            emp: str = Depends(require_emp_local),
+            _lic: bool = Depends(require_license_active)):
+    if not req.report.strip():
+        raise HTTPException(400, "report 不能为空")
+    if len(req.report) > 20000:
+        raise HTTPException(413, "报告文本过长（上限 20000 字符）")
+    from llm_qc import run_full_qc
+    result = run_full_qc(req.report, req.meta, run_rules=True, run_llm=True)
+    return _envelope(True, "OK", {
+        "rule_findings": result.get("rule_findings", []),
+        "llm_findings": result.get("llm_findings", []),
+        "fused": result.get("fused", []),
+        "counts": result.get("counts", {}),
+        "llm_available": result.get("llm_available", False),
+        "llm_error": result.get("llm_error"),
+    })
+
+
 @app.get("/api/v1/qc/rules")
 def qc_rules_get():
     """返回规则元信息列表（供前端规则维护页展示；更新配置走 PUT）。
+    ⚠️ 此表与引擎产出需人工同步，缺失会导致 /api/v1/qc/rules 元信息不全。
     2026-08-18 同步：清单改为规则合并后的实际产出 rule_id，severity 与引擎口径
     （high/medium/low）一致；R7/R11/R13/R20 已合并或预留，不再单列。"""
     rule_meta = [
@@ -491,6 +489,9 @@ def qc_rules_get():
         {"rule_id": "R21-GENDER-SITE","name": "性别-部位联动",    "category": "规范性", "severity": "medium",  "enabled": True},
         {"rule_id": "R22-SIZE",       "name": "尺寸-术语一致性",  "category": "规范性", "severity": "medium",  "enabled": True},
         {"rule_id": "R22-UNIT",       "name": "尺寸单位规范",     "category": "规范性", "severity": "low",     "enabled": True},
+        # R22-SIZE-MISSING 默认关（engine require_lesion_size 缺省 False），与引擎口径一致
+        {"rule_id": "R22-SIZE-MISSING", "name": "病灶缺尺寸",     "category": "完整性", "severity": "low",     "enabled": False},
+        {"rule_id": "R23-TRADITIONAL",  "name": "繁体字提示",     "category": "规范性", "severity": "low",     "enabled": True},
     ]
     return _envelope(True, "OK", rule_meta)
 
@@ -690,12 +691,6 @@ def _save_poll_config(cfg: dict) -> None:
         pass
 
 
-class RisPollConfigReq(BaseModel):
-    enabled: Optional[bool] = None
-    interval_min: Optional[int] = None
-    limit: Optional[int] = None
-    auto_qc: Optional[bool] = None
-    auto_enqueue: Optional[bool] = None
 
 
 @app.get("/api/v1/ris/poll-status")
@@ -987,8 +982,6 @@ def account_list(emp: str = Depends(require_emp)):
                      [{"emp_id": emp, "name": accounts.get_name(emp), "role": accounts.get_role(emp)}])
 
 
-class RoleReq(BaseModel):
-    role: str
 
 
 @app.post("/api/v1/accounts/{emp_id}/role")
@@ -1000,8 +993,6 @@ def account_set_role(emp_id: str, req: RoleReq, admin: str = Depends(require_adm
     return _envelope(True, "OK", {}, "角色已更新")
 
 
-class PwdReq(BaseModel):
-    password: str
 
 
 @app.post("/api/v1/accounts/{emp_id}/password")
@@ -1013,8 +1004,6 @@ def account_reset_password(emp_id: str, req: PwdReq, admin: str = Depends(requir
     return _envelope(True, "OK", {}, "密码已重置")
 
 
-class DeptReq(BaseModel):
-    dept_id: Optional[int] = None   # 传 null/空可清除科室归属
 
 
 @app.post("/api/v1/accounts/{emp_id}/dept")
@@ -1029,8 +1018,6 @@ def department_list(admin: str = Depends(require_admin)):
     return _envelope(True, "OK", accounts.list_departments())
 
 
-class DeptCreateReq(BaseModel):
-    name: str
 
 
 @app.post("/api/v1/departments")
@@ -1043,8 +1030,6 @@ def department_create(req: DeptCreateReq, admin: str = Depends(require_admin)):
 
 # ----------------------------- 授权（免责声明 / 试用期 / 激活码） -----------------------------
 # 以下端点均为公开（无需登录），因为登录/激活本身就是闸门流程的一部分。
-class ActivateReq(BaseModel):
-    code: str
 
 
 @app.get("/api/v1/license/status")
@@ -1223,18 +1208,8 @@ def sample_export(req: SampleExportReq, emp: str = Depends(require_emp_local), _
         raise HTTPException(500, type(exc).__name__)
 
 
-class SampleReportExportReq(BaseModel):
-    """单份质控报告单导出请求。fmt: docx | pdf"""
-    fmt: str = "docx"
 
 
-class QcReportExportReq(BaseModel):
-    """当前工作区质控结果直接导出报告单（无需入库）。"""
-    report: str = ""
-    meta: Dict[str, str] = {}
-    findings: List[dict] = []
-    scores: Dict[str, Any] = {}
-    fmt: str = "docx"
 
 
 @app.post("/api/v1/qc/export-report")
@@ -1442,12 +1417,6 @@ def update_check(emp: str = Depends(require_emp_local)):
 import uuid as _uuid
 
 
-class QueueItemReq(BaseModel):
-    text: str
-    patient: str = ""
-    site: str = ""
-    source: str = "手动"
-    meta: Dict[str, str] = {}
 
 
 @app.get("/api/v1/queue")
@@ -1529,18 +1498,8 @@ _OCR_LOCK = threading.Lock()
 _RIS_POLL_LOCK = threading.Lock()
 
 
-class ScreenRegion(BaseModel):
-    x: float = 0.0
-    y: float = 0.0
-    w: float = 1.0
-    h: float = 1.0
 
 
-class ScreenOCRReq(BaseModel):
-    regions: Dict[str, ScreenRegion] = {}
-    refresh: bool = False       # True=识别前重新抓屏（画面已变动时用）
-    dynamic: bool = False       # True=动态语义识别：整屏OCR后按标题切分，滚动不变形
-    dynamic_region: Optional[ScreenRegion] = None  # 动态模式限定 OCR 范围（三区外接矩形）
 
 
 def _grab_fullscreen():
@@ -1626,7 +1585,7 @@ def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local), _lic: b
                 ocr_img = img.crop((x0, y0, x1, y1))
             try:
                 full = ocr_provider.ocr_image(ocr_img) or ""
-                texts, errors = _split_dynamic(full)
+                texts, errors = engine.split_dynamic(full)
             except Exception as exc:
                 errors["_dynamic"] = type(exc).__name__
         else:
@@ -1668,89 +1627,10 @@ def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local), _lic: b
     return _envelope(True, "OK", {"texts": texts, "meta": meta, "errors": errors})
 
 
-# 动态模式：整屏 OCR 文本流 → 按标题切分三区。
-# 顺序遍历所有行，命中标题关键词的行作为段起点：
-#   basic=患者信息 / findings=检查所见·影像描述 / impression=诊断印象·影像诊断·结论
-# 若找不到某标题，则该段并入相邻段或留空，由 extract_meta_full / 前端兜底。
-_FINDINGS_TITLES = ("检查所见", "影像所见", "影像描述", "所见", "检查描述", "描述")
-_IMPRESSION_TITLES = ("诊断印象", "影像诊断", "诊断意见", "诊断结论", "印象", "结论", "诊断")
-_BASIC_TITLES = ("患者", "病人", "姓名", "检查号", "影像号", "登记")
+# 动态模式三段切分（basic/findings/impression）已于 2026-08-23 收敛至 engine.split_dynamic
+# （单一实现，标题表 _DYNAMIC_*_TITLES 亦在 engine 维护），server 仅作调用方。
 
 
-def _strip_title(line: str, pats) -> str:
-    """剥离行首的段落标题词，保留正文。如『检查所见：双肺纹理增多』→『双肺纹理增多』。
-    标题可能后接中文冒号/空格/顿点；也可能标题在行中（罕见），统一只剥行首。"""
-    s = line.strip()
-    for p in sorted(pats, key=len, reverse=True):
-        if s.startswith(p):
-            rest = s[len(p):].lstrip("：:：: .、\t")
-            return rest.strip()
-        # 兼容『所见：』『描述 :』等带空格的标题写法
-        if s.startswith(p + " ") or s.startswith(p + "："):
-            rest = s[len(p):].lstrip(" ：: .、\t")
-            return rest.strip()
-    return s
-
-
-def _split_dynamic(full: str) -> (Dict[str, str], Dict[str, str]):
-    texts = {"basic": "", "findings": "", "impression": ""}
-    errors: Dict[str, str] = {}
-    lines = [ln for ln in (full or "").splitlines() if ln.strip()]
-    if not lines:
-        return texts, errors
-    # 找各段标题行下标（首个命中）
-    def _first_idx(pats):
-        for i, ln in enumerate(lines):
-            for p in pats:
-                if p in ln:
-                    return i
-        return -1
-    f_idx = _first_idx(_FINDINGS_TITLES)
-    i_idx = _first_idx(_IMPRESSION_TITLES)
-    b_idx = _first_idx(_BASIC_TITLES)
-    # 修正：诊断标题若出现在描述标题之前（PACS 常把「诊断」列在患者信息区），
-    # 以描述标题为基准重排——取描述之后首个诊断标题。
-    if f_idx >= 0 and i_idx >= 0 and i_idx < f_idx:
-        for j in range(f_idx, len(lines)):
-            if any(p in lines[j] for p in _IMPRESSION_TITLES):
-                i_idx = j
-                break
-    # basic：起始（或患者标题）→ 描述标题（或诊断标题）
-    # 注意：若「患者」标题出现在描述/诊断之后（部分 PACS 布局），b_start > end，
-    # 直接取起始段即可（lines[0:end]），避免 basic 被截成空串。
-    if f_idx >= 0:
-        end = i_idx if i_idx > f_idx else len(lines)
-    elif i_idx >= 0:
-        end = i_idx
-    else:
-        end = len(lines)
-    b_start = b_idx if 0 <= b_idx < end else 0
-    texts["basic"] = "\n".join(lines[b_start:end]).strip()
-    # findings：从描述标题行开始（含该行正文，标题词被剥掉）→ 诊断标题行前
-    # 注意跳过中间的患者标题行（部分 PACS 布局把患者信息插在描述段里），
-    # 避免「患者：张三」等 basic 内容混入描述正文。
-    if f_idx >= 0:
-        end = i_idx if i_idx > f_idx else len(lines)
-        head = _strip_title(lines[f_idx], _FINDINGS_TITLES)
-        body = [head]
-        for ln in lines[f_idx + 1:end]:
-            if b_idx >= 0 and b_idx != f_idx and any(p in ln for p in _BASIC_TITLES):
-                continue
-            body.append(ln)
-        texts["findings"] = "\n".join(body).strip()
-    # impression：从诊断标题行开始（含该行正文，标题词被剥掉）→ 末尾
-    if i_idx >= 0:
-        head = _strip_title(lines[i_idx], _IMPRESSION_TITLES)
-        body = [head] + [ln for ln in lines[i_idx + 1:]]
-        texts["impression"] = "\n".join(body).strip()
-    return texts, errors
-
-
-class OCRMetaReq(BaseModel):
-    """图片模式下，前端已对三区分别 OCR，把三区文本送来后端做结构化抽取。"""
-    basic: str = ""
-    findings: str = ""
-    impression: str = ""
 
 
 @app.post("/api/v1/ocr/meta")
@@ -1904,9 +1784,6 @@ def qc_rules_config_reset(emp: str = Depends(require_admin)):
         raise HTTPException(500, type(exc).__name__)
 
 
-class LearnTypoReq(BaseModel):
-    wrong: str = ""
-    correct: str = ""
 
 
 @app.post("/api/v1/qc/rules/learn-typo")
@@ -1919,14 +1796,8 @@ def qc_rules_learn_typo(req: LearnTypoReq, emp: str = Depends(require_admin)):
 
 
 # ----------------------------- 错别字词库可视化维护（P0：增删改/批量导入/启停单条） -----------------------------
-class TypoItemReq(BaseModel):
-    wrong: str = ""
-    correct: str = ""
 
 
-class TypoBatchImportReq(BaseModel):
-    """批量导入：items 为 [[错词, 正确词], ...] 或 [{wrong, correct}, ...]"""
-    items: list = []
 
 
 @app.post("/api/v1/qc/rules/typos")

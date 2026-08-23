@@ -1,4 +1,4 @@
-"""R1–R7 全错误测试报告 · 一键验证脚本
+"""R1–R6 + R12 全错误测试报告 · 一键验证脚本
 
 运行:
     cd report_qc_app/src
@@ -46,7 +46,7 @@ def main():
     report = os.path.join(base, "reports", "R1-R7_全错误测试报告.txt")
     meta = {"gender": "男", "age": "58", "modality": "乳腺", "applied_site": "胸部"}
 
-    print("=== 1) 全错误报告：应命中 R1–R7 ===")
+    print("=== 1) 全错误报告：应命中 R1–R6 + R12 ===")
     ok1 = check(report, meta, expect_all=True)
 
     print("\n=== 2) 回归：正确报告不应误报 ===")
@@ -70,7 +70,7 @@ def main():
               (f"误报 {sorted({f.rule_id for f in fs})}" if fs else "无"))
 
     print("\n=== 结果 ===")
-    print("全错误报告覆盖 R1-R7:", "PASS" if ok1 else "FAIL")
+    print("全错误报告覆盖 R1-R6+R12:", "PASS" if ok1 else "FAIL")
     print("正确报告无假阳性:", "PASS" if ok2 else "FAIL")
     sys.exit(0 if (ok1 and ok2) else 1)
 

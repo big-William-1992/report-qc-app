@@ -1,0 +1,41 @@
+### 模型：Qwen3-4B 底座（训练好的 teacher / 学生均可替换 model_name_or_path）
+model_name_or_path: Qwen/Qwen3-4B-Instruct
+trust_remote_code: true
+
+### 方法：QLoRA/LoRA 微调（单卡消费级 GPU 可跑）
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules: all
+
+### 数据集：由 tools/build_qc_dataset.py 生成，放入 LlamaFactory 的 data/ 目录
+dataset: qc_sft
+template: qwen
+cutoff_len: 2048
+max_samples: 100000
+overwrite_cache: true
+preprocessing_num_workers: 4
+
+### 输出
+output_dir: saves/qwen3b-qc-lora
+logging_steps: 10
+save_steps: 200
+plot_loss: true
+
+### 训练超参
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 8
+learning_rate: 2.0e-4
+num_train_epochs: 3.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+bf16: true
+ddp_find_unused_parameters: false
+
+### 验证（按比例切分，监控过拟合）
+val_size: 0.05
+eval_strategy: steps
+eval_steps: 200

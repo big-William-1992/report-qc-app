@@ -74,6 +74,15 @@ VALID_UNITS = {"cm", "mm", "HU", "mm/s", "ml", "°", "mmhg"}
 MODALITY_SCORE = {"乳腺": "BI-RADS", "钼靶": "BI-RADS", "乳腺x线": "BI-RADS",
                   "前列腺": "PI-RADS"}
 
+# modality 别名归一（2026-08-21）：用户常填「乳腺X线/乳腺钼靶/双乳/乳房」等，
+# 未归一则 MODALITY_SCORE 查不到返回 None，乳腺报告无 BI-RADS 不告警（漏报 R3）。
+# 键已统一小写（调用方会 .lower() 后查表）。
+MODALITY_ALIASES = {
+    "乳腺x线": "乳腺", "乳腺钼靶": "乳腺", "乳腺钼靶摄影": "乳腺",
+    "乳腺摄影": "乳腺", "双乳": "乳腺", "乳房": "乳腺", "双侧乳腺": "乳腺",
+    "乳腺x光": "乳腺", "钼靶x线": "乳腺", "乳腺检查": "乳腺",
+}
+
 # 描述内部阳性/阴性征（用于一致性）
 POSITIVE_MARKERS = ["结节", "占位", "阴影", "肿块", "异常信号", "斑片", "渗出", "骨折", "扩张", "增大"]
 
@@ -119,7 +128,7 @@ _REGION_NORMAL_RE = re.compile(
 # 模块导出清单：供 engine.py `from _lexicons import *` 使用
 __all__ = [
     "LATERALITY", "GENDER_ORGANS", "ANATOMY_SYNONYMS", "SITE_NORM", "SITE_CANON",
-    "VALID_UNITS", "MODALITY_SCORE", "POSITIVE_MARKERS",
+    "VALID_UNITS", "MODALITY_SCORE", "MODALITY_ALIASES", "POSITIVE_MARKERS",
     "POSITIVE_STRONG", "_NEG_PREFIXES", "NORMAL_CLAIM", "_R19_NORM_RE",
     "REGION_NORMAL_WORDS", "_REGION_NORMAL_RE",
 ]

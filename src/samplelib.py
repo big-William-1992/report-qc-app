@@ -149,6 +149,9 @@ def migrate_legacy_samples() -> None:
 
 
 # samples 表统一 schema（user_id 存工号 TEXT，2026-08-18 数据层收敛对齐 models.Sample）
+# 2026-08-21 架构收敛：列集合与 server/models.py 的 Sample 完全对齐（含 created_at），
+# 使本模块与 ORM 共享同一 schema 真相源，杜绝「手写 SQL 少一列」导致的字段口径分叉。
+# models.Sample 的 user_id/dept_id 均为 String 无 FK，与本表声明完全一致。
 _SAMPLES_TABLE_SQL = """
     CREATE TABLE IF NOT EXISTS samples (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,9 +161,13 @@ _SAMPLES_TABLE_SQL = """
         age TEXT,
         modality TEXT,
         applied_site TEXT,
+        laterality TEXT,
+        user_id TEXT,
+        dept_id TEXT,
         report_text TEXT,
         findings_json TEXT,
-        scores_json TEXT
+        scores_json TEXT,
+        created_at TIMESTAMP
     )
 """
 

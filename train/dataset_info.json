@@ -1,0 +1,11 @@
+{
+  "qc_sft": {
+    "file_name": "qc_sft.jsonl",
+    "formatting": "alpaca",
+    "columns": {
+      "instruction": "instruction",
+      "input": "input",
+      "output": "output"
+    }
+  }
+}
