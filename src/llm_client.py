@@ -99,7 +99,9 @@ class OllamaClient(LLMClient):
             payload["think"] = False
         last_err = None
         body = None
-        for _ in range(3):  # 重试：吸收本地服务瞬时抖动 / 旧版不识别 think 参数
+        for attempt in range(3):  # 重试：吸收本地服务瞬时抖动 / 旧版不识别 think 参数
+            if attempt > 0:
+                time.sleep(1)  # 2026-08-24 修复：重试间隔1秒，避免紧密重试风暴
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(
                 self.base_url + "/api/chat",
@@ -113,15 +115,15 @@ class OllamaClient(LLMClient):
                 last_err = None
                 break
             except urllib.error.HTTPError as e:
-                last_err = f"Ollama 调用失败: {e}"
+                last_err = f"HTTP {e.code}"  # 2026-08-24: 不泄露完整 URL/响应体
                 if "think" in payload:  # 旧版 Ollama 不支持 think → 去掉重试
                     payload.pop("think")
                     continue
                 break
             except urllib.error.URLError as e:
-                last_err = f"Ollama 调用失败: {e}"
+                last_err = f"连接失败: {getattr(e.reason, 'strerror', '网络不可达')}"
             except Exception as e:
-                last_err = str(e)
+                last_err = "请求异常"  # 不泄露内部细节
                 break
         if last_err:
             return LLMResponse(text="", parsed=None, model=self.model,
@@ -141,12 +143,26 @@ class MLXClient(LLMClient):
     """
 
     _cache: dict = {}
+    _cache_lock = None  # 延迟初始化，避免导入时依赖 threading
 
     def __init__(self, model_path: str, adapter_path: Optional[str] = None,
                  max_tokens: int = 512, timeout: int = 300):
         self.model_path = model_path
         self.adapter_path = adapter_path
         self.max_tokens = max_tokens
+
+    @classmethod
+    def _get_lock(cls):
+        if cls._cache_lock is None:
+            import threading
+            cls._cache_lock = threading.Lock()
+        return cls._cache_lock
+
+    @classmethod
+    def clear_cache(cls):
+        """清除模型缓存，释放内存。"""
+        with cls._get_lock():
+            cls._cache.clear()
 
     def available(self) -> bool:
         try:
@@ -158,9 +174,10 @@ class MLXClient(LLMClient):
     def _load(self):
         from mlx_lm import load
         key = (self.model_path, self.adapter_path)
-        if key not in MLXClient._cache:
-            MLXClient._cache[key] = load(
-                self.model_path, adapter_path=self.adapter_path)
+        with self._get_lock():
+            if key not in MLXClient._cache:
+                MLXClient._cache[key] = load(
+                    self.model_path, adapter_path=self.adapter_path)
         return MLXClient._cache[key]
 
     def chat(self, system: str, user: str, *, json_mode: bool = True,
@@ -222,20 +239,31 @@ class CloudAPIClient(LLMClient):
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 body = json.loads(r.read().decode("utf-8"))
-            content = body["choices"][0]["message"]["content"]
+            choices = body.get("choices", [])
+            content = choices[0].get("message", {}).get("content", "") if choices else ""
             parsed = _extract_json(content) if json_mode else None
             return LLMResponse(
                 text=content, parsed=parsed, model=self.model,
                 elapsed_ms=int((time.time() - t0) * 1000), error=None,
             )
+        except urllib.error.HTTPError as e:
+            return LLMResponse(text="", parsed=None, model=self.model,
+                               elapsed_ms=int((time.time() - t0) * 1000),
+                               error=f"HTTP {e.code}")
         except Exception as e:
             return LLMResponse(text="", parsed=None, model=self.model,
                                elapsed_ms=int((time.time() - t0) * 1000),
-                               error=str(e))
+                               error="请求异常")
 
 
 def load_llm_config(path: Optional[str] = None) -> dict:
-    path = path or os.path.join(os.path.dirname(__file__), "llm_config.json")
+    # 2026-08-24：冻结态 __file__ 回溯失败，改用 app_paths 定位 _MEIPASS/src/llm_config.json
+    if not path:
+        try:
+            from app_paths import frozen_resource_dir
+            path = frozen_resource_dir("src", "llm_config.json")
+        except ImportError:
+            path = os.path.join(os.path.dirname(__file__), "llm_config.json")
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:

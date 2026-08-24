@@ -9,6 +9,7 @@ server/db.py — SQLAlchemy 统一数据层
 import os
 import sys
 import hashlib
+from urllib.parse import quote as _urlquote
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -31,7 +32,12 @@ if getattr(sys, "frozen", False):
     _PROJECT_ROOT = os.path.join(_base, "MedicalReportQC")
 else:
     _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DEFAULT_DB = "sqlite:///" + os.path.join(_PROJECT_ROOT, "qc.db")
+# 2026-08-24：URL 编码空格/特殊字符（Windows 用户名含空格时
+# sqlite:///C:\Users\John Doe\... 会被 SQLAlchemy 误解析）
+_DEFAULT_DB = "sqlite:///" + _urlquote(
+    os.path.join(_PROJECT_ROOT, "qc.db").replace("\\", "/"),
+    safe="/:",
+)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", _DEFAULT_DB)
 
@@ -41,6 +47,9 @@ def _make_engine(url: str):
     - BEGIN IMMEDIATE：所有事务以写锁启动，把「判空→插入」等复合操作串行化，
       避免并发首账号引导时两个账号都成为 admin（见 accounts.create_account）。
     - busy_timeout：写锁等待 5s 而非立刻抛 "database is locked"。
+    - journal_mode=WAL（2026-08-23 冷启动兜底）：读不阻塞写，桌面壳线程与
+      uvicorn 线程并发访问 qc.db 时不再互锁。WAL 是库级持久属性（设一次永久生效，
+      重复执行幂等无害）；个别文件系统/网络盘不支持时降级回滚模式即可，不致命。
     """
     _args = {"check_same_thread": False} if url.startswith("sqlite") else {}
     eng = create_engine(url, connect_args=_args, future=True, pool_pre_ping=True)
@@ -49,6 +58,10 @@ def _make_engine(url: str):
         def _sqlite_pragmas(dbapi_conn, _record):
             cur = dbapi_conn.cursor()
             cur.execute("PRAGMA busy_timeout=30000")  # 写锁等待 30s（2026-08-18 由 5s 提高）
+            try:
+                cur.execute("PRAGMA journal_mode=WAL").fetchall()
+            except Exception:  # noqa: BLE001  WAL 不被支持时保持默认 rollback journal
+                pass
             cur.close()
 
         @event.listens_for(eng, "begin")

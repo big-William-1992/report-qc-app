@@ -2,15 +2,11 @@
 #   （checkout v5 / setup-python v6 / upload-download-artifact v5 / gh-release v3）
 name: Build Windows (exe + installer)
 
-# 触发：手动点一下 / 推到 main / 打 v* tag
+# 触发：手动点一下 / 推到 main
 on:
   workflow_dispatch:
   push:
     branches: [main]
-    tags: ['v*']
-
-permissions:
-  contents: write
 
 jobs:
   build:
@@ -23,6 +19,8 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
 
       - name: Install PyInstaller + cryptography
         run: python -m pip install --upgrade pip pyinstaller cryptography
@@ -42,14 +40,21 @@ jobs:
           python -m pip install --force-reinstall opencv-python-headless
           python -c "import cv2; print('cv2 OK (headless):', cv2.__version__)"
 
-      - name: 单元测试闸（pytest test/ + tests/，2026-08-18 新增）
-        # 2026-08-18：Windows 环境反复失败且暂时无法在本机复现 → 临时降级非阻断
-        # （continue-on-error），构建/exe 发布不阻塞；pytest 失败详情仍完整打印在
-        # 日志中，定位后恢复阻断。
-        continue-on-error: true
+      - name: 单元测试闸（pytest test/ + tests/，2026-08-18 新增；2026-08-23 恢复阻断）
+        # 2026-08-23：本机基线 324 passed / 7 skipped 全绿，恢复为阻断闸
+        # （此前 continue-on-error 只是临时降级，坏代码曾一路流到 Release）。
         run: |
           python -m pip install pytest
           python -m pytest test/ tests/ -q --tb=short
+
+      - name: Resolve app version (src/version.py → APP_VERSION env)
+        # 安装包版本号单一事实来源：src/version.py 的 APP_VERSION，
+        # 经 /DAppVersion= 注入 Inno Setup（setup.iss 用 #ifndef 兜底默认值）。
+        shell: bash
+        run: |
+          VER=$(python -c "import sys; sys.path.insert(0, 'src'); from version import APP_VERSION; print(APP_VERSION)")
+          echo "APP_VERSION=$VER" >> "$GITHUB_ENV"
+          echo "APP_VERSION resolved: $VER"
 
       - name: Write build info (供软件内检查更新比对)
         shell: bash
@@ -150,6 +155,10 @@ jobs:
       # ---- 打包绿色版 zip（供 Release 下载，解压即用）----
       - name: Package portable zip
         run: Compress-Archive -Path "dist/报告质控软件/*" -DestinationPath "report-qc-portable.zip" -Force
+
+      # ---- 2026-08-23：发布链路重排——build 只产 artifact，不再直接发 Release ----
+      # Release 发布挪到独立 publish job，且以 launch-test 通过为前置条件
+      # （build → launch-test → publish），坏包不再有机会流出。
 
       # ---- 阻断闸（BLOCKING）：打包产物里 pythonnet/clr 必须可加载（Windows 桌面壳关键） ----
       # 此前用户下载后报「Failed to resolve Python.Runtime.Loader.Initialize」，
@@ -309,7 +318,9 @@ jobs:
             Write-Error "ISCC.exe 未找到"; exit 1
           }
           "开始编译 setup.iss" | Add-Content $diag
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss 2>&1 | Add-Content $diag
+          # 版本号注入（2026-08-23）：APP_VERSION 来自 src/version.py（见前置 Resolve 步骤），
+          # 经 /D 命令行 define 覆盖 setup.iss 的 #ifndef AppVersion 兜底值。
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:APP_VERSION" setup.iss 2>&1 | Add-Content $diag
           if ($LASTEXITCODE -ne 0) {
             "编译失败 exit $LASTEXITCODE" | Add-Content $diag
             Write-Error "Inno Setup 编译失败"; exit 1
@@ -323,14 +334,57 @@ jobs:
           path: installer/*.exe
           if-no-files-found: warn
 
+      - name: Upload portable zip artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: report-qc-portable-zip
+          path: report-qc-portable.zip
+          if-no-files-found: error
+
+      # DIAG.md（安装包诊断）随产物传递给 publish job 写进 Release notes
+      - name: Upload build diagnostics artifact
+        if: hashFiles('DIAG.md') != ''
+        uses: actions/upload-artifact@v5
+        with:
+          name: report-qc-build-diagnostics
+          path: DIAG.md
+          if-no-files-found: ignore
+
+  # ---- 发布阶段（2026-08-23 新增）：仅在 launch-test 端到端通过后执行 ----
+  # job 依赖链：build → launch-test → publish。
+  # 此前顺序是「先发 Release 再跑 launch-test」，坏包一旦构建成功就已公开可下载，
+  # e2e 失败也追不回来；现在 publish 需要 launch-test 全绿才放行。
+  publish:
+    needs: [launch-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download portable zip artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: report-qc-portable-zip
+          path: .
+      - name: Download installer artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: report-qc-installer
+          path: installer
+      - name: Download build diagnostics (optional)
+        uses: actions/download-artifact@v5
+        with:
+          name: report-qc-build-diagnostics
+          path: .
+        continue-on-error: true
+
       # ---- 自动发布 latest Release（固定链接，公开仓库任何人可下载，永久不过期）----
       - name: Delete old latest release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete latest --yes || true
-          git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/big-William-1992/report-qc-app.git" :refs/tags/latest || true
+          gh release delete latest --yes --repo ${{ github.repository }} || true
+          git push "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" :refs/tags/latest || true
 
       - name: Prepare release files
         shell: bash
@@ -344,9 +398,13 @@ jobs:
         shell: bash
         run: |
           {
-            echo "医学影像报告质控软件 Windows 版（每次推代码自动构建）。"
+            echo "医学影像报告质控软件 Windows 版（每次推代码自动构建，发布前已通过 exe 启动端到端测试）。"
             echo "- 绿色版：解压 report-qc-portable.zip，双击「报告质控软件.exe」即可运行（无需安装）"
-            echo "- 安装版：若本次构建成功，下载 installer 里的 exe，双击「下一步」安装，自动建桌面快捷方式"
+            if ls installer/*.exe 1>/dev/null 2>&1; then
+              echo "- 安装版：下载 installer 里的 exe，双击「下一步」安装，自动建桌面快捷方式"
+            else
+              echo "- 安装版：本次构建未生成安装包（Inno Setup 环境异常），仅提供绿色版"
+            fi
             echo ""
             echo "## 安装包构建诊断"
             cat DIAG.md 2>/dev/null || echo "(无诊断信息)"
@@ -460,9 +518,11 @@ jobs:
           print("EXE_LAUNCH_E2E_OK")
           PY
 
-  # ---- 自动更新端到端实测：构建发布 latest 后，用真实的 Windows 安装器跑完整更新 ----
+  # ---- 自动更新端到端实测：latest Release 发布后，用真实的 Windows 安装器跑完整更新 ----
+  # 2026-08-23：needs 由 build 改为 publish——本测试依赖刚发布的 latest Release 产物，
+  # 重排后发布发生在 launch-test 通过之后，这里必须排在发布之后才有东西可测。
   test-update:
-    needs: build
+    needs: publish
     runs-on: windows-latest
     steps:
       - name: Checkout

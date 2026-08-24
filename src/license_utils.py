@@ -17,10 +17,10 @@ import sys
 import subprocess
 
 # 许可证数据文件（支持 PyInstaller 打包后的路径）
-if getattr(sys, 'frozen', False):
-    # 打包后：exe 所在目录下的 assets/license.dat
-    _BASE_DIR = os.path.dirname(sys.executable)
-else:
+try:
+    import app_paths
+    _BASE_DIR = app_paths.frozen_resource_dir()
+except ImportError:  # 兼容 from src import license_utils 的包式导入
     # 源码运行
     _BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 _LICENSE_FILE = os.path.join(_BASE_DIR, "assets", "license.dat")

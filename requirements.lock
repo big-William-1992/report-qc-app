@@ -1,3 +1,7 @@
+# 星衍放射质控软件 · 依赖锁定快照
+# ⚠️ macOS-only：本锁文件在 macOS 上生成并验证，仅用于 macOS 构建/部署复现。
+# Windows 环境请改用：pip install -r requirements.txt -r requirements-windows.txt
+# （Windows 的 pythonnet/clr-loader、WebView2 后端等与 macOS 锁定组合不兼容）
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.14.1
@@ -61,7 +65,7 @@ python-pptx==1.0.2
 pywebview==6.2.1
 PyYAML==6.0.3
 qrcode==8.2
-rapidocr-onnxruntime==1.2.3
+rapidocr-onnxruntime>=1.3.0
 reportlab==5.0.0
 shapely==2.1.2
 six==1.17.0

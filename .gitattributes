@@ -9,3 +9,6 @@
 *.js text eol=lf
 *.json text eol=lf
 *.md text eol=lf
+
+# Windows 批处理必须 CRLF（LF 会导致 cmd 解析异常/标签跳转错乱）
+*.bat text eol=crlf

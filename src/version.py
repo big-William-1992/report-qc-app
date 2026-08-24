@@ -14,11 +14,19 @@ APP_VERSION = "4.3.3"
 
 def _load_build_info():
     """读取 CI 打包时写入的构建信息；本地源码运行返回默认值。"""
+    # 2026-08-24：冻结态 __file__ 指向 PYZ 合成路径，回溯不到 assets/；
+    # 统一走 app_paths.frozen_resource_dir 定位 _MEIPASS/assets/build_info.json。
+    try:
+        from app_paths import frozen_resource_dir
+        candidates = [frozen_resource_dir("assets", "build_info.json")]
+    except ImportError:
+        candidates = []
     here = os.path.dirname(os.path.abspath(__file__))
-    for path in (
+    candidates.extend([
         os.path.join(here, "..", "assets", "build_info.json"),
         os.path.join(here, "build_info.json"),
-    ):
+    ])
+    for path in candidates:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 d = json.load(f)

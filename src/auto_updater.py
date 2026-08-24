@@ -259,14 +259,12 @@ if PUBLISHED_AT:
     except Exception:
         pass
 
-# 重新启动（测试时可设 AU_NO_LAUNCH=1 跳过，仅验证文件替换）
+# 重新启动（测试时可设 AU_NO_LAUNCH=1 跳过，仅验证文件替换）；
+# 找不到启动脚本时不回退——旧版曾回退 src/app.py（Tk 版已退役、文件不存在），静默失败无意义
 if os.environ.get("AU_NO_LAUNCH") != "1":
     cmd = os.path.join(APP_DIR, "启动星衍质控软件.command")
     if os.path.exists(cmd):
         subprocess.Popen(["open", cmd])
-    else:
-        subprocess.Popen([sys.executable, os.path.join(APP_DIR, "src", "app.py")],
-                         cwd=APP_DIR)
 
 # 清理
 shutil.rmtree(TMP, ignore_errors=True)

@@ -109,13 +109,12 @@ python3 desktop_app.py          # 或直接双击「启动星衍质控软件.com
 
 #### 后台全局快捷键（重点）
 
-配置路径：「设置 → 一键质控快捷键」。触发机制三叠加，确保覆盖各平台：
+配置路径：「设置 → 一键质控快捷键」。实际行为（降级版口径，2026-08-23 统一）：
 
-1. **Tk `bind_all`**：焦点在本软件内时触发（所有平台兜底）。
-2. **Windows `RegisterHotKey`**：Windows 下即使焦点在 PACS 也能触发。
-3. **非 Windows（macOS / Linux）`pynput` 全局键盘监听**：后台也能触发。
+- 已安装 **pynput** 时：注册 pynput 全局键盘监听——即使焦点在 PACS/RIS 等其它窗口也能触发。
+- 未安装 pynput 或缺系统权限时：自动降级为仅 SPA 内快捷键（焦点在本软件窗口内可用），不影响其他功能。
 
-> macOS / Linux 使用前需 `pip install pynput`，并在「系统设置 → 隐私与安全性 → 辅助功能」给终端 / Python 授权。快捷键内置 **0.5 秒时间戳防抖 + 执行中标记**，避免多次触发重复质控。
+> macOS 使用 pynput 需在「系统设置 → 隐私与安全性 → 辅助功能」给终端 / Python 授权；Windows 安装器已默认包含 pynput。快捷键内置 **0.5 秒时间戳防抖 + 执行中标记**，避免多次触发重复质控。
 
 #### 剪贴板监听机制（重点）
 
@@ -419,7 +418,7 @@ docs/
   - **第五轮（2026-08-18 下午）——授权/更新链路专项**：
     - **授权防绕过（P0，license_utils.py + license_web.py 同步）**：`check_trial` 此前只读本地明文 JSON 的 `activated` 布尔——手改 `{"activated":true}` 即永久绕过 Ed25519 验签、复制他机已激活文件即一码多机。现激活时落盘绑定 `machine_id` + `activated_at`，每次启动回验「本机指纹一致 + activation_code 仍可通过公钥验签」（`_activated_valid`）；license 文件改 0600 权限（内含激活码，防科室主机其他账号读取）。
     - **前端授权门顺序修复（P0）**：`bootstrapGate` 此前「已有 token 直接放行」在试用过期检查之前，导致试用过期的登录用户永久绕过激活门（只剩横幅）。现将免责/试用过期/激活检查移到登录态快捷路径之前。
-    - **更新链路加固（P1）**：Windows zip 解包增加成员路径校验（拒绝绝对路径/`..` 逃逸，与 macOS tar 分支对齐）；`download` 无 sha256/签名校验与 macOS `xattr -dr com.apple.quarantine` 清除隔离属性列为发布前必须项（当前更新链路无生产调用方，属悬挂代码，接入时需补齐 UI+服务端+退出编排）。
+    - **更新链路加固（P1）**：Windows zip 解包增加成员路径校验（拒绝绝对路径/`..` 逃逸，与 macOS tar 分支对齐）；**更新链路口径：自动安装未接线，仅检查更新+引导网页下载**——设置页「🔄 检查更新」只做版本比对并跳转 Release 页；`auto_updater.download`→解包→重启的自动安装链路未接入任何 UI/服务端编排，属预留代码，接入前必须补齐 sha256 校验与退出编排。
     - **测试**：新增 `test/test_license.py`（3 用例：伪造 activated 拦截/异机激活拦截/真实激活链路不受影响）；全量 **229 passed + 7 skipped + 9 subtests**。
     - **OCR/导出链路（专项代理审查，3 P1 + 5 P2 修复）**：
       - **下载接口可删样本库（P1 数据丢失）**：`/files/download` 此前仅按 basename 限定目录，构造 `?file=qc.db` 即可下载并删除整个样本库 → 新增导出产物前缀白名单（`samples_export_*`/`质控报告_*`），其余一律 404。

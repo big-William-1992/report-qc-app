@@ -103,49 +103,80 @@ def rescue_samples_conv(path: str = None) -> int:
         return 0
 
 
+def _legacy_source_dir() -> str:
+    """源码布局下的项目根（assets/ 的上级）。独立成函数便于测试 monkeypatch
+    模拟不同布局（冻结态 __file__ 解析到 _MEIPASS，不能作为用户旧库依据）。"""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _legacy_sample_db_candidates() -> list:
+    """旧独立 samples.db 的候选位置（按优先级排序，去重）。
+
+    1) 用户可写数据目录 samples.db（_appdata_db() 口径，与 db_path() 冻结态同目录）
+       ——冻结打包后老版本实际写在这里，是升级迁移的主目标；
+    2) <项目根>/assets/samples.db ——源码运行的历史位置。冻结态下 __file__ 会
+       解析进 _MEIPASS 临时解压目录，那里即便存在 samples.db 也是随包分发的
+       初始资源而非用户数据；因此候选仅用于兼容源码/开发态，冻结态靠候选 1。
+    """
+    cands = [_appdata_db(), os.path.join(_legacy_source_dir(), "assets", "samples.db")]
+    out, seen = [], set()
+    for c in cands:
+        key = os.path.abspath(c)
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
 def migrate_legacy_samples() -> None:
     """把旧独立 samples.db 的数据一次性迁入统一 qc.db（2026-08-18 收敛，幂等）。
 
     仅当旧库存在且有数据、目标 samples 表为空时执行；完成后旧库改名 samples.db.bak。
     由 server 启动时（db.init_db 之后）调用一次。
+
+    2026-08-23 断链修复：此前只探测 <__file__>/../assets/samples.db——冻结态
+    __file__ 指向 _MEIPASS 随包资源目录，用户在 %APPDATA%\\MedicalReportQC 留下的
+    旧库永远探测不到，升级后历史样本"消失"。现同时探测两个位置（见
+    _legacy_sample_db_candidates），存在且有数据才迁移；不做任何自动删除，
+    迁移成功才归档 .bak。
     """
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    old = os.path.join(base, "assets", "samples.db")
-    if not os.path.exists(old):
-        return
     target = db_path()
-    if os.path.abspath(target) == os.path.abspath(old):
-        return
-    try:
-        with sqlite3.connect(old) as conn:
-            n = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
-    except Exception:
-        n = 0
-    if n == 0:
+    for old in _legacy_sample_db_candidates():
+        if not os.path.exists(old):
+            continue
+        if os.path.abspath(target) == os.path.abspath(old):
+            continue  # 同一文件（如 override 指向旧库），无从迁移
+        try:
+            with sqlite3.connect(old) as conn:
+                n = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+        except Exception:
+            n = 0
+        if n == 0:
+            try:
+                os.rename(old, old + ".bak")
+            except Exception:
+                pass
+            continue
+        init_db(target)
+        try:
+            with sqlite3.connect(target) as conn:
+                tn = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+        except Exception:
+            tn = 0
+        if tn > 0:
+            return  # 目标已有数据，不重复迁移（幂等）
+        with sqlite3.connect(old) as src, sqlite3.connect(target) as dst:
+            rows = src.execute("SELECT * FROM samples").fetchall()
+            cols = [d[0] for d in src.execute("SELECT * FROM samples LIMIT 1").description]
+            cols_sql = ",".join(cols)
+            ph = ",".join("?" * len(cols))
+            dst.executemany(f"INSERT INTO samples ({cols_sql}) VALUES ({ph})", rows)
+            dst.commit()
         try:
             os.rename(old, old + ".bak")
         except Exception:
             pass
         return
-    init_db(target)
-    try:
-        with sqlite3.connect(target) as conn:
-            tn = conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
-    except Exception:
-        tn = 0
-    if tn > 0:
-        return  # 目标已有数据，不重复迁移（幂等）
-    with sqlite3.connect(old) as src, sqlite3.connect(target) as dst:
-        rows = src.execute("SELECT * FROM samples").fetchall()
-        cols = [d[0] for d in src.execute("SELECT * FROM samples LIMIT 1").description]
-        cols_sql = ",".join(cols)
-        ph = ",".join("?" * len(cols))
-        dst.executemany(f"INSERT INTO samples ({cols_sql}) VALUES ({ph})", rows)
-        dst.commit()
-    try:
-        os.rename(old, old + ".bak")
-    except Exception:
-        pass
 
 
 # samples 表统一 schema（user_id 存工号 TEXT，2026-08-18 数据层收敛对齐 models.Sample）

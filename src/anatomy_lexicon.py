@@ -46,7 +46,7 @@ ANATOMY = {
                          "apical", "apical zone"],
                   "padchest": "lung", "cui": "C0013654"},
     "kidney":    {"rid": "RID3030", "lat": "B", "side_ok": True,
-                  "zh": ["肾", "左肾", "右肾", "肾上极", "肾下极", "肾盂", "肾上腺"],
+                  "zh": ["肾", "左肾", "右肾", "肾上极", "肾下极", "肾盂"],
                   "en": ["kidney", "left kidney", "right kidney", "renal"],
                   "padchest": "kidney", "cui": "C0022646"},
     "adrenal":   {"rid": "RID2866", "lat": "B", "side_ok": True,

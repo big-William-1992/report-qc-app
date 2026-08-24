@@ -137,6 +137,24 @@ def _crash_path() -> str:
     return os.path.join(base, "crash.log")
 
 
+# crash.log 轮转阈值（2026-08-23 长稳兜底）：此前无限追加，长期驻留 + 反复崩溃
+# 会把日志写到大几百 MB 拖垮磁盘。超过 5MB 时整体轮转为 crash.log.1（仅保留一份，
+# 简单 size 检查 + rename，不引入 logging handler）。
+_CRASH_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _rotate_crash_log(path: str, max_bytes: int = None) -> bool:
+    """path 超过阈值时轮转：crash.log → crash.log.1（覆盖旧 .1）。返回是否轮转。"""
+    max_bytes = max_bytes or _CRASH_LOG_MAX_BYTES
+    try:
+        if not os.path.exists(path) or os.path.getsize(path) < max_bytes:
+            return False
+        os.replace(path, path + ".1")  # 原子替换：直接顶掉上一代 .1
+        return True
+    except Exception:
+        return False  # 轮转失败不影响崩溃信息写入
+
+
 def show_fatal(title: str, text: str) -> None:
     """弹系统错误框（Windows 优先），并把内容追加写入同目录 crash.log。"""
     try:
@@ -145,7 +163,9 @@ def show_fatal(title: str, text: str) -> None:
     except Exception:
         pass
     try:
-        with open(_crash_path(), "a", encoding="utf-8") as f:
+        p = _crash_path()
+        _rotate_crash_log(p)
+        with open(p, "a", encoding="utf-8") as f:
             f.write(f"\n[{title}] @ {__import__('datetime').datetime.now().isoformat()}\n{text}\n")
     except Exception:
         pass
@@ -164,7 +184,10 @@ def _free_preferred_port(port: int):
 
     判断依据：占用进程的命令行含本应用特征（exe 名 / desktop_app.py / uvicorn server.main）。
     仅 macOS / Linux 生效（用 lsof + ps 查命令行）；失败静默忽略，不影响后续流程。
+    Windows 不调用此函数（单实例锁走端口绑定分支），此处加守卫防止误入。
     """
+    if sys.platform.startswith("win"):
+        return  # Windows 用端口绑定判定单实例，不走此路径
     def _is_ours(cmdline: str) -> bool:
         return any(tok in cmdline for tok in (
             "desktop_app", "report_qc", "server.main", "星衍质控", "report-qc-app",
@@ -222,8 +245,15 @@ def _resolve_port(preferred: int) -> int:
     return p
 
 
-PORT = _resolve_port(int(os.environ.get("XY_QC_PORT", "8500")))
 HOST = "127.0.0.1"
+PREFERRED_PORT = int(os.environ.get("XY_QC_PORT", "8500"))
+if sys.platform.startswith("win"):
+    # Windows：单实例锁=首选端口绑定（见 _acquire_singleton，2026-08-23）。
+    # 单例模式下不允许静默换端口——首选端口被占即视为已有实例在运行，
+    # main() 会提示退出；_resolve_port 的临时端口兜底仅限 macOS/Linux。
+    PORT = PREFERRED_PORT
+else:
+    PORT = _resolve_port(PREFERRED_PORT)
 BASE = f"http://{HOST}:{PORT}"
 
 # 全局热键库（pynput）；缺失时降级
@@ -557,8 +587,12 @@ def _start_uvicorn():
         _UVICORN_ERROR["tb"] = _tb.format_exc()
 
 
-def _wait_ready(timeout: int = 20) -> bool:
-    """轮询 health 接口，直到后端就绪。"""
+def _wait_ready(timeout: int = 60) -> bool:
+    """轮询 health 接口，直到后端就绪。
+
+    2026-08-23 冷启动兜底：20s 对慢盘/杀毒扫描/首启解压（onedir 首次复制
+    WebView2 数据、OCR 模型加载）太紧，用户机器上误报「启动失败」；放宽到 60s。
+    """
     url = f"{BASE}/api/v1/health"
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -616,14 +650,35 @@ def _get_screen_work_area():
 
 
 
-def _acquire_singleton() -> bool:
-    """跨平台单实例锁（2026-08-18）：锁文件 + PID 存活检查。
+# 单实例锁文件（仅 macOS/Linux 分支使用；Windows 改用端口判定，不依赖此文件）
+SINGLETON_LOCK = os.path.join(tempfile.gettempdir(), "xingyan_qc_singleton.lock")
 
-    Windows 此前无单实例保护（_free_preferred_port 仅 macOS/Linux 生效），
-    双击两次会得到两个端口实例并发写 SQLite（锁冲突/数据损坏风险）。
-    已有实例在运行返回 False；否则写入本进程 PID 并注册退出清理。
+
+def _acquire_singleton() -> bool:
+    """跨平台单实例锁。
+
+    Windows（2026-08-23 修复隐患）：此前用锁文件 PID + os.kill(pid, 0) 探活，但
+    Windows 的 os.kill 对非 CTRL_C/CTRL_BREAK 信号一律调用 TerminateProcess——
+    sig=0 会把上一个正在运行的实例**直接杀掉**。故 Windows 改用「端口绑定」判定：
+    尝试 bind 首选端口（127.0.0.1:<XY_QC_PORT 或 8500>）失败 ⇒ 已有实例（或端口
+    被其他程序占用），返回 False 由 main() 弹提示退出；单例模式下不允许静默换端口
+    （模块级 PORT 解析已跳过 _resolve_port 的临时端口兜底）。进程退出时操作系统
+    自动释放监听 socket，无需锁文件清理，天然免疫残留锁/僵尸 PID。
+    macOS / Linux：保留原「锁文件 + os.kill(pid, 0) 探活」逻辑（POSIX 上 sig=0
+    是标准探活语义，安全），行为与历史版本完全一致。
     """
-    lock = os.path.join(tempfile.gettempdir(), "xingyan_qc_singleton.lock")
+    if sys.platform.startswith("win"):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                s.bind((HOST, PREFERRED_PORT))
+            finally:
+                s.close()
+            return True
+        except Exception:
+            return False
+
+    lock = SINGLETON_LOCK
 
     def _pid_alive(pid):
         try:
@@ -666,8 +721,9 @@ def main():
     # 单实例锁：已有实例在运行则提示退出（跨平台，防双开并发写库）
     if not _acquire_singleton():
         show_fatal("已有实例在运行",
-                   "星衍质控已在运行，请先退出原实例后再启动。\n"
-                   "（单实例保护：防止两个实例并发写数据库导致数据损坏）")
+                   "星衍质控已在运行（或默认端口 %d 被其他程序占用），"
+                   "请先退出原实例后再启动。\n"
+                   "（单实例保护：防止两个实例并发写数据库导致数据损坏）" % PREFERRED_PORT)
         sys.exit(0)
     # Windows 冻结（PyInstaller）下需尽早调用，避免子进程/线程相关异常。
     try:
@@ -706,7 +762,7 @@ def main():
             "请确认端口未被占用：Windows `netstat -ano | findstr :%d`，"
             "macOS/Linux `lsof -i :%d`。" % (PORT, PORT))
         show_fatal("启动失败",
-                   "后端服务启动失败（20s 内未就绪）。\n"
+                   "后端服务启动失败（60s 内未就绪）。\n"
                    f"监听地址：{BASE}\n"
                    "请检查依赖：pip install fastapi uvicorn pywebview\n"
                    "或查看同目录 crash.log 了解具体原因。\n\n"

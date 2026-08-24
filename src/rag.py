@@ -48,7 +48,12 @@ def build_default_corpus() -> List[str]:
             corpus.append(f"解剖同义：{k} ↔ {'/'.join(vs)}")
     except Exception:
         pass
-    reg_path = os.path.join(os.path.dirname(__file__), "..", "放射科报告修正登记表.docx")
+    # 2026-08-24：冻结态 __file__ 回溯失败，改用 app_paths 定位资源
+    try:
+        from app_paths import frozen_resource_dir
+        reg_path = frozen_resource_dir("放射科报告修正登记表.docx")
+    except ImportError:
+        reg_path = os.path.join(os.path.dirname(__file__), "..", "放射科报告修正登记表.docx")
     if os.path.exists(reg_path):
         corpus.append("（历史修正登记表可用，建议 P2 接入 docx 抽取为向量语料）")
     return corpus

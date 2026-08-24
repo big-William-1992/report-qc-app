@@ -269,6 +269,9 @@ def _pinyin_build_index() -> Dict[int, Dict[str, List[str]]]:
 # 长度 → {拼音: [词组]}
 _INDEX = _pinyin_build_index()
 
+# 2026-08-24 性能优化：预构建 word→category 映射，避免 O(n) 重复扫描
+_WORD_CATEGORY: Dict[str, str] = {word: cat for word, cat in _HIGHFREQ_WORDS}
+
 # 上下文敏感词排除表：这些串虽然读音与某高频词相同/相似，但在真实报告中是
 # 「核心词 + 动词/虚词」的合法句法组合（如『右肺见磨玻璃影』里『肺见』=肺+见），
 # 属滑窗切词的固有误判。逐一人工复核后列入，避免 R19 误报。
@@ -308,7 +311,7 @@ def _pinyin_similar(py_a: str, py_b: str) -> bool:
 
 
 def find_homophone_suggestions(segment: str,
-                               top_k: int = 3) -> List[Tuple[str, str, float]]:
+                               top_k: int = 3) -> List[Tuple[str, str, float, str]]:
     """给定一个可疑片段，返回读音相似的高频正确词候选。
 
     返回 [(正确词, 类别, 相似度, 类型)]（类型 exact=同音/near=近音/shape=形近），按相似度降序；未安装 pypinyin 时返回空。
@@ -319,7 +322,7 @@ def find_homophone_suggestions(segment: str,
     if not seg_py:
         return []
     n = len(segment)
-    cand: List[Tuple[str, str, float]] = []
+    cand: List[Tuple[str, str, float, str]] = []
     # 同长优先；也允许 ±1 长（少一字/多一字）
     for ln in (n, n - 1, n + 1):
         if ln < 2 or ln > 6:
@@ -332,18 +335,20 @@ def find_homophone_suggestions(segment: str,
             sim = 1.0 - dist / max(len(seg_py), len(py), 1)
             kind = "exact" if dist == 0 else "near"  # 同音/近音（2026-08-18 加类型标记）
             for w in words:
-                cat = next((c for (x, c) in _HIGHFREQ_WORDS if x == w), "")
+                cat = _WORD_CATEGORY.get(w, "")  # O(1) 查找替代 O(n) 扫描
                 cand.append((w, cat, round(sim, 3), kind))
     # P1 形近字补充：读音不相似但形近（五笔/形码/OCR 误识）的候选也纳入，
     # 相似度记 0.9（低于同音 1.0 / 近音 0.98，但高于 R19 触发阈值时仍可检出）
+    cand_words = {x for x, _, _, _ in cand}  # 2026-08-24: 用 set 替代 list 查找
     for ln in (n,):
         bucket = _INDEX.get(ln, {})
         for py, words in bucket.items():
             for w in words:
                 if _shape_similar_word(segment, w):
-                    if w not in [x for x, _, _, _ in cand]:
-                        cat = next((c for (x, c) in _HIGHFREQ_WORDS if x == w), "")
+                    if w not in cand_words:
+                        cat = _WORD_CATEGORY.get(w, "")  # O(1) 查找
                         cand.append((w, cat, 0.9, "shape"))
+                        cand_words.add(w)
     cand.sort(key=lambda t: -t[2])
     # 去重（同词多类别只留一个）
     seen: Set[str] = set()

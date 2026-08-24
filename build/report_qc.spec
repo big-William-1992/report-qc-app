@@ -220,6 +220,10 @@ _server_hidden = [
     "server.main", "server.db", "server.models", "server.license_web",
     # 双保险：即使上面 collect_all 因环境差异未生效，也显式让 sqlalchemy 进入冻结包
     "sqlalchemy",
+    # LLM 质控链路（函数体内/try/except import，PyInstaller 静态分析可能遗漏）
+    "llm_qc", "llm_client", "llm_fusion", "llm_prompt", "rag",
+    # 中文 NER / 同义词归一（try/except 内 import，缺失时引擎降级但不崩）
+    "zh_ner", "zh_radiology_synonyms",
 ]
 
 # ---- 显式收集 VC++ 运行库（根治「Failed to load Python DLL: python312.dll」）----
@@ -259,7 +263,7 @@ a = Analysis(
     ] + _extra_datas,
     hiddenimports=[
         "engine", "samplelib", "ris", "accounts", "license_utils",
-        "version", "log_utils", "update_check", "auto_updater", "webbrowser",
+        "version", "log_utils", "update_check", "webbrowser",
         # R19 读音相似错字（高频词库锚定 + pypinyin 自动推导）；pypinyin 若未安装
         # 会由引擎 try/except 降级，不影响构建
         "highfreq_lexicon", "pypinyin", "pypinyin.constants", "pypinyin.standard",
@@ -275,9 +279,10 @@ a = Analysis(
     ] + _extra_hiddenimports + _uvicorn_hidden + _server_hidden,
     hookspath=[],
     runtime_hooks=[],
-    # pynput 仅全局热键（可选，缺则降级为 SPA 内快捷键）；非打包依赖，
-    # 且若被误收集会拉入 pyobjc/pywin32 导致构建失败，故显式排除。
-    excludes=["pynput"],
+    # pynput 口径（2026-08-23 统一为降级版）：requirements.txt 已带 Windows 环境标记
+    # 安装 pynput，打包需一并收集——否则后台热键在成品里永远静默降级。
+    # 缺失时 desktop_app.py 自动降级为仅 SPA 内快捷键（代码层兜底，无需 exclude）。
+    excludes=[],
     cipher=block_cipher,
 )
 

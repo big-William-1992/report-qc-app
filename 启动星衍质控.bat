@@ -37,6 +37,12 @@ if not exist ".venv\Scripts\python.exe" (
     echo [错误] 依赖安装失败，请检查网络后重试；或删除 .venv 目录重来。
     goto END
   )
+  echo [*] 安装 Windows 专属依赖（pynput 后台热键等）...
+  .venv\Scripts\python.exe -m pip install -r requirements-windows.txt
+  if errorlevel 1 (
+    echo [错误] Windows 依赖安装失败，请检查 requirements-windows.txt。
+    goto END
+  )
   echo [OK] 依赖安装完成。
 ) else (
   echo [OK] 检测到已有 .venv，跳过安装。

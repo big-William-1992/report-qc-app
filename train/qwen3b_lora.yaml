@@ -1,5 +1,5 @@
-### 模型：Qwen3-4B 底座（训练好的 teacher / 学生均可替换 model_name_or_path）
-model_name_or_path: Qwen/Qwen3-4B-Instruct
+### 模型：Qwen2.5-3B 底座
+model_name_or_path: Qwen/Qwen2.5-3B-Instruct
 trust_remote_code: true
 
 ### 方法：QLoRA/LoRA 微调（单卡消费级 GPU 可跑）

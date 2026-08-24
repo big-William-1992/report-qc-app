@@ -81,6 +81,8 @@ adapters/**/*.safetensors
 adapters/**/tokenizer.json
 adapters/**/tokenizer_config.json
 adapters/**/special_tokens_map.json
+# 本地训练存档（checkpoint/权重，168MB+，不入库）
+saves/
 
 # WorkBuddy 项目内部数据目录，非本软件产物，禁止入库
 .workbuddy/

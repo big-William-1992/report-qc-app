@@ -21,6 +21,8 @@ import platform
 import subprocess
 import socket
 
+from server.core import _restrict_file_access
+
 TRIAL_DAYS = 90
 
 # 与 src/license_utils.py 内嵌公钥、keys/public_key.pem 完全一致
@@ -75,7 +77,7 @@ def _write_license(appdata_dir: str, data: dict) -> None:
         json.dump(data, f, ensure_ascii=False)
     os.replace(tmp, _license_path(appdata_dir))  # 2026-08-18 M7：原子写
     try:
-        os.chmod(_license_path(appdata_dir), 0o600)  # 内含激活码，防他账号读取（2026-08-18）
+        _restrict_file_access(_license_path(appdata_dir))
     except Exception:
         pass
 

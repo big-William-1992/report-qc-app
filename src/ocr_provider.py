@@ -76,10 +76,14 @@ DET_LIMIT_SIDE_LEN = 736
 DET_UNCLIP_RATIO = 2.0
 
 
+try:
+    import app_paths
+except ImportError:  # 兼容 from src import ocr_provider 的包式导入
+    from . import app_paths  # type: ignore
+
+
 def _assets_dir() -> str:
-    if getattr(sys, "frozen", False):
-        return os.path.join(os.path.dirname(sys.executable), "assets")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets")
+    return app_paths.frozen_resource_dir("assets")
 
 
 def _model_dir() -> str:

@@ -97,6 +97,7 @@ from server.core import (  # 共享层（2026-08-18 拆分）：日志/响应封
     _queue_orm_all, _queue_orm_add, _queue_orm_add_dedup, _queue_orm_remove,
     _queue_orm_clear, _load_queue,
     _migrate_queue_to_db, _settings_orm_all, _settings_orm_save, _migrate_settings_to_db,
+    _restrict_file_access,
 )
 
 # ----------------------------- 鉴权（stdlib HMAC 签名 token） -----------------------------
@@ -121,7 +122,7 @@ def _load_or_create_secret() -> str:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(v)
-        os.chmod(path, 0o600)
+        _restrict_file_access(path)
     except Exception:
         pass
     return v
@@ -192,9 +193,18 @@ def require_emp_local(request: Request,
     - 来自 127.0.0.1/::1 的调用（桌面端 WebView、浏览器同源 localhost）自动放行，
       避免 SPA 必须携带鉴权头，保持本地"双击即用"体验；
     - 公网/远程部署强制 Bearer token（不再接受 X-Emp-Id 头，防止伪造冒充）。
+    - 2026-08-24 安全加固：localhost 的 X-Emp-Id 必须对应已存在账号，防止任意冒充。
     """
     if request.client and request.client.host in ("127.0.0.1", "::1", "localhost"):
-        return (x_emp_id or "local").strip() or "local"
+        emp = (x_emp_id or "").strip()
+        if emp and accounts.account_exists(emp):
+            return emp
+        # 无有效 emp_id 时，仅当系统无任何账号（首次启动）才允许 "local" 兜底
+        if not emp and accounts.count_accounts() == 0:
+            return "local"
+        if emp:
+            raise HTTPException(401, f"账号 '{emp}' 不存在或已注销")
+        raise HTTPException(401, "缺少鉴权：请通过 X-Emp-Id 头指定有效账号，或使用 Bearer token")
     emp = _emp_from_auth(authorization)
     if not emp:
         raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token>（远程访问不接受 X-Emp-Id 头）")
@@ -235,11 +245,12 @@ def require_license_active():
     与前端 gate 同源（license_web.check_trial，读 appdata/license.json）；
     开发/内测试用期内（trial）放行，过期未激活返回 403。
     仅用于产生/修改数据的写接口（读接口不拦，登录用户仍可查看历史数据）。
+    2026-08-24 安全加固：license 读取异常时拒绝而非放行（fail-closed）。
     """
     try:
         state, _days = license_web.check_trial(_appdata_dir())
     except Exception:
-        return True  # license 读取异常时放行，避免误锁
+        raise HTTPException(500, "授权验证异常，请检查 license.json 是否完整")
     if state == "expired":
         raise HTTPException(403, "试用期已结束，请输入激活码激活后继续使用")
     return True
@@ -379,6 +390,9 @@ def _qc_rate_ok(ip: str) -> bool:
             return False
         ts.append(now)
         _QC_RATE[ip] = ts
+        # 2026-08-24 修复：定期清理过期 IP 条目，防止内存无限增长
+        if len(_QC_RATE) > 1000:
+            _QC_RATE.clear()
         return True
 
 
@@ -492,6 +506,8 @@ def qc_rules_get():
         # R22-SIZE-MISSING 默认关（engine require_lesion_size 缺省 False），与引擎口径一致
         {"rule_id": "R22-SIZE-MISSING", "name": "病灶缺尺寸",     "category": "完整性", "severity": "low",     "enabled": False},
         {"rule_id": "R23-TRADITIONAL",  "name": "繁体字提示",     "category": "规范性", "severity": "low",     "enabled": True},
+        {"rule_id": "R24-ADVICE",       "name": "建议强度矛盾",   "category": "准确性", "severity": "high",    "enabled": True},
+        {"rule_id": "R25-TEMPORAL",     "name": "时序方向矛盾",   "category": "准确性", "severity": "medium",  "enabled": True},
     ]
     return _envelope(True, "OK", rule_meta)
 
@@ -837,25 +853,49 @@ def _queue_add_text(text: str, meta: dict, source: str = "RIS轮询"):
 def _ris_poll_loop(stop_event: threading.Event):
     """后台守护线程：按 interval_min 周期轮询。sleep 分片避免阻塞退出。
     2026-08-18 修复：此前固定每 60s 一轮，interval_min（默认 30 分钟）完全不参与调度，
-    对医院 RIS 库造成 30 倍无谓查询压力。"""
+    对医院 RIS 库造成 30 倍无谓查询压力。
+    2026-08-24：连续失败指数退避——连续 N 次失败后间隔翻倍（上限 4h），
+    连续 5 次失败自动禁用轮询 + 日志告警，避免对不可达服务器无谓探测。"""
+    _consec_fails = 0
+    _MAX_CONSEC_FAILS = 5  # 连续失败 N 次后自动禁用
+    _BACKOFF_CAP = 4 * 3600  # 退避上限 4 小时
     while not stop_event.is_set():
         try:
             cfg = _poll_config()
             if cfg.get("enabled"):
                 _ris_poll_once(manual=False)
+                _consec_fails = 0  # 成功则重置计数
         except Exception:
-            # 记录最近错误，供前端展示；不崩溃线程
+            _consec_fails += 1
             try:
-                _log("error", f"RIS 轮询异常: {type(sys.exc_info()[1]).__name__}: {sys.exc_info()[1]}")
+                _log("error", f"RIS 轮询异常 (连续第{_consec_fails}次): "
+                     f"{type(sys.exc_info()[1]).__name__}: {sys.exc_info()[1]}")
                 cfg = _poll_config()
                 cfg["last_error"] = str(sys.exc_info()[1])[:300]
                 cfg["last_run"] = datetime_now_iso()
+                # 连续失败达阈值：自动禁用 + 写入告警标记
+                if _consec_fails >= _MAX_CONSEC_FAILS:
+                    cfg["enabled"] = False
+                    cfg["last_error"] = (
+                        f"[自动禁用] 连续 {_consec_fails} 次轮询失败，已暂停。"
+                        f"请检查 RIS 数据库连接后手动重新启用。"
+                        f" 最近错误: {str(sys.exc_info()[1])[:200]}")
+                    try:
+                        _log("warning",
+                             f"RIS 轮询连续失败 {_consec_fails} 次，已自动禁用。"
+                             "请检查 RIS 数据库连接配置后在设置中重新启用。")
+                    except Exception:
+                        pass
                 _save_poll_config(cfg)
             except Exception:
                 pass
-        # 分片 sleep（每 5s 检查一次停止事件），interval 在循环内实时读取
-        interval_sec = max(15, int((_poll_config().get("interval_min") or 30) * 60))
-        for _i in range(max(1, interval_sec // 5)):
+        # 分片 sleep：基础 interval + 指数退避（每次失败翻倍，上限 _BACKOFF_CAP）
+        base_sec = max(15, int((_poll_config().get("interval_min") or 30) * 60))
+        if _consec_fails > 0:
+            backoff = min(base_sec * (2 ** min(_consec_fails - 1, 6)), _BACKOFF_CAP)
+        else:
+            backoff = base_sec
+        for _i in range(max(1, backoff // 5)):
             if stop_event.is_set():
                 return
             time.sleep(5)
@@ -867,6 +907,22 @@ def _ris_poll_loop(stop_event: threading.Event):
 #   - migrate_legacy_samples  ：assets/samples.db → qc.db.samples（旧库归档 .bak）
 #   - _migrate_queue_to_db    ：qc_queue.json → qc.db.queue
 #   - _migrate_settings_to_db ：web_settings.json → qc.db.settings
+# 2026-08-24：APPDATA 不可写检测（企业漫游配置/权限受限）——提前告警而非静默丢数据
+_APPDATA_DIR = os.path.dirname(samplelib.db_path())
+try:
+    os.makedirs(_APPDATA_DIR, exist_ok=True)
+    _test_fp = os.path.join(_APPDATA_DIR, ".write_test")
+    with open(_test_fp, "w") as _tw:
+        _tw.write("ok")
+    os.remove(_test_fp)
+except Exception as _w_e:
+    try:
+        _log("warning",
+             f"数据目录不可写（{_APPDATA_DIR}）：{_w_e}。"
+             "质控数据/配置/账号将无法持久化，每次重启丢失。"
+             "请检查目录权限或设置 QC_DB_OVERRIDE 环境变量。")
+    except Exception:
+        pass
 db.init_db()
 try:
     samplelib.migrate_legacy_samples()
@@ -885,8 +941,19 @@ try:
                     os.remove(_fp)
             except Exception:
                 pass
-except Exception:
-    pass
+except Exception as _e:
+    # 2026-08-24：APPDATA 不可写时所有 DB 写入静默失败，用户每次重启数据丢失
+    # 却无任何提示——此处补日志 + 写入失败标记，供前端 health 接口透出。
+    try:
+        _log("warning", f"数据迁移/清理阶段异常（数据可能不完整）: {type(_e).__name__}: {_e}")
+    except Exception:
+        pass
+    try:
+        _flag = os.path.join(os.path.dirname(samplelib.db_path()), ".init_warning")
+        with open(_flag, "w", encoding="utf-8") as _fw:
+            _fw.write(f"{datetime_now_iso()} migration error: {type(_e).__name__}: {_e}\n")
+    except Exception:
+        pass
 
 # 模块加载即启动轮询守护线程（daemon，进程退出自动终止）
 _RIS_POLL_STOP = threading.Event()

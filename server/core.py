@@ -16,6 +16,28 @@ from typing import Dict, List, Any
 from server.db import SessionLocal
 
 
+# ----------------------------- 跨平台文件权限保护 -----------------------------
+def _restrict_file_access(path: str) -> None:
+    """限制敏感文件（密钥/口令/激活码）仅当前用户可读写。
+
+    POSIX: os.chmod 0o600（标准做法）。
+    Windows: os.chmod 静默无效——改用 icacls 禁用继承、仅授予当前用户完全控制。
+    icacls 是 Windows 内置命令（Vista+），无需额外依赖。失败静默忽略（不阻塞主流程）。
+    """
+    try:
+        if sys.platform.startswith("win"):
+            import subprocess
+            user = os.environ.get("USERNAME") or os.getlogin()
+            subprocess.run(
+                ["icacls", path, "/inheritance:r", "/grant:r", f"{user}:(F)"],
+                capture_output=True, timeout=5,
+            )
+        else:
+            os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+
 # ----------------------------- 统一日志 -----------------------------
 try:
     import log_utils

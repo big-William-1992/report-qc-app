@@ -14,6 +14,7 @@ import os
 import sys
 import json
 import shutil
+import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Set, Tuple
 
@@ -151,13 +152,14 @@ def split_dynamic(full: str):
     # basic：起始（或患者标题）→ 描述标题（或诊断标题）
     # 注意：若「患者」标题出现在描述/诊断之后（部分 PACS 布局），b_start > end，
     # 直接取起始段即可（lines[0:end]），避免 basic 被截成空串。
+    # 2026-08-24 修复：b_start 应在 basic 区域内（不超 f_idx），防止混入 findings 内容
     if f_idx >= 0:
         end = i_idx if i_idx > f_idx else len(lines)
     elif i_idx >= 0:
         end = i_idx
     else:
         end = len(lines)
-    b_start = b_idx if 0 <= b_idx < end else 0
+    b_start = b_idx if 0 <= b_idx < min(end, f_idx if f_idx >= 0 else end) else 0
     texts["basic"] = "\n".join(lines[b_start:end]).strip()
     # findings：从描述标题行开始（含该行正文，标题词被剥掉）→ 诊断标题行前
     # 注意跳过中间的患者标题行（部分 PACS 布局把患者信息插在描述段里），
@@ -541,6 +543,26 @@ _ABSENCE_VERBS = ["未见", "消失", "吸收", "已吸收", "消退"]
 LESION_WORDS = ["结节", "占位", "肿块", "病灶", "囊肿", "结石", "骨折", "积液",
                 "阴影", "斑片", "异常信号"]
 
+# ===== R24 建议强度矛盾（2026-08-23 新增）=====
+# 窄模式（宁可漏报不可误报）：仅「双重明确」同时满足才报——
+# ① 报告出现明确良性定性词（印象段优先，其次描述段；均无段落结构时退回全文）；
+# ② 建议/印象部分出现强处置词，且该处置词被建议类引导词（建议/必要时/可考虑/酌情）
+#    在同句内先行锚定——『胆囊切除术后』『化疗后复查』等病史陈述、以及
+#    『穿刺细胞学』等弱表述不满足锚定，不触发。
+R24_BENIGN_CONFIRM_RE = re.compile(r"考虑良性|未见恶性|无恶性征象|良性")
+R24_BENIGN_NEG_PRE_RE = re.compile(r"(?:非|不|未|无|除外|排除)[^。；，,\n]{0,2}$")
+R24_STRONG_INTERVENTION = ("穿刺活检", "抗肿瘤", "切除", "化疗", "放疗")
+R24_ADVICE_LEAD_RE = re.compile(r"建议|必要时|可考虑|可以考虑|酌情")
+
+# ===== R25 时序方向矛盾（2026-08-23 新增）=====
+# 同一报告内对同一病灶的随访对比方向自相矛盾（既称较前增大又称较前缩小）。
+# 窄模式：仅当两个反向描述各自能提取到「同一主体」（最近病灶关键词 + 侧别字符），
+# 且主体键一致才报。主体缺失或不同（左肺增大/右肺缩小、部分增大/部分缩小等
+# 跨病灶差异化转归）均不报——不涉及跨报告数值对比。
+_R25_TEMPORAL_RE = re.compile(r"较前[^。！？；;\n]{0,4}?(增大|缩小|增多|减少)")
+_R25_SUBJECT_KW = ("胸腔积液", "结节", "肿块", "病灶", "占位", "囊肿", "结石",
+                   "积液", "淋巴结", "胸水", "斑片", "钙化")
+
 # R5 文本级兜底：NER 易漏标的高频器官 → 器官族（2026-08-21）。
 # 仅当描述段该器官词附近出现阳性征、而印象段未就该器官族给结论时，补报 R5，
 # 解决「NER 漏标『肝』等致整条规则失明」的漏报。
@@ -679,6 +701,13 @@ def _word_effectively_present(target: str, word: str) -> bool:
     return False
 
 
+# 2026-08-24 性能优化：预编译 _organ_asserted 使用的否定后缀正则
+_NEG_AFTER_COMPILED = re.compile(
+    r"[^，。；;、\n]{0,4}("
+    + "|".join(re.escape(n) for n in sorted(_NEG_PREFIXES, key=len, reverse=True))
+    + r")")
+
+
 def _organ_asserted(text: str, organ: str) -> bool:
     """organ 在 text 中是否有『未被否定修饰』的真实出现（与 R9/R17 否定口径统一）。
 
@@ -687,10 +716,8 @@ def _organ_asserted(text: str, organ: str) -> bool:
     女性盆腔报告写『前列腺区未见异常』属合法否定表述，不应升为 high 级矛盾。"""
     if not text or not organ:
         return False
-    _neg_after = re.compile(
-        r"[^，。；;、\n]{0,4}("
-        + "|".join(re.escape(n) for n in sorted(_NEG_PREFIXES, key=len, reverse=True))
-        + r")")
+    # 2026-08-24 性能优化：将正则编译提升到模块级别（避免每次调用重编译）
+    _neg_after = _NEG_AFTER_COMPILED
     idx = text.find(organ)
     while idx != -1:
         pre = text[max(0, idx - 12):idx]
@@ -854,13 +881,16 @@ R19_SAFE_WORDS = {
 } - set(TYPO_MAP_DEFAULT.keys())  # 确保不与错别字表冲突（错别字优先）
 
 # 规则配置文件路径（与 samples.db 同目录：assets/rules_config.json）
-# 兼容 PyInstaller 打包：打包后资源位于 exe 同级的 assets/ 下。
+# 兼容 PyInstaller 打包：资源根统一走 app_paths.frozen_resource_dir
+# （PyInstaller 6 onedir 下 datas 在 _MEIPASS/<app>/_internal，不在 exe 目录）。
+try:
+    import app_paths
+except ImportError:  # 兼容 from src import engine 的包式导入
+    from . import app_paths  # type: ignore
+
+
 def _assets_dir() -> str:
-    if getattr(sys, "frozen", False):
-        # 打包后：exe 所在目录 / assets
-        return os.path.join(os.path.dirname(sys.executable), "assets")
-    # 开发态：src/../assets
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets")
+    return app_paths.frozen_resource_dir("assets")
 
 
 def _rules_config_path() -> str:
@@ -870,7 +900,7 @@ def _rules_config_path() -> str:
         user_dir = os.path.join(os.path.expandvars("%APPDATA%"), "MedicalReportQC")
         user_path = os.path.join(user_dir, "rules_config.json")
         if not os.path.exists(user_path):
-            src = os.path.join(os.path.dirname(sys.executable), "assets", "rules_config.json")
+            src = app_paths.frozen_resource_dir("assets", "rules_config.json")
             try:
                 os.makedirs(user_dir, exist_ok=True)
                 if os.path.exists(src):
@@ -893,9 +923,20 @@ DEFAULT_TEMPLATE = {
 }
 
 
+_RULES_LOG = logging.getLogger("qc.engine")
+
+# 规则配置 schema 版本（2026-08-23）：default_rules_config() 写入、save_rules_config()
+# 落盘、load_rules_config() 加载时缺省补齐。旧布局用户文件无此键——**不做自动迁移**
+# （自动合并/改写用户手工维护的规则风险大于收益，可能静默覆盖用户意图），仅打
+# warn 日志提示「检测到旧版规则配置，请手动核对」，并按当前默认值补齐该字段，
+# 保证后续版本能凭 schema_version 判断配置年代。
+RULES_CONFIG_SCHEMA_VERSION = 1
+
+
 def default_rules_config() -> dict:
     """出厂默认规则配置（恢复默认用）。"""
-    return {"typos": dict(TYPO_MAP_DEFAULT), "conflicts": [],
+    return {"schema_version": RULES_CONFIG_SCHEMA_VERSION,
+            "typos": dict(TYPO_MAP_DEFAULT), "conflicts": [],
             "ignores": [], "template": dict(DEFAULT_TEMPLATE),
             "enable_r19": True, "r19_sensitivity": "medium",
             "r19_safe_words": list(R19_SAFE_WORDS),
@@ -908,6 +949,15 @@ def load_rules_config(path: str = RULES_CONFIG_PATH) -> dict:
     try:
         with open(path, encoding="utf-8") as fh:
             cfg = json.load(fh)
+        # schema_version（2026-08-23）：缺省视为旧布局（v0）——不自动迁移（避免
+        # 误合并覆盖用户手工规则），只补齐字段 + warn 提醒人工核对；行为见本文件
+        # RULES_CONFIG_SCHEMA_VERSION 注释。
+        if not isinstance(cfg.get("schema_version"), int):
+            _RULES_LOG.warning(
+                "检测到旧版规则配置（%s 缺少 schema_version），已按当前版本 %d 补齐；"
+                "请手动核对自定义规则是否符合预期。",
+                os.path.basename(str(path)), RULES_CONFIG_SCHEMA_VERSION)
+        cfg.setdefault("schema_version", RULES_CONFIG_SCHEMA_VERSION)
         cfg.setdefault("conflicts", [])
         cfg.setdefault("ignores", [])
         cfg.setdefault("template", dict(DEFAULT_TEMPLATE))
@@ -937,6 +987,9 @@ def load_rules_config(path: str = RULES_CONFIG_PATH) -> dict:
 def save_rules_config(cfg: dict, path: str = RULES_CONFIG_PATH) -> None:
     """持久化规则配置到 JSON（2026-08-18 M4 修复：临时文件 + os.replace 原子替换，
     防写一半崩溃损坏配置、防并发覆盖写丢键）。"""
+    # schema_version 缺省补齐：调用方传入旧结构（如前端回传历史配置）时也保证
+    # 落盘文件带版本标记，下次加载可判断年代。
+    cfg.setdefault("schema_version", RULES_CONFIG_SCHEMA_VERSION)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -1021,9 +1074,11 @@ def scan_reports_for_typos(path: str = RULES_CONFIG_PATH, limit: int = 200) -> l
     # 低频候选 + 读音比对
     candidates = []
     seen = set()
+    _hf_ok = False
     try:
         from highfreq_lexicon import find_homophone_suggestions, highfreq_words
         hf = {w for w, _ in highfreq_words()}
+        _hf_ok = True
     except Exception:
         hf = set()
     for w, c in sorted(freq.items(), key=lambda kv: -kv[1]):
@@ -1032,6 +1087,8 @@ def scan_reports_for_typos(path: str = RULES_CONFIG_PATH, limit: int = 200) -> l
         if w in typos or w in ignores or w in hf or w in seen:
             continue
         if w in anchors:
+            continue
+        if not _hf_ok:
             continue
         cand = find_homophone_suggestions(w)
         if not cand:
@@ -1131,7 +1188,7 @@ class RuleEngine:
         self.rules_config = load_rules_config()
 
     def run(self, text: str, meta: dict) -> List[Finding]:
-        # 实际启用规则：R1、R2、R3、R4、R5、R6、R8、R9、R10、R12、R14、R15、R17、R18、R21、R22；
+        # 实际启用规则：R1、R2、R3、R4、R5、R6、R8、R9、R10、R12、R14、R15、R17、R18、R21、R22、R24、R25；
         #   R7（描述段男女专属器官混用）已并入 R12-SENTENCE；R20（必查要素漏写）已并入 R18-COVERAGE
         #   （见 _r18_region_coverage 类型级分支），二者均不再单独启用。
         # R11（信息框-正文跨框矛盾）已全部并入 R1-GENDER / R2-LATERALITY / R17-PERREGION，
@@ -1162,6 +1219,8 @@ class RuleEngine:
                   + self._r18_region_coverage(text, meta)
                   + self._r21_gender_site(text, meta)
                   + self._r22_lesion_size(text, secs)  # E1 2026-08-18：复用上方 secs，避免重复切分
+                  + self._r24_advice_conflict(text)   # R24 建议强度矛盾（2026-08-23 新增）
+                  + self._r25_temporal_direction(text)  # R25 时序方向矛盾（2026-08-23 新增）
                   + (self._r19_homophone(text)
                      if self.rules_config.get("enable_r19", True) else [])
                   + (self._r16_followup_timeframe(text)
@@ -1391,7 +1450,7 @@ class RuleEngine:
             fam = _r5_fam(e.canonical)
             if not fam:
                 continue
-            seg = f_txt[max(0, (e.start - f0) - 20): (e.end - f0) + 20]
+            seg = f_txt[max(0, (e.start - f0) - 20): max(0, (e.end - f0)) + 20]
             if any(_word_effectively_present(seg, k) for k in POSITIVE_MARKERS):
                 fam_mk.setdefault(fam, e.text)
         for fam, name in fam_mk.items():
@@ -1872,6 +1931,9 @@ class RuleEngine:
         if not text:
             return out
         conflicts = self.rules_config.get("conflicts", []) or []
+        # 2026-08-24 性能优化：将 _split_for_r5 提到循环外，避免每条规则重复拆分
+        secs = self._split_for_r5(text)
+        f_txt, i_txt = secs["findings"], secs["impression"]
         for rule in conflicts:
             a = (rule.get("a") or "").strip()
             b = (rule.get("b") or "").strip()
@@ -1885,8 +1947,6 @@ class RuleEngine:
             #   结论段  → 仅 诊断印象/影像诊断/结论 段
             #   同一句  → 同一句内 A 与 B 同时出现才算冲突（"同一行前后错误"）
             #   描述vs结论 → A 出现在描述段 且 B 出现在结论段（跨段上下文错误）
-            secs = self._split_for_r5(text)
-            f_txt, i_txt = secs["findings"], secs["impression"]
             note = rule.get("note", "")
             hit = False
             target = text   # 默认正文；各分支按需覆盖，供豁免检查使用
@@ -1964,6 +2024,8 @@ class RuleEngine:
             s_has_male = any(organ in sent and GENDER_ORGANS.get(organ) == "male"
                              and _organ_asserted(sent, organ)
                              for organ in GENDER_ORGANS)
+            # 2026-08-24 修复：女性器官仅需提及即可（如"子宫未见异常"仍意味着患者具子宫），
+            # 不要求 _organ_asserted（否定的女性器官提及仍表明患者性别）
             s_has_female = any(organ in sent and GENDER_ORGANS.get(organ) == "female"
                                for organ in GENDER_ORGANS)
             if s_has_male and s_has_female:
@@ -2105,9 +2167,18 @@ class RuleEngine:
             # 器官级正常声明（side 为 None/bilateral/both/double，如结论『心肺未见异常』
             # 『肺未见异常』『双肺未见异常』『双乳未见异常』）视作覆盖该器官所有侧别，
             # 兼容高发结论写法——此前因点名器官/双侧被 _is_segment_global_normal 排除而漏报 R17 矛盾。
+            # 2026-08-24 修复：仅对无侧别前缀的器官级正常声明做扩展，单侧（如"左小脑正常"）不扩展
             for (o, s), v in f_assert.items():
                 if o == organ and s in (None, "bilateral", "both", "double") and "normal" in v:
-                    d.add("normal")
+                    # 检查是否为显式单侧声明（排除单侧正常扩展为全器官）
+                    is_unilateral = any(
+                        side_char in f_txt[max(0, span_start - 3):span_start]
+                        for sk, ss, span_start, span_end in f_spans if sk == o
+                        for side_char in ("左", "右")
+                        if side_char in f_txt[max(0, span_start - 3):span_start]
+                    )
+                    if not is_unilateral:
+                        d.add("normal")
             for (o, s), v in i_assert.items():
                 if o == organ and s in (None, "bilateral", "both", "double") and "normal" in v:
                     c.add("normal")
@@ -2163,6 +2234,95 @@ class RuleEngine:
             out.append(Finding("R16-FOLLOWUP", "随访时限缺失", "low",
                 "报告给出随访/复查建议但未明确时限（如『3个月后』），建议补充具体随访间隔",
                 "", (-1, -1)))
+        return out
+
+    # R24 建议强度矛盾（定性良性 vs 强处置建议，2026-08-23 新增）
+    def _r24_advice_conflict(self, text: str) -> List[Finding]:
+        out = []
+        if not text:
+            return out
+        # 条件①：明确良性定性词。印象段优先 → 描述段次之；均无段落结构时
+        # _split_for_r5 的 findings 即为全文，天然退回全文扫描。
+        secs = self._split_for_r5(text)
+        i_txt = secs["impression"]
+        f_txt = secs["findings"]
+        benign_word = ""
+        for seg in filter(None, (i_txt, f_txt)):
+            m = R24_BENIGN_CONFIRM_RE.search(seg or "")
+            while m and R24_BENIGN_NEG_PRE_RE.search(seg[max(0, m.start() - 4):m.start()]):
+                m = R24_BENIGN_CONFIRM_RE.search(seg, m.start() + 1)
+            if m:
+                benign_word = m.group()
+                break
+        if not benign_word:
+            return out
+        # 条件②：建议/印象部分的强处置词，须同句内有建议类引导词先行锚定；
+        # 无段落结构时退回全文（此时病史陈述误触风险略升，故追加术后/已行豁免）。
+        adv_seg = i_txt or text
+        base = len(text) - len(adv_seg)
+        for m in re.finditer("|".join(map(re.escape, R24_STRONG_INTERVENTION)), adv_seg):
+            s0 = max([adv_seg.rfind(d, 0, m.start()) for d in "。！？!?；;\n"] + [-1])
+            pre = adv_seg[s0 + 1:m.start()]
+            post = adv_seg[m.end():m.end() + 2]
+            if "术后" in post or "术后" in adv_seg[max(0, m.start() - 2):m.end()]:
+                continue  # 切除术后/术后化疗等病史陈述
+            if re.search(r"(?:已行|曾行|既往)[^。；\n]{0,4}$", pre):
+                continue  # 已行切除/曾行化疗等手术史回顾
+            if not R24_ADVICE_LEAD_RE.search(pre):
+                continue  # 处置词未被建议类引导词锚定（含『穿刺细胞学』弱表述）
+            snippet = adv_seg[max(0, m.start() - 15):min(len(adv_seg), m.end() + 15)]
+            out.append(Finding(
+                "R24-ADVICE", "建议强度矛盾", "high",
+                f"报告将病灶定性为良性（{benign_word}），但建议部分又出现强处置表述「{m.group()}」，"
+                f"定性与处置强度矛盾，建议核实",
+                snippet, (base + m.start(), base + m.end())))
+            break  # 一份报告只报一条，避免同类告警刷屏
+        return out
+
+    # R25 时序方向矛盾（同报告内较前增大/缩小、增多/减少反向并存，2026-08-23 新增）
+    @staticmethod
+    def _r25_subject_key(clause: str):
+        """从『较前…』之前的子句提取主体键 (最近病灶关键词, 侧别字符)。
+        子句内无病灶关键词时返回 None（主体不明 → 窄模式不报）。"""
+        best_i, kw_hit = -1, None
+        for kw in _R25_SUBJECT_KW:
+            i = clause.rfind(kw)
+            if i > best_i:
+                best_i, kw_hit = i, kw
+        if kw_hit is None:
+            return None
+        side = ""
+        window = clause[max(0, best_i - 4):best_i]
+        for ch in ("双", "左", "右"):
+            if ch in window:
+                side = ch
+                break
+        return (kw_hit, side)
+
+    def _r25_temporal_direction(self, text: str) -> List[Finding]:
+        out = []
+        if not text or "较前" not in text:
+            return out
+        hits = []   # (direction, key, abs_start, abs_end)
+        for m in _R25_TEMPORAL_RE.finditer(text):
+            s0 = max([text.rfind(d, 0, m.start()) for d in "。！？!?；;，,\n"] + [-1])
+            key = self._r25_subject_key(text[s0 + 1:m.start()])
+            if key is None:
+                continue
+            hits.append((m.group(1), key, m.start(), m.end()))
+        for up_w, down_w in (("增大", "缩小"), ("增多", "减少")):
+            ups = [h for h in hits if h[0] == up_w]
+            downs = [h for h in hits if h[0] == down_w]
+            shared = ({h[1] for h in ups} & {h[1] for h in downs})
+            if not shared:
+                continue
+            ref = next(h for h in downs if h[1] in shared)
+            snippet = text[max(0, ref[2] - 14):min(len(text), ref[3] + 10)]
+            out.append(Finding(
+                "R25-TEMPORAL", "时序方向矛盾", "medium",
+                f"同一报告内对同一「{ref[1][0]}」的时序方向描述自相矛盾"
+                f"（既称较前{up_w}又称较前{down_w}），建议核实随访对比结论",
+                snippet, (ref[2], ref[3])))
         return out
 
 

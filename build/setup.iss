@@ -1,8 +1,14 @@
 #pragma codepage(65001)
 
+; 版本号（2026-08-23）：CI 用 iscc /DAppVersion=x.y.z 注入 src/version.py 的 APP_VERSION；
+; 本地直接编译时回退默认值，保持可独立构建。
+#ifndef AppVersion
+#define AppVersion "1.0"
+#endif
+
 [Setup]
 AppName=医学影像报告质控软件
-AppVersion=1.0
+AppVersion={#AppVersion}
 AppPublisher=报告质控软件
 DefaultDirName={autopf}\报告质控软件
 DefaultGroupName=报告质控软件

@@ -25,6 +25,22 @@ import sys
 import json
 import re
 
+
+def _restrict_file_access(path: str) -> None:
+    """限制敏感文件仅当前用户可读写（跨平台）。"""
+    try:
+        if sys.platform.startswith("win"):
+            import subprocess
+            user = os.environ.get("USERNAME") or os.getlogin()
+            subprocess.run(
+                ["icacls", path, "/inheritance:r", "/grant:r", f"{user}:(F)"],
+                capture_output=True, timeout=5,
+            )
+        else:
+            os.chmod(path, 0o600)
+    except Exception:
+        pass
+
 def _config_path() -> str:
     """RIS 连接配置持久化路径（写盘，需真实可写目录）。
 
@@ -89,7 +105,7 @@ def save_config(cfg: dict):
     with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, ensure_ascii=False, indent=2)
     try:
-        os.chmod(CONFIG_PATH, 0o600)  # 2026-08-18 M6：含医院库口令，限本账号读取
+        _restrict_file_access(CONFIG_PATH)  # 2026-08-18 M6：含医院库口令，限本账号读取
     except Exception:
         pass
 

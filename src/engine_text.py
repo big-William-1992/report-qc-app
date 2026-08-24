@@ -136,12 +136,13 @@ def _cn_to_int(tok):
 def _extract_lesion_count(text: str):
     """抽取文本中明确的病灶计数（枚/个），无法判定返回 None。
     2026-08-18：① 优先『共/合计/共见 N 枚』总数；多个独立计数（无总数）返回 None（保守不报）。
-    ② 新增『多发/数个/多个』→ "multi"（≥2）与『单发/单个』→ 1——此前『双肺见多发结节』
-    + 结论『共 2 枚』最常见的数量矛盾表达漏检。"""
+    ② 新增『多发/数个/多个』→ 2（≥2）与『单发/单个』→ 1——此前『双肺见多发结节』
+    + 结论『共 2 枚』最常见的数量矛盾表达漏检。
+    2026-08-24：修复返回类型不一致问题，"multi" 改为返回 int 2。"""
     if not text:
         return None
     if re.search(r"多发|数个|多个|数枚", text):
-        return "multi"
+        return 2  # multi → 最小值 2，保持 int 类型一致
     if re.search(r"单发|单个", text):
         return 1
     m = re.search(r"(?:共|合计|共见|总计|总见|总)\s*([一二三四五六七八九十两双单\d])\s*枚", text)
@@ -172,7 +173,10 @@ def _has_marker_unnegated(text: str, markers) -> bool:
         # 2026-08-18 修复：『不除外/不考虑/待排』是阳性倾向措辞（临床强证据），
         # 不能当否定跳过——否则『右肾占位，不除外恶性』+结论『考虑良性』的真矛盾漏检。
         # 仅真正的阴性（未见/未示/除外=排除）才算否定。
-        if re.search(r"未见|未示|未见明显|除外|未见\s*明确", sent):
+        # 2026-08-24 修复：用负向前瞻排除"不除外"中的"除外"子串
+        if re.search(r"不除外|不考虑|待排", sent):
+            return True  # 阳性倾向，直接判定为存在标记
+        if re.search(r"未见|未示|未见明显|未见可疑|未发现|不伴|除外|未见\s*明确", sent):
             continue
         return True
     return False
