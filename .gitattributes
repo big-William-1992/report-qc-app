@@ -3,12 +3,11 @@
 *.onnx filter=lfs diff=lfs merge=lfs -text
 *.db filter=lfs diff=lfs merge=lfs -text
 *.zip filter=lfs diff=lfs merge=lfs -text
-
 # 统一换行（Windows 构建环境友好）
 *.py text eol=lf
 *.js text eol=lf
 *.json text eol=lf
 *.md text eol=lf
-
 # Windows 批处理必须 CRLF（LF 会导致 cmd 解析异常/标签跳转错乱）
 *.bat text eol=crlf
+*.safetensors filter=lfs diff=lfs merge=lfs -text

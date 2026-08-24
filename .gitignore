@@ -76,12 +76,12 @@ assets/samples.db.bak
 data/
 src/llm_config.json
 
-# 训练产出的 LoRA 权重（二进制大文件，不入库；可由 tools/ + train/ 管线复现）
-adapters/**/*.safetensors
+# LoRA 权重(.safetensors) 已改由 Git LFS 管理（见 .gitattributes），不再忽略。
+# tokenizer 等小文件来自基座模型，可复现，保持忽略。
 adapters/**/tokenizer.json
 adapters/**/tokenizer_config.json
 adapters/**/special_tokens_map.json
-# 本地训练存档（checkpoint/权重，168MB+，不入库）
+# 本地训练存档(checkpoint/权重，168MB+，可复现) 仍不入库；最终产物走 adapters/ + LFS
 saves/
 
 # WorkBuddy 项目内部数据目录，非本软件产物，禁止入库
