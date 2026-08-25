@@ -9,6 +9,7 @@
 fastapi>=0.110                # REST 后端框架
 uvicorn>=0.27                 # ASGI 服务器（desktop_app.py 以后台线程拉起）
 python-multipart>=0.0.9       # UploadFile 表单解析：/ocr/upload、/samples/import/upload 必需
+httpx>=0.27                   # fastapi TestClient 依赖（test_api_guard 等 CI 单测必需；2026-08 starlette 新版强制要求，漏装导致 CI 收集期 exit 2）
 sqlalchemy>=1.4,<3.0          # ORM 数据层（users/departments/samples/queue/settings 持久化，运行必需；漏列会导致冻结 exe 启动即 ModuleNotFoundError）
 pywebview>=6,<7              # 桌面壳（macOS 用系统 WKWebView，Windows 用 WebView2；收敛 6.x——pythonnet/clr-loader 组合仅对 6.x 验证过）
 pythonnet==3.1.0; platform_system == "Windows"  # Windows 下 pywebview 6.x 的 winforms/edgechromium 后端强制依赖 pythonnet(clr)；锁定 3.1.0（runtime 目录结构已验证，netfx 模式可加载）
