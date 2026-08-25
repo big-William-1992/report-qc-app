@@ -28,6 +28,13 @@ except Exception:  # pragma: no cover
 from ._compat_lexicons import _pull_symbols  # noqa: F401
 _pull_symbols("models", "textsplit", "lexicon_region", "claims",
               "config_store", "ner", "scoring", "meta_extract")
+# 显式静态导入全部子模块 (2026-08-25 审计修复):
+# 这些模块同时经 _pull_symbols 运行时注入, 但 PyInstaller modulegraph 只认静态
+# import —— 缺此行则 exe 打包后运行期 ModuleNotFoundError(CI 测不出, 见 smoke_test 局限)。
+from . import models as _em, textsplit as _et, lexicon_region as _el, \
+    claims as _ec, config_store as _ecs, ner as _en, scoring as _esc, \
+    meta_extract as _eme  # noqa: F401
+
 from .rules_meta import MetaRulesMixin
 from .rules_typo import TypoRulesMixin
 from .rules_consistency import ConsistencyRulesMixin

@@ -215,5 +215,18 @@ def export_diagnostic_bundle(dest_dir=None):
                 if os.path.isfile(fp):
                     zf.write(fp, os.path.join("logs", fn))
 
+    # badcase 反馈库一并入包 (2026-08-25): 它是增量精调的唯一数据源。
+    # ⚠️ 注意: report_text 字段含患者报告内容, 发送前请知悉/脱敏。
+    try:
+        from samplelib import db_path as _sdb_path
+        _fb = os.path.join(os.path.dirname(_sdb_path()), "feedback.db")
+        if os.path.isfile(_fb):
+            zf.write(_fb, "feedback.db")
+            if _logger:
+                _logger.info("diagnostic bundle: feedback.db included (%d bytes)",
+                             os.path.getsize(_fb))
+    except Exception:
+        pass  # 样本库定位失败时跳过, 不阻断诊断包
+
     logger.info("诊断包已导出: %s", zip_path)
     return zip_path
