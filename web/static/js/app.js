@@ -419,12 +419,64 @@ function _renderFindingList() {
       <span class="sev-badge ${m.cls}">${m.icon} ${m.label}</span>
       <div>
         <div class="finding-text ${m.cls}">${escapeHtml(f.message)}</div>
-        <div class="finding-meta">${f.rule_id} · ${escapeHtml(f.category || '')}${fixBtns}</div>
+        <div class="finding-meta">${f.rule_id} · ${escapeHtml(f.category || '')}${fixBtns}
+        <button class="btn btn-xs fb-btn" onclick="submitFindingFeedback(${i},'false_positive')"
+          title="这条是误报——反馈将用于规则/模型调优，不会上传报告到任何服务器">👎 误报</button>
+        <button class="btn btn-xs fb-btn" onclick="submitFindingFeedback(${i},'wrong_type')"
+          title="问题确实存在但类型判错了">🔀 类型不对</button></div>
       </div>
     </li>`;
   }).join('');
 
   listEl.style.display = 'block';
+}
+
+// ── badcase 回流 (2026-08-25 P1-4): 医生反馈 → feedback.db → 增量精调 ──
+function _currentReportText() {
+  const f = (document.getElementById('findingsText') || {}).value || '';
+  const i = (document.getElementById('impressionText') || {}).value || '';
+  return (f + '\n' + i).trim();
+}
+
+async function submitFindingFeedback(idx, type) {
+  const f = _qcAllFindings[idx];
+  if (!f) return;
+  if (!confirm(type === 'false_positive'
+    ? '确认这是误报？反馈将匿名存本机，用于后续调优。'
+    : '确认类型判断有误？')) return;
+  await _postFeedback({
+    feedback_type: type,
+    report_text: _currentReportText(),
+    rule_id: f.rule_id || '',
+    engine_source: f.source || '',
+    severity: f.severity || '',
+    message: f.message || '',
+    snippet: f.snippet || '',
+    suggestion: f.suggestion || '',
+  });
+}
+
+async function submitMissedFeedback() {
+  const note = prompt('请描述被漏掉的问题（如「左肾囊肿未提示」），越具体越有助于改进：');
+  if (note === null) return;
+  await _postFeedback({
+    feedback_type: 'missed',
+    report_text: _currentReportText(),
+    user_note: note.trim(),
+  });
+}
+
+async function _postFeedback(payload) {
+  try {
+    const res = await apiFetch('/api/v1/feedback', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await res.json();
+    toast(d.ok ? '已记录反馈，感谢！数据仅存本机。' : (d.msg || '反馈暂存失败'), d.ok ? 'success' : 'warning');
+  } catch (e) {
+    toast('反馈暂存失败（服务不可用）', 'warning');
+  }
 }
 
 // 严重度筛选：high / medium / low / all

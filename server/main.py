@@ -87,6 +87,20 @@ from fastapi.responses import JSONResponse
 
 from server.schemas import *  # 请求/响应模型（2026-08-21 T56 收敛：内联模型已抽离到 schemas.py）
 
+def _audit_log(*args):
+    """审计/运维输出统一走滚动日志 (2026-08-25 可观测性改造)。"""
+    try:
+        from log_utils import get_logger
+        lg = get_logger()
+        if lg is not None:
+            lg.info(" ".join(str(a) for a in args))
+    except Exception:
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
+
 import engine
 import ris
 import accounts
@@ -147,7 +161,7 @@ else:
     # 本地演示/桌面单机默认值；公网/内网多用户部署必须设置强随机密钥。
     SECRET = _load_or_create_secret()
     _audit_log("\n[SECURITY] 警告: 未设置 QC_API_SECRET，已生成本机随机密钥并持久化到用户数据目录。"
-          "公网/内网多用户部署请 export QC_API_SECRET=<强随机串> 保持各节点一致。\n", file=sys.stderr)
+          "公网/内网多用户部署请 export QC_API_SECRET=<强随机串> 保持各节点一致。\n")
 TOKEN_TTL = int(os.environ.get("QC_API_TTL", "86400"))  # 默认 24h
 
 
@@ -171,21 +185,6 @@ def verify_token(tok: str) -> Optional[str]:
     except Exception:
         return None
     return None
-
-
-def _audit_log(*args):
-    """审计/运维输出统一走滚动日志 (2026-08-25 可观测性改造)。"""
-    try:
-        from log_utils import get_logger
-        lg = get_logger()
-        if lg is not None:
-            lg.info(" ".join(str(a) for a in args))
-    except Exception:
-        try:
-            from .log_utils import log_quiet
-        except ImportError:
-            from log_utils import log_quiet
-        log_quiet(__name__)
 
 
 def _emp_from_auth(authorization: Optional[str]) -> Optional[str]:
@@ -508,6 +507,47 @@ def qc_full(req: CheckReq, request: Request,
         "llm_available": result.get("llm_available", False),
         "llm_error": result.get("llm_error"),
     })
+
+
+@app.post("/api/v1/feedback")
+def submit_feedback(req: FeedbackReq,
+                    emp: str = Depends(require_emp_local),
+                    _lic: bool = Depends(require_license_active)):
+    """医生反馈回流: 误报👎/漏报➕ → feedback.db (P1-4 badcase 闭环入口)。
+    存储失败不影响质控主流程(降级返回 ok=False 而非 500)。"""
+    try:
+        from badcase_store import record
+        data = req.model_dump()
+        data["user_id"] = emp
+        fid = record(data)
+        return _envelope(True, "已记录，感谢反馈", {"id": fid})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception:
+        from log_utils import log_quiet; log_quiet(__name__)
+        return _envelope(False, "反馈暂存失败（不影响质控结果）", {})
+
+
+@app.get("/api/v1/feedback/stats")
+def feedback_stats(emp: str = Depends(require_emp_local)):
+    """反馈计数(驾驶舱展示用)。"""
+    try:
+        from badcase_store import stats
+        return _envelope(True, "OK", stats())
+    except Exception:
+        from log_utils import log_quiet; log_quiet(__name__)
+        return _envelope(True, "OK", {"total": 0, "by_type": {}, "last_7d": 0})
+
+
+@app.get("/api/v1/feedback/export")
+def feedback_export(limit: int = 1000,
+                    emp: str = Depends(require_emp_local)):
+    """导出最近反馈(JSONL), 供 tools/export_badcase_training.py 精调管线消费。"""
+    from badcase_store import list_recent
+    import json as _json
+    rows = list_recent(limit=limit)
+    body = "\n".join(_json.dumps(r, ensure_ascii=False) for r in rows)
+    return JSONResponse(content=body or "", media_type="application/x-ndjson")
 
 
 @app.get("/api/v1/qc/rules")

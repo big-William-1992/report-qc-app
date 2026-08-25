@@ -332,6 +332,9 @@
                 <button class="sev-filter" data-sev="high" onclick="setSevFilter('high')">⛔ 严重</button>
                 <button class="sev-filter" data-sev="medium" onclick="setSevFilter('medium')">⚠ 警告</button>
                 <button class="sev-filter" data-sev="low" onclick="setSevFilter('low')">ℹ 提示</button>
+                <span style="flex:1"></span>
+                <button class="btn btn-xs btn-outline" onclick="submitMissedFeedback()"
+                  title="引擎没发现问题但你发现了问题？告诉我们，用于改进（数据仅存本机）">➕ 漏报了问题？</button>
                 <button class="btn btn-xs apply-fix-btn" onclick="applyAllFixes()" title="批量应用全部确定性错别字修正">✨ 全部采纳</button>
               </div>
               <span class="card-header-action" id="findingCount">0 条</span>

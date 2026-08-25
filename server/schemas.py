@@ -31,6 +31,19 @@ class CheckReq(BaseModel):
     auto_fix: bool = False
 
 
+class FeedbackReq(BaseModel):
+    """医生反馈(badcase 回流, 2026-08-25 P1-4)。"""
+    feedback_type: str          # false_positive | missed | wrong_type | other
+    report_text: str
+    rule_id: str = ""
+    engine_source: str = ""     # rules | llm | fused
+    severity: str = ""
+    message: str = ""
+    snippet: str = ""
+    suggestion: str = ""
+    user_note: str = ""
+
+
 class BatchItem(BaseModel):
     report: str
     meta: Dict[str, str] = {}
