@@ -126,8 +126,9 @@ class TestChangeDetection(unittest.TestCase):
 
     def test_single_field_change_triggers(self):
         # 仅换检查部位（临床 R6 关键）：新参数（64×64/pd8/tol0.002）也应触发
-        a = O.image_signature(render_pacs(seed=1, name="张伟", site="胸部 CT"))
-        b = O.image_signature(render_pacs(seed=1, name="张伟", site="腹部 CT"))
+        # 高对比白字渲染：避免低对比下不同字体的抗锯齿差异淹没单字变化信号
+        a = O.image_signature(render_pacs(seed=1, name="张伟", site="胸部 CT", fg=(255, 255, 255)))
+        b = O.image_signature(render_pacs(seed=1, name="张伟", site="腹部 CT", fg=(255, 255, 255)))
         self.assertTrue(O.signature_changed(a, b))
 
     def test_screen_noise_ignored(self):
