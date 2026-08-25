@@ -47,13 +47,15 @@ jobs:
         shell: bash
         run: |
           python -m pip install pytest
-          python -m pytest test/ tests/ -q --tb=short 2>&1 | tee pytest_output.txt
-          rc=${PIPESTATUS[0]}
+          set +e
+          python -m pytest test/ tests/ -q --tb=short > pytest_output.txt 2>&1
+          rc=$?
           if [ $rc -ne 0 ]; then
-            echo "::error::pytest exit=$rc, tail of output follows"
-            tail -40 pytest_output.txt | while IFS= read -r line; do echo "::error::$line"; done
+            echo "::error::PYTEST_FAILED exit=$rc"
+            grep -E "^(FAILED|ERROR) " pytest_output.txt | head -30 | while IFS= read -r line; do echo "::error::$line"; done
+            tail -25 pytest_output.txt | while IFS= read -r line; do [ -n "$line" ] && echo "::error::$line"; done
           fi
-          test $rc -eq 0
+          exit $rc
 
       - name: Upload pytest output on failure
         if: failure()
