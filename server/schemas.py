@@ -185,7 +185,7 @@ class TypoBatchImportReq(BaseModel):
 
 
 __all__ = [
-    "FindingOut", "CheckReq", "BatchItem", "BatchReq",
+    "FindingOut", "CheckReq", "FeedbackReq", "BatchItem", "BatchReq",
     "AccountCreate", "LoginReq", "SampleCreate", "OCRB64",
     "RisConfigReq", "SampleExportReq", "SampleImportReq", "RisPollConfigReq",
     "RoleReq", "PwdReq", "DeptReq", "DeptCreateReq", "ActivateReq",
