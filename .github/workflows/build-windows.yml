@@ -43,6 +43,18 @@ jobs:
           python -m pip install --force-reinstall opencv-python-headless
           python -c "import cv2; print('cv2 OK (headless):', cv2.__version__)"
 
+      - name: Lint 闸 (ruff 致命规则, BLOCKING; 2026-08-25 审计新增)
+        # F821 未定义名/F822 __all__ 漏导出/F811 重复定义——历史上三次真实事故的克星
+        run: |
+          python -m pip install ruff
+          python -m ruff check src/ server/
+
+      - name: Dependency audit (pip-audit, 已知CVE阻断)
+        continue-on-error: true   # 首期观察模式: 有CVE不阻断, 输出到日志人工评估
+        run: |
+          python -m pip install pip-audit
+          python -m pip_audit -r requirements.txt --desc
+
       - name: 单元测试闸（pytest test/ + tests/，2026-08-18 新增；2026-08-23 恢复阻断）
         # 2026-08-23：本机基线 324 passed / 7 skipped 全绿，恢复为阻断闸
         # （此前 continue-on-error 只是临时降级，坏代码曾一路流到 Release）。

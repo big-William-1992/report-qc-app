@@ -7,7 +7,6 @@ report_qc_app/src/accounts.py
 - 抽象层由 server/db.py 提供：默认 SQLite，生产可切 PostgreSQL 不改业务代码。
 """
 import os
-import sys
 import json
 import hashlib
 import hmac

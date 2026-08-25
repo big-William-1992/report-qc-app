@@ -4,7 +4,6 @@
 侧别识别、病灶计数、否定感知的标记检测）。engine.py `from engine_text import *` 复用。
 """
 import re
-from typing import List
 
 from _lexicons import LATERALITY, _R19_NORM_RE
 

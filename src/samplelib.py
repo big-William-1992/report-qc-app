@@ -9,10 +9,6 @@ import sqlite3
 import json
 import csv
 import datetime
-import shutil
-import re
-import zipfile
-import io
 import threading
 
 # 导入去重串行锁（2026-08-18 M1）：_import_rows 的「读 seen → 逐条 INSERT」跨事务，

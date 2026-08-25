@@ -92,3 +92,8 @@ saves/
 merged/
 # 训练中间 checkpoint 只保留最终 adapters.safetensors
 saves/**/0000*_adapters.safetensors
+
+# coverage / sqlite WAL 运行产物
+.coverage
+*.db-shm
+*.db-wal

@@ -12,8 +12,7 @@ import base64
 import datetime
 import platform
 import tkinter as tk
-from tkinter import ttk, messagebox
-import sys
+from tkinter import ttk
 import subprocess
 
 # 许可证数据文件（支持 PyInstaller 打包后的路径）

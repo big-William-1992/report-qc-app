@@ -5,7 +5,7 @@ run_llm_qc(text, meta) 串联：RAG 检索 → 构造 prompt → 调用 LLM → 
 """
 from __future__ import annotations
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List
 
 from llm_client import LLMClient, get_llm_client, load_llm_config
 from llm_prompt import build_qc_prompt, build_qc_prompt_ft

@@ -25,8 +25,6 @@ Windows 便携版无需安装即可替换，安装版（ReportQcSetup.exe）作�
 """
 import os
 import sys
-import shutil
-import tarfile
 import subprocess
 import threading
 import hashlib

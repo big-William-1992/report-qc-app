@@ -1,0 +1,38 @@
+# ruff 配置 (2026-08-25 审计 P3): 只开致命规则, 零噪音起步。
+# 目标: 抓 F821 未定义名(如 _audit_log 错位事故)/F401 冗余导入/F811 重复定义,
+# 不做风格审查(单人项目, 风格自由度留给作者)。
+line-length = 100
+target-version = "py312"
+
+exclude = [
+    ".git", "__pycache__", "build", "dist", "node_modules",
+    "web", "assets", "exports", "merged", "saves",
+]
+
+[lint]
+select = [
+    "E9",    # 语法级错误
+    "F63",   # 无效比较/赋值
+    "F7",    # 语法上的类型注解误用
+    "F821",  # 未定义名称 —— 可观测性事故(_audit_log)的直接克星
+    "F822",  # __all__ 导出未定义名 —— 本次 CI 事故(schemas FeedbackReq)的克星
+    "F811",  # 同名重复定义
+    "F401",  # 未使用的导入
+    "F702",  # continue/break 在 finally 外误用
+    "B018",  # 无意义表达式
+]
+ignore = [
+    "F811",  # 函数内重复import是本项目的懒加载惯例(ocr_provider等), 非缺陷
+    "F403",  # from x import * 是本项目的词表分发惯例(engine/_lexicons)
+    "F405",  # 同上, star 导入带来的符号
+]
+
+[lint.per-file-ignores]
+# engine 包: HEADER 导入承担跨模块符号分发职能(_pull_symbols 动态注入),
+# ruff 静态分析无法识别这类引用, F401 全部为误报, 严禁 --fix 自动删除
+"src/engine/**" = ["F401"]
+# 测试/工具脚本允许宽松些: 未用导入常见于 fixture 占位
+"test/**" = ["F401"]
+"tests/**" = ["F401"]
+"tools/**" = ["F401"]
+"web_issuer/**" = ["F401"]

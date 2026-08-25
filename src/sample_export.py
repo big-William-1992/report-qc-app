@@ -5,9 +5,9 @@
 import os
 import re
 import json
+import zipfile
 import csv
 import datetime
-from typing import List, Optional
 
 FIELDS = ["id", "ts", "patient", "gender", "age", "modality",
           "applied_site", "laterality", "user_id",
@@ -66,6 +66,7 @@ def export_samples(path: str = None, out_path: str = None, fmt: str = "csv",
 # 供科室留档、质控会议汇报、发给医生整改。
 # ---------------------------------------------------------------------------
 def export_report_docx(sample: dict, out_path: str = None) -> str:
+    _dbp, _lsf = _sdb()
     """把单份样本导出为质控报告单 DOCX（Word）。
 
     sample : get_sample(sid) 返回的行（含 report_text / findings_json / scores_json）
@@ -74,18 +75,19 @@ def export_report_docx(sample: dict, out_path: str = None) -> str:
     if out_path is None:
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         sid = sample.get("id", 0)
-        out_path = os.path.join(os.path.dirname(db_path()),
+        out_path = os.path.join(os.path.dirname(_dbp()),
                                 f"质控报告_{sid}_{stamp}.docx")
     _write_docx([sample], out_path, single=True)
     return out_path
 
 
 def export_report_pdf(sample: dict, out_path: str = None) -> str:
+    _dbp, _lsf = _sdb()
     """把单份样本导出为质控报告单 PDF（需 reportlab）。"""
     if out_path is None:
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         sid = sample.get("id", 0)
-        out_path = os.path.join(os.path.dirname(db_path()),
+        out_path = os.path.join(os.path.dirname(_dbp()),
                                 f"质控报告_{sid}_{stamp}.pdf")
     _write_pdf([sample], out_path, single=True)
     return out_path

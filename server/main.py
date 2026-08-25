@@ -106,14 +106,15 @@ import ris
 import accounts
 import samplelib
 from server import license_web
-import ocr_provider
+import ocr_provider  # noqa: F401 (副作用导入: 确保 PyInstaller 收集 OCR 引擎)
 from version import APP_VERSION
 from server import db  # SQLAlchemy 统一数据层（users/departments/queue/settings）
-from server.db import SessionLocal  # 会话工厂（队列/设置 ORM 读写，2026-08-18 task 229 收敛）
+from server.db import SessionLocal  # noqa: F401 (会话工厂: 转发给旧引用方/打包占位)
 from server.core import (  # 共享层（2026-08-18 拆分）：日志/响应封装/数据目录/队列与设置数据层
     _log, _envelope, _eng_scores, _appdata_dir, _atomic_json_write, _JSON_IO_LOCK,
-    _queue_orm_all, _queue_orm_add, _queue_orm_add_dedup, _queue_orm_remove,
-    _queue_orm_clear, _load_queue,
+    _queue_orm_all, _queue_orm_add,  # noqa: F401 (re-export)
+    _queue_orm_add_dedup, _queue_orm_remove,
+    _queue_orm_clear, _load_queue,  # noqa: F401 (部分符号 re-export 给旧引用)
     _migrate_queue_to_db, _settings_orm_all, _settings_orm_save, _migrate_settings_to_db,
     _restrict_file_access,
 )
@@ -617,7 +618,7 @@ _OCR_MAX_BYTES = int(os.environ.get("QC_OCR_MAX_BYTES", str(20 * 1024 * 1024)))
 async def ocr_upload(file: UploadFile = File(...), emp: str = Depends(require_emp_local),
                   _lic: bool = Depends(require_license_active)):
     from PIL import Image
-    import ocr_provider
+    import ocr_provider  # noqa: F401 (副作用导入: 确保 PyInstaller 收集 OCR 引擎)
     ok, why = ocr_provider.availability()
     if not ok:
         return JSONResponse(status_code=503,
@@ -640,7 +641,7 @@ async def ocr_upload(file: UploadFile = File(...), emp: str = Depends(require_em
 def ocr_base64(req: OCRB64, emp: str = Depends(require_emp_local),
                _lic: bool = Depends(require_license_active)):
     from PIL import Image
-    import ocr_provider
+    import ocr_provider  # noqa: F401 (副作用导入: 确保 PyInstaller 收集 OCR 引擎)
     import base64 as _b64
     ok, why = ocr_provider.availability()
     if not ok:
@@ -1596,7 +1597,6 @@ def update_check(emp: str = Depends(require_emp_local)):
 #   4) 规则配置读取 —— 供规则维护页编辑 R8 错别字 / R9 矛盾对 / 忽略词
 # 注意：必须注册在文件末尾的 SPA catch-all 路由「之前」，否则 GET 会被兜底吞掉。
 # ============================================================================
-import uuid as _uuid
 
 
 
@@ -1734,7 +1734,7 @@ def screen_capture(emp: str = Depends(require_emp_local), _lic: bool = Depends(r
 @app.post("/api/v1/screen/ocr")
 def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
     """按比例框在缓存的整屏原图上裁剪并 OCR，返回三区文本 + 结构化 meta。"""
-    import ocr_provider
+    import ocr_provider  # noqa: F401 (副作用导入: 确保 PyInstaller 收集 OCR 引擎)
     ok, why = ocr_provider.availability()
     if not ok:
         return JSONResponse(status_code=503,

@@ -29,7 +29,7 @@ paddlepaddle 框架。换模型前务必确认新 rec 模型内嵌字符字典�
 """
 
 import os
-import sys
+import threading
 
 try:
     import cv2
@@ -96,10 +96,9 @@ _ENGINE_LOCK = None     # 懒加载互斥锁（2026-08-18 新增：冷启动并�
 
 
 def _ensure_engine_lock() -> "threading.Lock":
-    """模块级锁懒创建（避免顶层 import threading 副作用）。"""
+    """模块级锁懒创建（避免冷启动并发重复实例化引擎）。"""
     global _ENGINE_LOCK
     if _ENGINE_LOCK is None:
-        import threading
         _ENGINE_LOCK = threading.Lock()
     return _ENGINE_LOCK
 
