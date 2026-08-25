@@ -17,7 +17,17 @@ sys.path.insert(0, REPO_SRC)
 import ocr_provider as O
 import engine
 
-FONT = "/System/Library/Fonts/Hiragino Sans GB.ttc"
+# 跨平台中文字体回退链（CI Windows runner 无 macOS 字体，2026-08-25 修复）
+FONT_CANDIDATES = (
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",   # macOS
+    "C:/Windows/Fonts/msyh.ttc",                    # Windows 微软雅黑
+    "C:/Windows/Fonts/simhei.ttf",                  # Windows 黑体
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",  # Linux
+)
+FONT = next((p for p in FONT_CANDIDATES if os.path.exists(p)), None)
+if FONT is None:
+    pytest.skip("无可用中文字体，跳过 OCR 渲染类测试", allow_module_level=True)
+
 FIELDS = ("patient", "gender", "age", "modality", "applied_site", "laterality")
 
 
