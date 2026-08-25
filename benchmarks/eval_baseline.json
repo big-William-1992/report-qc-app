@@ -1,0 +1,12 @@
+{
+ "date": "2026-08-25T18:54:19",
+ "engine": {
+  "tag": "rules",
+  "recall": 100.0,
+  "specificity": 100.0,
+  "n_err": 91,
+  "n_norm": 109,
+  "misses": [],
+  "falses": []
+ }
+}
