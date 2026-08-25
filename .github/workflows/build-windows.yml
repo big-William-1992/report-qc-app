@@ -43,9 +43,19 @@ jobs:
       - name: 单元测试闸（pytest test/ + tests/，2026-08-18 新增；2026-08-23 恢复阻断）
         # 2026-08-23：本机基线 324 passed / 7 skipped 全绿，恢复为阻断闸
         # （此前 continue-on-error 只是临时降级，坏代码曾一路流到 Release）。
+        # 2026-08-25：输出落盘并在失败时上传 artifact，便于无 admin 权限时诊断。
+        shell: bash
         run: |
           python -m pip install pytest
-          python -m pytest test/ tests/ -q --tb=short
+          python -m pytest test/ tests/ -q --tb=short 2>&1 | tee pytest_output.txt
+          test ${PIPESTATUS[0]} -eq 0
+
+      - name: Upload pytest output on failure
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: pytest-output
+          path: pytest_output.txt
 
       - name: Resolve app version (src/version.py → APP_VERSION env)
         # 安装包版本号单一事实来源：src/version.py 的 APP_VERSION，
