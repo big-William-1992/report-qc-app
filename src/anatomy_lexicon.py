@@ -250,7 +250,11 @@ def load_padchest_location_cui_csv(path: str) -> dict:
                 if loc:
                     merged[loc] = cui
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     return merged
 
 

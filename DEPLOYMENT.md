@@ -152,3 +152,4 @@ EOF
 | 输出自由文本而非 JSON | 检查是否漏配 `"prompt_mode": "ft"` |
 | 首次调用超时 | MLX 冷加载属正常，调大 timeout 或预热一次 |
 | GGUF 回答乱码 | Modelfile 的 TEMPLATE/stop 必须保留 Qwen3 ChatML 结构 |
+| confidence 恒为 1.0 | 已知限制: 训练标注全 1.0 所致; 待 badcase 回流后增量精调校准 |

@@ -31,7 +31,11 @@ def _extract_json(text: str):
     try:
         return json.loads(t)
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     for opener, closer in (("[", "]"), ("{", "}")):
         s = t.find(opener)
         e = t.rfind(closer)
@@ -39,7 +43,11 @@ def _extract_json(text: str):
             try:
                 return json.loads(t[s:e + 1])
             except Exception:
-                pass
+                try:
+                    from .log_utils import log_quiet
+                except ImportError:
+                    from log_utils import log_quiet
+                log_quiet(__name__)
     return None
 
 

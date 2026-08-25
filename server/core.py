@@ -35,7 +35,11 @@ def _restrict_file_access(path: str) -> None:
         else:
             os.chmod(path, 0o600)
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 # ----------------------------- 统一日志 -----------------------------
@@ -223,7 +227,11 @@ def _migrate_queue_to_db() -> None:
     try:
         os.rename(qpath, qpath + ".bak")
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 # ----------------------------- 设置数据层（qc.db Setting，2026-08-18 收敛） -----------------------------
@@ -273,4 +281,8 @@ def _migrate_settings_to_db() -> None:
     try:
         os.rename(spath, spath + ".bak")
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)

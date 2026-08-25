@@ -152,7 +152,11 @@ def check_update_async(callback, timeout=8):
         try:
             callback(res)
         except Exception:
-            pass
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()

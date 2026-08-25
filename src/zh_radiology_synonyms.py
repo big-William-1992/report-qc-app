@@ -219,7 +219,11 @@ def extract_followup(text: str) -> Dict[str, object]:
             tf_months = int(m.group(1))
             raw = m.group(0)
         except ValueError:
-            pass
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)
     if tf_months is None:
         for pat, val in _FOLLOWUP_TIMEFRAME_PATTERNS:
             mm = re.search(pat, text)

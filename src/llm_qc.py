@@ -13,6 +13,9 @@ from rag import Retriever, get_retriever
 from llm_fusion import fuse
 
 
+# ⚠️ 已知限制(2026-08-25): 微调模型 confidence 几乎恒为 1.0 (训练标注全是 1.0),
+# 融合层的置信度分级对 LLM 来源发现实际不产生区分度。校准需真实 badcase
+# 数据驱动(见 P1-badcase 回流), 勿硬编码折扣系数。
 def _normalize(item: dict) -> dict:
     return {
         "rule_id": "L1-" + str(item.get("error_type", "UNKNOWN")),

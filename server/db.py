@@ -113,13 +113,18 @@ def _migrate_settings_uk(eng) -> None:
                     cols = [r[2] for r in c.execute(
                         "PRAGMA index_info('%s')" % _name).fetchall()]
                     if cols == ["key"]:
+                        # 安全说明: _name 来自本函数内硬编码索引名清单, 非外部输入
                         c.execute("DROP INDEX %s" % _name)
                         c.execute("COMMIT")
             c.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_settings_key_user "
                       "ON settings(key, user_id)")
             c.execute("COMMIT")
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 def _migrate_queue_hash(eng) -> None:
@@ -161,7 +166,11 @@ def _migrate_queue_hash(eng) -> None:
             c.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_queue_hash ON queue(report_hash)")
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 def get_db():

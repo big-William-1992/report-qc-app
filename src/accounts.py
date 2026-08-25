@@ -59,7 +59,11 @@ def init_db_safe() -> None:
     try:
         init_db()
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 # 旧代码直接调用 accounts.init_db()，这里转发到 SQLAlchemy 建表
@@ -285,7 +289,11 @@ def set_session(emp_id: str) -> None:
         with open(_session_path(), "w", encoding="utf-8") as fh:
             json.dump({"emp_id": emp_id or ""}, fh)
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 def get_session() -> str:
@@ -300,4 +308,8 @@ def clear_session() -> None:
     try:
         os.remove(_session_path())
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)

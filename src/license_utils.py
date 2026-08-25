@@ -64,7 +64,11 @@ def _read_license():
             with open(_LICENSE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     return {}
 
 
@@ -79,7 +83,11 @@ def _write_license(data):
     try:
         os.chmod(_LICENSE_FILE, 0o600)
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 # ---------- 免责声明 ----------
@@ -105,7 +113,11 @@ def show_disclaimer(parent):
         win.attributes("-topmost", True)
         win.after(900, lambda: win.winfo_exists() and win.attributes("-topmost", False))
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
     # 标题
     tk.Label(win, text="用户协议与免责声明", font=("PingFang SC", 15, "bold"),
@@ -255,7 +267,11 @@ def _stable_hw_id():
             with open("/etc/machine-id") as f:
                 return f.read().strip()
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     import socket
     return socket.gethostname().strip() or "UNKNOWN"
 
@@ -324,7 +340,11 @@ def show_activation_dialog(parent):
         win.attributes("-topmost", True)
         win.after(900, lambda: win.winfo_exists() and win.attributes("-topmost", False))
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
     # 标题与说明
     tk.Label(win, text="星衍放射质控软件", font=("PingFang SC", 16, "bold"),

@@ -39,7 +39,11 @@ def _restrict_file_access(path: str) -> None:
         else:
             os.chmod(path, 0o600)
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 def _config_path() -> str:
     """RIS 连接配置持久化路径（写盘，需真实可写目录）。
@@ -96,7 +100,11 @@ def load_config() -> dict:
             with open(CONFIG_PATH, encoding="utf-8") as fh:
                 cfg.update(json.load(fh))
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     return cfg
 
 
@@ -107,7 +115,11 @@ def save_config(cfg: dict):
     try:
         _restrict_file_access(CONFIG_PATH)  # 2026-08-18 M6：含医院库口令，限本账号读取
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 # ----------------------------- 驱动探测 -----------------------------
@@ -238,7 +250,11 @@ def _apply_query_timeout(conn, db_type: str, seconds: int = 15) -> None:
             cur.execute("SET statement_timeout = %d" % (seconds * 1000))
             cur.close()
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 def fetch_reports(cfg: dict, limit: int = 50):
@@ -267,4 +283,8 @@ def fetch_reports(cfg: dict, limit: int = 50):
         try:
             conn.close()
         except Exception:
-            pass
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)

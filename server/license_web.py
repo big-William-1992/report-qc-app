@@ -79,7 +79,11 @@ def _write_license(appdata_dir: str, data: dict) -> None:
     try:
         _restrict_file_access(_license_path(appdata_dir))
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 # ---------------- 硬件标识（激活码绑定对象） ----------------
@@ -105,7 +109,11 @@ def _stable_hw_id() -> str:
             with open("/etc/machine-id") as f:
                 return f.read().strip()
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     return socket.gethostname().strip() or "UNKNOWN"
 
 

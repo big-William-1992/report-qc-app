@@ -75,7 +75,11 @@ if _qc_db_override:
         import server.db as _sdb
         _sdb.set_database_override(_qc_db_url)
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -116,7 +120,11 @@ def _load_or_create_secret() -> str:
             if v:
                 return v
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     v = secrets.token_hex(32)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -124,7 +132,11 @@ def _load_or_create_secret() -> str:
             fh.write(v)
         _restrict_file_access(path)
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     return v
 
 
@@ -134,7 +146,7 @@ if QC_API_SECRET:
 else:
     # 本地演示/桌面单机默认值；公网/内网多用户部署必须设置强随机密钥。
     SECRET = _load_or_create_secret()
-    print("\n[SECURITY] 警告: 未设置 QC_API_SECRET，已生成本机随机密钥并持久化到用户数据目录。"
+    _audit_log("\n[SECURITY] 警告: 未设置 QC_API_SECRET，已生成本机随机密钥并持久化到用户数据目录。"
           "公网/内网多用户部署请 export QC_API_SECRET=<强随机串> 保持各节点一致。\n", file=sys.stderr)
 TOKEN_TTL = int(os.environ.get("QC_API_TTL", "86400"))  # 默认 24h
 
@@ -159,6 +171,21 @@ def verify_token(tok: str) -> Optional[str]:
     except Exception:
         return None
     return None
+
+
+def _audit_log(*args):
+    """审计/运维输出统一走滚动日志 (2026-08-25 可观测性改造)。"""
+    try:
+        from log_utils import get_logger
+        lg = get_logger()
+        if lg is not None:
+            lg.info(" ".join(str(a) for a in args))
+    except Exception:
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 def _emp_from_auth(authorization: Optional[str]) -> Optional[str]:
@@ -235,7 +262,11 @@ def _scope_user_id(emp: str) -> Optional[str]:
         if accounts.get_role(emp) == "admin":
             return None
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     return emp
 
 
@@ -353,7 +384,11 @@ def _reload_engine_rules():
     try:
         _get_engine().reload_rules()
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 def _run_qc(report: str, meta: dict, auto_fix: bool) -> dict:
@@ -694,7 +729,11 @@ def _poll_config() -> dict:
             if k in data:
                 cfg[k] = data[k]
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     return cfg
 
 
@@ -704,7 +743,11 @@ def _save_poll_config(cfg: dict) -> None:
         with _JSON_IO_LOCK:
             _atomic_json_write(_poll_path(), cfg)
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 
@@ -885,10 +928,18 @@ def _ris_poll_loop(stop_event: threading.Event):
                              f"RIS 轮询连续失败 {_consec_fails} 次，已自动禁用。"
                              "请检查 RIS 数据库连接配置后在设置中重新启用。")
                     except Exception:
-                        pass
+                        try:
+                            from .log_utils import log_quiet
+                        except ImportError:
+                            from log_utils import log_quiet
+                        log_quiet(__name__)
                 _save_poll_config(cfg)
             except Exception:
-                pass
+                try:
+                    from .log_utils import log_quiet
+                except ImportError:
+                    from log_utils import log_quiet
+                log_quiet(__name__)
         # 分片 sleep：基础 interval + 指数退避（每次失败翻倍，上限 _BACKOFF_CAP）
         base_sec = max(15, int((_poll_config().get("interval_min") or 30) * 60))
         if _consec_fails > 0:
@@ -922,7 +973,11 @@ except Exception as _w_e:
              "质控数据/配置/账号将无法持久化，每次重启丢失。"
              "请检查目录权限或设置 QC_DB_OVERRIDE 环境变量。")
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 db.init_db()
 try:
     samplelib.migrate_legacy_samples()
@@ -940,20 +995,32 @@ try:
                 if _now - os.path.getmtime(_fp) > 3 * 86400:
                     os.remove(_fp)
             except Exception:
-                pass
+                try:
+                    from .log_utils import log_quiet
+                except ImportError:
+                    from log_utils import log_quiet
+                log_quiet(__name__)
 except Exception as _e:
     # 2026-08-24：APPDATA 不可写时所有 DB 写入静默失败，用户每次重启数据丢失
     # 却无任何提示——此处补日志 + 写入失败标记，供前端 health 接口透出。
     try:
         _log("warning", f"数据迁移/清理阶段异常（数据可能不完整）: {type(_e).__name__}: {_e}")
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     try:
         _flag = os.path.join(os.path.dirname(samplelib.db_path()), ".init_warning")
         with open(_flag, "w", encoding="utf-8") as _fw:
             _fw.write(f"{datetime_now_iso()} migration error: {type(_e).__name__}: {_e}\n")
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 # 模块加载即启动轮询守护线程（daemon，进程退出自动终止）
 _RIS_POLL_STOP = threading.Event()
@@ -1344,7 +1411,11 @@ def file_download(file: str = Query(...), emp: str = Depends(require_emp_local))
         try:
             os.remove(full)
         except Exception:
-            pass
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)
 
     return FileResponse(full, filename=name, background=BackgroundTask(_cleanup))
 
@@ -1390,7 +1461,11 @@ async def sample_import_upload(file: UploadFile = File(...), emp: str = Depends(
         try:
             os.remove(tf.name)
         except Exception:
-            pass
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)
 
 
 # ----------------------------- 统计 -----------------------------
@@ -1584,7 +1659,11 @@ def _grab_fullscreen():
     except RuntimeError:
         raise
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     return img
 
 

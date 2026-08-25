@@ -171,7 +171,11 @@ for name in os.listdir(APP_DIR):
         else:
             shutil.copy2(_s, _d)
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 # 删除旧文件 → 写入新文件；异常则回滚并终止安装
 try:
@@ -185,7 +189,11 @@ try:
             else:
                 os.remove(p)
         except Exception:
-            pass
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)
     for name in os.listdir(SRC):
         s = os.path.join(SRC, name)
         d = os.path.join(APP_DIR, name)
@@ -195,7 +203,11 @@ try:
             else:
                 shutil.copy2(s, d)
         except Exception:
-            pass
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)
 except Exception:
     for name in os.listdir(OLD):
         s = os.path.join(OLD, name)
@@ -206,7 +218,11 @@ except Exception:
             else:
                 shutil.copy2(s, d)
         except Exception:
-            pass
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)
     raise
 
 # 恢复用户私有数据
@@ -247,7 +263,11 @@ try:
     subprocess.run(["xattr", "-dr", "com.apple.quarantine", APP_DIR],
                    capture_output=True, timeout=30)
 except Exception:
-    pass
+    try:
+        from .log_utils import log_quiet
+    except ImportError:
+        from log_utils import log_quiet
+    log_quiet(__name__)
 
 # 写入本地 build_info.json，记录本次更新到的发布时间，形成比对闭环
 if PUBLISHED_AT:
@@ -257,7 +277,11 @@ if PUBLISHED_AT:
                   encoding="utf-8") as f:
             json.dump({"build_time": PUBLISHED_AT, "commit": "from-release"}, f)
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 # 重新启动（测试时可设 AU_NO_LAUNCH=1 跳过，仅验证文件替换）；
 # 找不到启动脚本时不回退——旧版曾回退 src/app.py（Tk 版已退役、文件不存在），静默失败无意义
@@ -273,7 +297,11 @@ shutil.rmtree(OLD, ignore_errors=True)
 try:
     os.remove(TAR)
 except Exception:
-    pass
+    try:
+        from .log_utils import log_quiet
+    except ImportError:
+        from log_utils import log_quiet
+    log_quiet(__name__)
 '''
 
 
@@ -444,17 +472,29 @@ def download(dest, progress_cb=None, timeout=180):
         try:
             os.remove(dest)
         except Exception:
-            pass
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)
         raise RuntimeError("更新包下载不完整（大小不符），已删除，请重试")
     try:
         if os.path.getsize(dest) > _MAX_ARCHIVE_BYTES:
             try:
                 os.remove(dest)
             except Exception:
-                pass
+                try:
+                    from .log_utils import log_quiet
+                except ImportError:
+                    from log_utils import log_quiet
+                log_quiet(__name__)
             raise RuntimeError("更新包过大（超过 800MB），已拒绝")
     except OSError:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     _verify_download_sha256(dest)
     _verify_update_signature(dest)
     return dest
@@ -482,7 +522,11 @@ def _verify_download_sha256(dest):
         try:
             os.remove(dest)
         except Exception:
-            pass
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)
         raise RuntimeError("更新包校验失败（sha256 不匹配），已删除，请勿安装被篡改的文件")
 
 
@@ -512,7 +556,11 @@ def _verify_update_signature(dest):
         try:
             os.remove(dest)
         except Exception:
-            pass
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)
         raise RuntimeError("更新包签名校验失败，已删除，请勿安装来源不明的文件")
 
 

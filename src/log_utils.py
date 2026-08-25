@@ -76,13 +76,41 @@ def setup_logging(level=logging.INFO):
         sh.setFormatter(fmt)
         logger.addHandler(sh)
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
     _logger = logger
     logger.info("=" * 60)
     logger.info("%s 启动 | %s | Python %s",
                 APP_NAME, platform.platform(), platform.python_version())
     return logger
+
+
+def log_quiet(where: str) -> None:
+    """静默降级点统一观测口 (2026-08-25 审计新增)。
+
+    设计意图: 项目中大量 `except Exception: pass` 属于**有意的可选能力降级**
+    (如 pypinyin 未安装则 R19 关闭), 行为正确但不可见——现场排障时无从知晓
+    「哪条路走过了」。本函数不改变任何控制流, 仅以 DEBUG 级别留痕,
+    诊断包导出后即可还原完整决策链。
+
+    用法(函数内局部导入, 零模块级依赖):
+        except Exception:
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)
+    """
+    try:
+        lg = get_logger()
+        if lg is not None:
+            lg.debug("silenced-exception at %s", where, exc_info=True)
+    except Exception:  # 观测本身绝不能引入新故障
+        pass
 
 
 def get_logger():
@@ -112,7 +140,11 @@ def install_excepthook():
 
         tkinter.Tk.report_callback_exception = _tk_report
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
 
 
 # ----------------------------- 诊断包 -----------------------------
@@ -146,7 +178,11 @@ def _system_info():
         try:
             info["machine_id"] = license_utils._stable_hw_id()
         except Exception:
-            pass
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)
     except Exception as e:
         info["license_error"] = str(e)
 

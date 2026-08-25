@@ -41,13 +41,21 @@ def build_default_corpus() -> List[str]:
         for term, cat in _HIGHFREQ_WORDS:
             corpus.append(f"高频放射术语：{term}（{cat}）")
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     try:
         from anatomy_lexicon import ANATOMY_SYNONYMS
         for k, vs in ANATOMY_SYNONYMS.items():
             corpus.append(f"解剖同义：{k} ↔ {'/'.join(vs)}")
     except Exception:
-        pass
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
     # 2026-08-24：冻结态 __file__ 回溯失败，改用 app_paths 定位资源
     try:
         from app_paths import frozen_resource_dir
