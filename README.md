@@ -29,6 +29,7 @@
 ## 二、快速开始
 
 > 📦 完整安装与权限配置见 [docs/INSTALL.md](docs/INSTALL.md)；授权、试用期与激活码流程见 [docs/ACTIVATION.md](docs/ACTIVATION.md)。
+> 🤖 LLM 语义质控（可选增强）：本地微调模型的三种部署形态（Ollama / MLX / 云端）见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
 ### 运行环境
 

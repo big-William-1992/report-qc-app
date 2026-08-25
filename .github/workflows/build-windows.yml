@@ -20,16 +20,19 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            constraints.txt
 
       - name: Install PyInstaller + cryptography
         run: python -m pip install --upgrade pip pyinstaller cryptography
 
-      - name: Install dependencies (requirements.txt)
+      - name: Install dependencies (requirements.txt + constraints.txt)
         # 关键：屏幕区域 OCR 所需的全部「插件」（rapidocr/onnxruntime/opencv/pyclipper/Shapely 等）
         # 以及 WebView 桌面壳（pywebview）、FastAPI 后端（fastapi/uvicorn/python-multipart）
         # 必须在打包前装好，否则 PyInstaller 收不到这些模块，exe 内会 ModuleNotFoundError。
-        run: python -m pip install -r requirements.txt
+        # constraints.txt 锁定核心栈版本，杜绝上游发新版导致的 CI 漂移（2026-08-25）。
+        run: python -m pip install -r requirements.txt -c constraints.txt
 
       - name: Force opencv headless (瘦身 30~40MB)
         # rapidocr-onnxruntime 自身依赖声明会把完整版 opencv-python 拉进来，
