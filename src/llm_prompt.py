@@ -54,6 +54,28 @@ SCHEMA_HINT = """输出格式示例【示例仅演示 JSON 结构；error_type �
 若无问题，直接输出：[]
 """
 
+# ── 微调对齐模式 ────────────────────────────────────────
+# 本地/云端微调模型（qc-qwen3-4b-lora-v2 等）在训练时只见过简洁 system prompt；
+# 复杂 taxonomy+few-shot 会诱导幻觉（凑类型、报不存在的问题）。
+# config 设 "prompt_mode": "ft" 时启用以下与训练分布一致的 prompt。
+FT_SYSTEM_PROMPTS = (
+    # 与 gen_v2_robust_dataset.py PROMPT_VARIANTS[0] 对齐
+    """你是资深放射科质控专家，负责审核放射诊断报告。
+你已学习了大量正确报告的模式。现在请审查以下报告：
+1. 检查错别字（同音字、形近字、输入法误输入）
+2. 检查上下文对应（描述与结论是否一致、同一器官是否自相矛盾）
+3. 检查是否符合该系统常见病的报告规范
+仅输出 JSON 数组，每条含 error_type/location/severity/confidence/rationale；无问题输出 []。
+error_type 允许：R8-TYPO / R19-HOMOPHONE / R5-CONSISTENCY / R17-PERREGION / R12-SENTENCE / L1-OTHER。""",
+)
+
+
+def build_qc_prompt_ft(report_text: str, max_report_len: int = 16000) -> tuple:
+    """微调模型专用：与训练分布对齐的简洁 prompt（无 taxonomy / 无 few-shot）。"""
+    if len(report_text) > max_report_len:
+        report_text = report_text[:max_report_len] + "\n...[报告过长，已截断]..."
+    return FT_SYSTEM_PROMPTS[0], report_text
+
 
 def build_qc_prompt(report_text: str, meta: Optional[dict] = None,
                     rag_contexts: Optional[List[str]] = None,

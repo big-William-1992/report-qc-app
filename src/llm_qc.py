@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from typing import Optional, List, Dict, Any
 
-from llm_client import LLMClient, get_llm_client
-from llm_prompt import build_qc_prompt
+from llm_client import LLMClient, get_llm_client, load_llm_config
+from llm_prompt import build_qc_prompt, build_qc_prompt_ft
 from rag import Retriever, get_retriever
 from llm_fusion import fuse
 
@@ -35,10 +35,18 @@ def run_llm_qc(text: str, meta: Optional[dict] = None, *,
         return {"available": False,
                 "error": "LLM 不可用（如本地 Ollama 未启动），规则结果不受影响。",
                 "findings": []}
-    retriever = retriever or get_retriever(rag_kind)
-    ctx = retriever.retrieve(text, top_k=rag_top_k)
-    system, user = build_qc_prompt(text, meta=meta, rag_contexts=ctx)
-    resp = client.chat(system, user, json_mode=True, temperature=0.1)
+    cfg = config if config is not None else load_llm_config()
+    prompt_mode = (cfg or {}).get("prompt_mode", "full")
+    if prompt_mode == "ft":
+        # 微调模型：与训练分布对齐，跳过 taxonomy/RAG（防幻觉）
+        system, user = build_qc_prompt_ft(text)
+        resp = client.chat(system, user, json_mode=True, temperature=0.1)
+        ctx: list = []
+    else:
+        retriever = retriever or get_retriever(rag_kind)
+        ctx = retriever.retrieve(text, top_k=rag_top_k)
+        system, user = build_qc_prompt(text, meta=meta, rag_contexts=ctx)
+        resp = client.chat(system, user, json_mode=True, temperature=0.1)
     if resp.error:
         return {"available": True, "error": resp.error,
                 "model": resp.model, "findings": []}

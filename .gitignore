@@ -86,3 +86,9 @@ saves/
 
 # WorkBuddy 项目内部数据目录，非本软件产物，禁止入库
 .workbuddy/
+
+# ---------- 微调产物（体积原因不入库） ----------
+# GGUF 合并模型 4GB+ 超 LFS 免费额度，分发走 HuggingFace
+merged/
+# 训练中间 checkpoint 只保留最终 adapters.safetensors
+saves/**/0000*_adapters.safetensors
