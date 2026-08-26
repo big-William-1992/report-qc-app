@@ -93,10 +93,11 @@ class TestActivatedValid(unittest.TestCase):
         私钥缺失(keys/ 仅本地)时跳过正例分支。"""
         sys.path.insert(0, ROOT)
         try:
-            import gen_activation_gui as g
+            import gen_activation_gui as g  # gitignore: 仅本地存在
             return g.sign(self.machine)
-        except FileNotFoundError:
-            self.skipTest("发卡私钥不在本机, 跳过正例")
+        except (FileNotFoundError, ImportError):
+            # CI/克隆环境无私钥或无发卡工具 → 正例跳过, 负例照常覆盖
+            self.skipTest("发卡私钥/工具不在本机, 跳过正例")
         return None
 
     def test_not_activated_false(self):
