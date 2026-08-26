@@ -547,7 +547,35 @@ jobs:
           if not ok:
               print("::error::exe 启动后后端未就绪（依赖缺失/崩溃/端口未监听）")
               raise SystemExit(1)
-          print("EXE_LAUNCH_E2E_OK")
+
+          # ── 质控路径端到端冒烟 (2026-08-25 审计补盲) ──────────────────
+          # health 只证明 server 起来了; 此处真实触发一次质控, 验证
+          # engine 包全部子模块在冻结产物中完整可加载 + 规则链路可跑。
+          # 认证: 全新数据目录零账号 -> require_emp_local 的 "local" 兜底;
+          # 授权: 首次运行进入试用期 -> require_license_active 通过。
+          qc_ok = False
+          try:
+              probe_body = json.dumps({
+                  "report": "患者男，56岁。检查部位：胸部。\n"
+                            "检查所见：右肺上叶见一姐姐，边界清。\n"
+                            "诊断印象：左肺上叶结节，建议定期随访。",
+                  "meta": {"applied_site": "胸部"},
+                  "auto_fix": False,
+              }).encode("utf-8")
+              req = urllib.request.Request(
+                  "http://127.0.0.1:8500/api/v1/qc/check", data=probe_body,
+                  headers={"Content-Type": "application/json"}, method="POST")
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  rd = json.loads(r.read().decode("utf-8"))
+              qc_ok = bool(rd.get("ok"))
+              findings_n = len((rd.get("data") or {}).get("findings") or [])
+              print(f"QC SMOKE: ok={qc_ok}, findings={findings_n}")
+          except Exception as e:
+              print(f"  qc smoke error: {type(e).__name__}: {e}")
+
+          if not qc_ok:
+              print("::error::exe 内质控引擎不可用(engine 子模块缺失或规则链路异常)")
+              raise SystemExit(1)
           PY
 
   # ---- 自动更新端到端实测：latest Release 发布后，用真实的 Windows 安装器跑完整更新 ----
