@@ -62,14 +62,13 @@ _PRESERVE_DIRS = ["logs"]
 
 
 def app_dir():
-    """应用根目录。
+    """应用安装根目录（统一由 paths.install_root 解析）。
 
     - 冻结（PyInstaller）时：exe 所在目录（报告质控软件.exe + _internal/）。
-    - 源码运行时：src/auto_updater.py 的上两级。
+    - 源码运行时：项目根（src/auto_updater.py 的上两级）。
     """
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(os.path.abspath(sys.executable))
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    import paths
+    return paths.install_root()
 
 
 def update_cache_dir():

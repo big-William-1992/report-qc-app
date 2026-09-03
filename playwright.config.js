@@ -1,8 +1,9 @@
 // @ts-check
 const { defineConfig } = require('@playwright/test');
 
-// 本地 uvicorn 启动命令（托管 venv 提供完整依赖）
-const PY = process.env.QC_PY || '/Users/xiejun/.workbuddy/binaries/python/envs/default/bin/python3';
+// 本地 uvicorn 启动命令（托管 venv 提供完整依赖；QC_PY 环境变量可覆盖）
+const { homedir } = require('os');
+const PY = process.env.QC_PY || require('path').join(homedir(), '.workbuddy/binaries/python/envs/default/bin/python3');
 // E2E 独立数据目录（避免污染本地样本库/账号）；每次启动前清理确保"首个账号"免鉴权
 const E2E_APPDATA = '/tmp/qc_e2e_appdata';
 

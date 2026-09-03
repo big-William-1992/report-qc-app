@@ -143,7 +143,7 @@
       </div>
       <div class="nav-cell" data-page="ris" onclick="switchPage('ris',this)">
         <span class="nav-cell-ico">🔗</span>
-        <span class="nav-cell-label">RIS 直连</span>
+        <span class="nav-cell-label">数据接入</span>
       </div>
       <div class="nav-cell" data-page="samples" onclick="switchPage('samples',this)">
         <span class="nav-cell-ico">📦</span>
@@ -569,34 +569,49 @@
             </div>
             <div class="ris-progress" id="risProgress"><div class="ris-progress-fill"></div></div>
 
-            <!-- P0 主动轮询质检：后台定时拉取新报告 → 自动质控 → 入库 + 进队列 -->
+            <!-- PACS 推送配置：替代传统轮询，由院内系统主动推送报告 -->
             <div style="margin-top:18px;border-top:1px dashed var(--border-color);padding-top:14px;">
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-                <b style="font-size:13px;">⏰ 主动轮询质检（发现即质控）</b>
-                <span class="conn-status" id="pollStatus"><span class="led"></span> 未知</span>
+                <b style="font-size:13px;">📨 PACS 推送接收（推荐）</b>
+                <span class="conn-status connected" id="pushStatus"><span class="led"></span> 就绪</span>
               </div>
-              <div class="resp-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
-                <label class="switch-row" title="开启后按下方间隔自动拉取 RIS 新报告并质控入库">
-                  <input type="checkbox" id="pollEnabled" onchange="savePollConfig()" /> <span>启用轮询</span>
-                </label>
-                <div class="form-group" style="margin:0;">
-                  <label>间隔（分钟）</label>
-                  <input id="pollInterval" type="number" min="5" max="1440" value="30" style="width:100%;"
-                         onchange="savePollConfig()" title="5~1440 分钟" />
+              <div style="font-size:13px;color:var(--text-secondary);line-height:1.8;">
+                <p>院内 PACS/RIS 系统通过 HTTP POST 主动推送报告到本服务，替代传统数据库轮询。</p>
+                <div style="background:var(--bg-secondary);padding:12px 16px;border-radius:8px;margin:10px 0;font-family:monospace;font-size:12px;">
+                  <div><b>端点地址：</b><code style="color:var(--accent);">POST /api/v1/push/report</code></div>
+                  <div><b>鉴权方式：</b><code>X-API-Key: &lt;服务端配置的 PUSH_API_KEY&gt;</code></div>
+                  <div><b>支持格式：</b>JSON（<code>application/json</code>）或 XML（<code>application/xml</code>）</div>
                 </div>
-                <div class="form-group" style="margin:0;">
-                  <label>每次拉取上限</label>
-                  <input id="pollLimit" type="number" min="5" max="200" value="50" style="width:100%;"
-                         onchange="savePollConfig()" title="5~200 条" />
-                </div>
+                <details style="margin-top:8px;">
+                  <summary style="cursor:pointer;font-weight:600;font-size:12px;">📋 JSON 请求示例</summary>
+                  <pre style="background:var(--bg-secondary);padding:12px;border-radius:6px;overflow-x:auto;font-size:11px;margin-top:6px;line-height:1.5;">{
+  "report_text": "检查所见：双肺纹理清晰，未见实质性病变。\\n诊断印象：胸部 CT 未见明显异常。",
+  "patient": "张三",
+  "gender": "男",
+  "age": "45",
+  "modality": "CT",
+  "applied_site": "胸部",
+  "exam_id": "202608210001",
+  "exam_date": "2026-08-21"
+}</pre>
+                </details>
+                <details style="margin-top:6px;">
+                  <summary style="cursor:pointer;font-weight:600;font-size:12px;">📋 XML 请求示例</summary>
+                  <pre style="background:var(--bg-secondary);padding:12px;border-radius:6px;overflow-x:auto;font-size:11px;margin-top:6px;line-height:1.5;">&lt;Report&gt;
+  &lt;report_text&gt;检查所见：双肺纹理清晰，未见实质性病变。\n诊断印象：胸部 CT 未见明显异常。&lt;/report_text&gt;
+  &lt;patient&gt;张三&lt;/patient&gt;
+  &lt;gender&gt;男&lt;/gender&gt;
+  &lt;age&gt;45&lt;/age&gt;
+  &lt;modality&gt;CT&lt;/modality&gt;
+  &lt;applied_site&gt;胸部&lt;/applied_site&gt;
+  &lt;exam_id&gt;202608210001&lt;/exam_id&gt;
+  &lt;exam_date&gt;2026-08-21&lt;/exam_date&gt;
+&lt;/Report&gt;</pre>
+                </details>
               </div>
-              <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;align-items:center;">
-                <label class="switch-row"><input type="checkbox" id="pollAutoQc" onchange="savePollConfig()" /> <span>拉取后自动质控入库</span></label>
-                <label class="switch-row"><input type="checkbox" id="pollAutoEnqueue" onchange="savePollConfig()" /> <span>同时进待质控队列</span></label>
-                <div style="flex:1"></div>
-                <button class="btn btn-outline btn-sm" onclick="runPollNow()" title="立即触发一次轮询（无需等待）">⚡ 立即轮询</button>
+              <div id="pushMeta" style="margin-top:10px;font-size:12px;color:var(--text-muted);">
+                配置方式：在服务端环境变量中设置 <code style="background:var(--bg-secondary);padding:1px 5px;border-radius:3px;">PUSH_API_KEY</code>，院内系统调用上述端点推送报告即可。
               </div>
-              <div id="pollMeta" style="margin-top:10px;font-size:12px;color:var(--text-muted);"></div>
             </div>
           </div>
         </div>

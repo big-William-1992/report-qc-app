@@ -13,12 +13,9 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # 项目根：默认库落在 <root>/assets/qc.db。
-# 冻结（PyInstaller）后 __file__ 指向 PYZ 合成路径，不能用其回溯，改用 exe 所在目录。
-if getattr(sys, "frozen", False):
-    _PROJECT_ROOT = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(sys.executable)))
-else:
-    _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DEFAULT_DB = "sqlite:///" + os.path.join(_PROJECT_ROOT, "assets", "qc.db")
+# 统一由 paths.bundle_root 解析（frozen 用 _MEIPASS/exe 目录，源码用项目根）。
+import paths
+_DEFAULT_DB = "sqlite:///" + paths.qc_db_path()
 
 DATABASE_URL = os.environ.get("DATABASE_URL", _DEFAULT_DB)
 

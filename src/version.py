@@ -15,8 +15,9 @@ APP_VERSION = "4.3"
 def _load_build_info():
     """读取 CI 打包时写入的构建信息；本地源码运行返回默认值。"""
     here = os.path.dirname(os.path.abspath(__file__))
+    import paths
     for path in (
-        os.path.join(here, "..", "assets", "build_info.json"),
+        paths.build_info_path(),
         os.path.join(here, "build_info.json"),
     ):
         try:

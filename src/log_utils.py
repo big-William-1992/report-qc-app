@@ -28,18 +28,12 @@ _logger = None
 
 # ----------------------------- 路径 -----------------------------
 def user_data_dir():
-    """返回一个用户可写的应用数据目录（跨平台，自动创建）。"""
-    system = platform.system()
-    if system == "Windows":
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    elif system == "Darwin":
-        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
-    else:
-        base = os.environ.get("XDG_DATA_HOME") or \
-            os.path.join(os.path.expanduser("~"), ".local", "share")
-    d = os.path.join(base, APP_NAME)
-    os.makedirs(d, exist_ok=True)
-    return d
+    """返回一个用户可写的日志数据目录（跨平台，自动创建）。
+
+    统一由 paths.log_user_dir 解析（单一事实源）。
+    """
+    import paths
+    return paths.log_user_dir()
 
 
 def log_dir():

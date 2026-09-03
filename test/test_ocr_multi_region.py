@@ -150,10 +150,13 @@ class TestCaptureAndQc(unittest.TestCase):
             side_effect=lambda img: self.ocr_map.get(img, ""))
         self.patcher_avail = mock.patch.object(
             appmod.ocr_provider, "availability", return_value=(True, ""))
+        # _capture_and_qc 实际调用 engine.extract_meta_full（基础信息区结构化解析）——
+        # 拆分后 extract_meta_full 内部调用 engine_meta 的原始 extract_meta，
+        # mock 门面上的 extract_meta 不再拦截，故直接 mock extract_meta_full。
         self.patcher_meta = mock.patch.object(
-            appmod.engine, "extract_meta",
-            side_effect=lambda t: {"patient": "张三", "gender": "男",
-                                   "age": "54", "modality": "胸部"} if "张三" in t else {})
+            appmod.engine, "extract_meta_full",
+            side_effect=lambda *a: {"patient": "张三", "gender": "男",
+                                    "age": "54", "modality": "胸部"} if "张三" in a[0] else {})
         self.patcher_msg = mock.patch.object(appmod.messagebox, "showinfo")
         self.patcher_warn = mock.patch.object(appmod.messagebox, "showwarning")
         self.patcher_err = mock.patch.object(appmod.messagebox, "showerror")

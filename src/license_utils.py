@@ -15,14 +15,10 @@ from tkinter import ttk, messagebox
 import sys
 import subprocess
 
-# 许可证数据文件（支持 PyInstaller 打包后的路径）
-if getattr(sys, 'frozen', False):
-    # 打包后：exe 所在目录下的 assets/license.dat
-    _BASE_DIR = os.path.dirname(sys.executable)
-else:
-    # 源码运行
-    _BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-_LICENSE_FILE = os.path.join(_BASE_DIR, "assets", "license.dat")
+# 许可证数据文件（统一由 paths.py 解析：frozen → exe 同级 assets/license.dat）
+import paths
+_LICENSE_FILE = paths.license_path()
+_BASE_DIR = os.path.dirname(os.path.dirname(_LICENSE_FILE))
 
 # 试用期（天）
 TRIAL_DAYS = 90

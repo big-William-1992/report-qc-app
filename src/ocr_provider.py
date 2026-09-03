@@ -31,6 +31,8 @@ paddlepaddle 框架。换模型前务必确认新 rec 模型内嵌字符字典�
 import os
 import sys
 
+import paths
+
 try:
     import cv2
     import numpy as np
@@ -77,13 +79,11 @@ DET_UNCLIP_RATIO = 2.0
 
 
 def _assets_dir() -> str:
-    if getattr(sys, "frozen", False):
-        return os.path.join(os.path.dirname(sys.executable), "assets")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets")
+    return paths.assets_dir()
 
 
 def _model_dir() -> str:
-    return os.path.join(_assets_dir(), "ocr_models")
+    return paths.ocr_models_dir()
 
 
 _engine = None          # 已初始化的 RapidOCR 实例

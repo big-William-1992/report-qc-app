@@ -34,15 +34,13 @@ def _ensure_db_override() -> None:
 
 
 # ---------------- 会话（当前登录工号，文件持久化，前端预填用） ----------------
-def _assets_dir() -> str:
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    d = os.path.join(base, "assets")
-    os.makedirs(d, exist_ok=True)
-    return d
+# 统一由 paths.py 解析：源码 → assets/session.json；frozen → 用户可写数据目录
+# （此前无 frozen 分支，打包后写 assets 会因只读失败）。
+import paths
 
 
 def _session_path() -> str:
-    return os.path.join(_assets_dir(), "session.json")
+    return paths.session_path()
 
 
 def init_db_safe() -> None:

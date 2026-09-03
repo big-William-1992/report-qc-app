@@ -10,8 +10,8 @@ cd "$(dirname "$0")" || {
 }
 
 # 与「启动星衍质控软件.command」保持一致：优先托管 venv，再回退基础/Homebrew/系统 Python
-VENV="/Users/xiejun/.workbuddy/binaries/python/envs/default/bin/python3"
-BASE="/Users/xiejun/.workbuddy/binaries/python/versions/3.13.12/bin/python3"
+VENV="$HOME/.workbuddy/binaries/python/envs/default/bin/python3"
+BASE="$HOME/.workbuddy/binaries/python/versions/3.13.12/bin/python3"
 HB="/opt/homebrew/bin/python3"
 if [ -x "$VENV" ]; then
   PY="$VENV"

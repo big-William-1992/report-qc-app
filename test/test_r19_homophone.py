@@ -31,9 +31,11 @@ pypinyin = pytest.importorskip("pypinyin", reason="R19 需 pypinyin")
 
 
 def test_r19_homophone_glass_ground_glass():
-    # 磨玻离影 → 磨玻璃影（高频词库锚定，读音同音；R8 词典未覆盖，由 R19 推导）
+    # 磨玻离影 → 磨玻璃影（读音同音）。
+    # 注：磨玻离已按人工审核学入 R8 词典（反馈闭环 y→learn_typo 的既定行为），
+    # 故由 R8 确定性检出；R19 不重复报 R8 已覆盖区间。此处接受任一检出路径。
     f = _run("检查所见：右肺上叶见磨玻离影，大小约8mm。\n诊断印象：建议定期复查。\n")
-    hits = _r19(f)
+    hits = [x for x in f if x.rule_id in ("R19-HOMOPHONE", "R8-TYPO")]
     assert hits, [x.message for x in f]
     assert any("磨玻璃" in h.suggestion for h in hits), [h.message for h in hits]
 
@@ -72,10 +74,11 @@ def test_r19_can_be_disabled():
 
 
 def test_r19_no_false_positive_on_verb_combos():
-    # 滑窗切词误判反例：『肺见』=肺+见(动词) 是合法组合，不应误报为『肺尖』
+    # 滑窗切词误判反例：『肺见』=肺+见(动词) 是合法组合，不应误报为『肺尖』。
+    # 磨玻离已学入 R8（反馈闭环），R8/R19 任一检出均可。
     f = _run("检查所见：右肺见磨玻离影，大小约8mm。\n诊断印象：建议复查。\n")
-    hits = _r19(f)
-    # 只应命中「磨玻离影」，不得把「肺见」误报为「肺尖」
+    hits = [x for x in f if x.rule_id in ("R19-HOMOPHONE", "R8-TYPO")]
+    # 只应命中「磨玻离」，不得把「肺见」误报为「肺尖」
     assert not any("肺见" in h.snippet for h in hits), [h.message for h in hits]
     assert any("磨玻璃" in h.suggestion for h in hits), [h.message for h in hits]
 

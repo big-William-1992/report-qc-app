@@ -14,36 +14,12 @@ import re
 import zipfile
 import io
 
-
-def _appdata_db() -> str:
-    # %APPDATA% 仅 Windows 存在；macOS/Linux 上 expandvars 不展开会得到字面相对路径，
-    # 冻结打包后会把样本库写到奇怪位置。此处按平台取用户可写目录。
-    import platform as _plt
-    if _plt.system() == "Windows":
-        base = os.path.expandvars("%APPDATA%")
-    elif _plt.system() == "Darwin":
-        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
-    else:
-        base = os.path.expanduser("~")
-    return os.path.join(base, "MedicalReportQC", "samples.db")
+import paths
 
 
 def db_path() -> str:
-    if getattr(sys, "frozen", False):
-        # 打包后：样本库放在用户可写目录，避免安装到 Program Files 后只读报错
-        user_db = _appdata_db()
-        if not os.path.exists(user_db):
-            # 首次运行：从 exe 同级 assets/ 复制初始库到用户目录
-            src = os.path.join(os.path.dirname(sys.executable), "assets", "samples.db")
-            try:
-                os.makedirs(os.path.dirname(user_db), exist_ok=True)
-                if os.path.exists(src):
-                    shutil.copyfile(src, user_db)
-            except Exception:
-                return src  # 兜底：仍用只读源
-        return user_db
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, "assets", "samples.db")
+    """样本库路径：统一由 paths.py 解析（frozen 用户可写目录 + 首启复制 / 源码 assets/）。"""
+    return paths.samples_db_path()
 
 
 def init_db(path: str = None) -> None:

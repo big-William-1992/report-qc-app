@@ -8,7 +8,7 @@ const PAGE_TITLES = {
   qc:        { title: '报告质控',     sub: 'AI 驱动的放射报告质量检测引擎' },
   queue:     { title: '待质控队列',   sub: '排队中的报告，逐份质控并入库后自动出队' },
   dashboard: { title: '质控看板',     sub: '数据统计与质量趋势分析' },
-  ris:       { title: 'RIS 直连',     sub: '连接 PACS/RIS 数据库获取报告' },
+  ris:       { title: '数据接入',     sub: 'PACS 推送接收 / 数据库直连' },
   samples:   { title: '样本库',       sub: '已质控报告的存储与管理' },
   rules:     { title: '规则维护',     sub: '查看和管理质控规则' },
 };
@@ -92,7 +92,7 @@ function switchPage(pageName, navEl) {
   if (pageName === 'rules') { loadRules(); loadRulesConfig(true); }
   if (pageName === 'queue') loadQueue();
   if (pageName === 'users') loadUsers();
-  if (pageName === 'ris') loadPollStatus();  // P0：轮询状态
+  if (pageName === 'ris') loadRisPage();  // 数据接入页加载
 }
 
 // ==================== 角色 UI 适配 + 用户管理 ====================
@@ -760,7 +760,7 @@ function renderQueue() {
   if (!box) return;
   if (!QUEUE_ITEMS.length) {
     box.innerHTML = '<div class="empty-state"><div class="empty-icon">📭</div>' +
-      '<p>队列为空。通过「RIS 直连 → 全部加入队列」「框选 OCR 采集」或质控页「📥 加入队列」拉入报告。</p></div>';
+      '<p>队列为空。通过「数据接入 → 全部加入队列」「框选 OCR 采集」或质控页「📥 加入队列」拉入报告。</p></div>';
     return;
   }
   box.innerHTML = QUEUE_ITEMS.map(it => `
@@ -1992,70 +1992,15 @@ async function importSamples() {
   inp.click();
 }
 
-// ==================== RIS 直连 ====================
-// ---------- P0 主动轮询质检（后台定时线程：拉取→质控→入库+入队） ----------
-async function loadPollStatus() {
-  try {
-    const res = await fetch('/api/v1/ris/poll-status');
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.message || '加载失败');
-    const st = data.data || {};
-    const on = !!st.enabled;
-    const stEl = document.getElementById('pollStatus');
-    if (stEl) {
-      stEl.className = 'conn-status ' + (on ? 'connected' : 'disconnected');
-      stEl.innerHTML = `<span class="led"></span> ${on ? '轮询中' : '已关闭'}`;
-    }
-    const cb = document.getElementById('pollEnabled'); if (cb) cb.checked = on;
-    const iv = document.getElementById('pollInterval'); if (iv) iv.value = st.interval_min || 30;
-    const lim = document.getElementById('pollLimit'); if (lim) lim.value = st.limit || 50;
-    const aq = document.getElementById('pollAutoQc'); if (aq) aq.checked = st.auto_qc !== false;
-    const ae = document.getElementById('pollAutoEnqueue'); if (ae) ae.checked = st.auto_enqueue !== false;
-    const meta = document.getElementById('pollMeta');
-    if (meta) {
-      meta.innerHTML = (st.last_run ? `上次运行：${st.last_run} · ` : '') +
-        `上次新增 ${st.last_count || 0} 份 · 已去重指纹 ${st.seen_count || 0}` +
-        (st.last_error ? `<br/><span style="color:#e53e3e;">最近错误：${escapeHtml(st.last_error)}</span>` : '');
-    }
-  } catch (e) { /* 页面可能未加载完成，静默 */ }
-}
-
-async function savePollConfig() {
-  const cb = document.getElementById('pollEnabled');
-  const iv = document.getElementById('pollInterval');
-  const lim = document.getElementById('pollLimit');
-  const aq = document.getElementById('pollAutoQc');
-  const ae = document.getElementById('pollAutoEnqueue');
-  const body = {
-    enabled: cb ? cb.checked : false,
-    interval_min: iv ? parseInt(iv.value) || 30 : 30,
-    limit: lim ? parseInt(lim.value) || 50 : 50,
-    auto_qc: aq ? aq.checked : true,
-    auto_enqueue: ae ? ae.checked : true,
-  };
-  try {
-    const res = await fetch('/api/v1/ris/poll-config', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.message || '保存失败');
-    loadPollStatus();
-    toast('轮询配置已保存' + (body.enabled ? '，轮询已启动' : ''), 'success');
-  } catch (e) { toast('保存轮询配置失败: ' + e.message, 'error'); }
-}
-
-async function runPollNow() {
-  toast('正在执行一次 RIS 轮询...', 'info');
-  try {
-    const res = await fetch('/api/v1/ris/poll-now', { method: 'POST' });
-    const data = await res.json();
-    if (!data.ok) { toast('轮询失败: ' + (data.message || data.detail || ''), 'error'); loadPollStatus(); return; }
-    const r = data.data || {};
-    toast(`轮询完成：新增 ${r.count || 0} 份报告，累计指纹 ${r.total_seen || 0}`, 'success');
-    loadPollStatus();
-    if ((r.count || 0) > 0) { loadQueue(); loadSamples(); loadDashboard(); }
-  } catch (e) { toast('轮询请求失败: ' + e.message, 'error'); }
+// ==================== 数据接入 ====================
+// 数据接入页加载：显示推送配置信息（轮询已移除，改用 PACS 推送模式）
+async function loadRisPage() {
+  // 推送端点在服务端直接可用，无需前端额外加载
+  const pushStatus = document.getElementById('pushStatus');
+  if (pushStatus) {
+    pushStatus.className = 'conn-status connected';
+    pushStatus.innerHTML = '<span class="led"></span> 就绪';
+  }
 }
 
 async function testRisConnection() {
