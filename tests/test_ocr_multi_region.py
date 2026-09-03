@@ -6,7 +6,6 @@ _append_region_qc / _update_region_status），monkeypatch ocr_provider 与
 engine.extract_meta。
 """
 import sys, os, difflib
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import unittest
 from unittest import mock

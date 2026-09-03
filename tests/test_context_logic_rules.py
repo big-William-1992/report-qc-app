@@ -13,7 +13,6 @@ import os, sys
 import unittest
 
 REPO_SRC = os.path.join(os.path.dirname(__file__), "..", "src")
-sys.path.insert(0, REPO_SRC)
 import engine
 from engine import Entity, RuleEngine
 

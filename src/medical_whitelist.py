@@ -427,10 +427,16 @@ def find_suspicious_segments(
                 if sub in _WHITELIST:
                     continue
 
-                # b. 滑窗中每个字符都被白名单多字词覆盖区间覆盖，或是白名单单字 → 合法词组的子部分
+                # b. 滑窗中每个字符都被白名单【≥2字】词覆盖（可跨词，如「膀胱充盈」=
+                #    膀胱|充盈 相邻）或为结构虚词（见/示/余/等/仍/尚，如「盆腔见子」的
+                #    「见」）→ 合法词组的子部分。
+                # 注意：普通单字白名单【不】豁免——「大膀胱充」的 大/充 非结构虚词且
+                #    无 ≥2 字词覆盖，属滑窗碎片仍标记（此前用单字豁免导致「膀胱充盈
+                #    正常」被滑窗切出大量碎片误报）。
+                _struct_single = {"见", "示", "余", "等", "仍", "尚"}
                 all_covered = all(
                     any(cs <= pos < ce for cs, ce in covered)
-                    or text[pos] in _WHITELIST
+                    or text[pos] in _struct_single
                     for pos in range(ss, se)
                 )
                 if all_covered:

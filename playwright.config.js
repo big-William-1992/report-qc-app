@@ -8,7 +8,7 @@ const PY = process.env.QC_PY || require('path').join(homedir(), '.workbuddy/bina
 const E2E_APPDATA = '/tmp/qc_e2e_appdata';
 
 module.exports = defineConfig({
-  testDir: './test/e2e',
+  testDir: './tests/e2e',
   timeout: 60000,
   fullyParallel: false,
   retries: 0,

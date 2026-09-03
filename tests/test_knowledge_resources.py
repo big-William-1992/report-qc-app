@@ -17,7 +17,6 @@ B 类资源是术语/图谱/模板规范（非报告语料），不进入文本�
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import dataset_catalog as dc
 

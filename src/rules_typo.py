@@ -315,8 +315,15 @@ class TypoRulesMixin:
                         hit, cand = _hf_segment_candidates(seg, sensitivity)
                         if hit and cand:
                             best, cat, sim = cand[0]
+                            # 跨词滑窗碎片过滤：窗口内每个字符都被某个 ≥2 字白名单词
+                            # 覆盖（允许跨词，如「左肾」「占位」之间的「肾占」）→ 合法
+                            # 组合边界，跳过。与白名单层 all_covered_mc 语义一致；
+                            # 真错字（「磨玻离」的「磨」不被任何词覆盖）不受影响。
+                            _all_chars_covered = all(
+                                any(cs <= pos < ce for cs, ce in covered)
+                                for pos in range(s, e))
                             if not _in_covered(s, e):
-                                if _inside_covered(s, e, covered):
+                                if _inside_covered(s, e, covered) or _all_chars_covered:
                                     continue
                                 if sim < 0.98:
                                     reason = "形近"

@@ -16,7 +16,6 @@ import sys
 import unittest
 
 REPO_SRC = os.path.join(os.path.dirname(__file__), "..", "src")
-sys.path.insert(0, REPO_SRC)
 
 import numpy as np  # noqa: E402  (真实 numpy，必须早于任何 mock 环境)
 import ocr_provider as O  # noqa: E402

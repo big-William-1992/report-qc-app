@@ -18,7 +18,6 @@ anatomy_lexicon.load_padchest_location_cui_csv() 导入扩充对照表。
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from engine import RuleEngine
 import dataset_catalog as dc
