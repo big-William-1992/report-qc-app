@@ -107,7 +107,7 @@ class MetaRulesMixin:
         if not norm_applied:
             return out
         # 仅扫描报告正文（检查所见 + 诊断印象），排除元信息头部，避免"申请部位"自身被计入
-        secs = self._split_for_r5(text)
+        secs = self._secs(text)
         body = secs["findings"] + "\n" + secs["impression"]
         found_families = set()
         for m in re.finditer(r"|".join(map(re.escape, SITE_NORM.keys())), body):

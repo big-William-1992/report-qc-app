@@ -174,6 +174,16 @@ def ocr_models_dir() -> str:
     return os.path.join(assets_dir(), "ocr_models")
 
 
+def test_reports_path() -> str:
+    """测试报告生成器产物（data/processed/test_reports.json，不入库）。
+
+    统一消费/生成路径：generate_test_reports.py 生成到此，
+    medical_whitelist 的 bigram 频率表也从这里读（此前生成器写 src/data/、
+    消费者读 data/ 两侧不一致，靠手工拷贝才可用）。
+    """
+    return os.path.join(bundle_root(), "data", "processed", "test_reports.json")
+
+
 def build_info_path() -> str:
     """CI 打包时写入的构建信息文件。"""
     return os.path.join(assets_dir(), "build_info.json")

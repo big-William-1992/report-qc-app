@@ -153,6 +153,11 @@
         <span class="nav-cell-ico">👥</span>
         <span class="nav-cell-label">用户管理</span>
       </div>
+      <div class="nav-cell" data-page="feedback" onclick="switchPage('feedback',this)">
+        <span class="nav-cell-ico">🔍</span>
+        <span class="nav-cell-label" id="navFeedbackLabel">反馈审核</span>
+        <span class="nav-badge" id="navFeedbackBadge" style="display:none">0</span>
+      </div>
       <div class="nav-cell" data-page="rules" onclick="switchPage('rules',this)">
         <span class="nav-cell-ico">⚙️</span>
         <span class="nav-cell-label">规则维护</span>
@@ -693,6 +698,29 @@
     </section>
 
     <!-- ========== 页面5：规则维护 ========== -->
+    <section class="page" id="page-feedback">
+      <div class="card">
+        <div class="card-header">
+          <h3><span class="icon">🔍</span> R19 反馈审核（检测 → 审核 → 词表更新闭环）</h3>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span id="fbStats" style="font-size:12px;color:var(--text-muted);margin-right:4px;">—</span>
+            <button class="btn btn-outline btn-sm" onclick="loadFeedback()">↺ 刷新</button>
+            <button class="btn btn-primary btn-sm" onclick="applyFeedbackDelta(false)" id="fbApplyBtn" style="display:none">✅ 应用白名单增量</button>
+          </div>
+        </div>
+        <div class="card-body table-scroll" style="padding:0;">
+          <table class="data-table">
+            <thead><tr><th>规则</th><th>可疑片段</th><th>建议修正</th><th>报告上下文</th><th>时间</th><th>操作</th></tr></thead>
+            <tbody id="feedbackBody">
+              <tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px;">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card-body" style="border-top:1px solid var(--border);font-size:12px;color:var(--text-muted);">
+          <b>操作说明：</b>「✓ 真错字」将该词学入 R8 错字表（今后确定性检出）；「✗ 误报」记入白名单增量，点上方「应用白名单增量」生效；「? 跳过」仅记录。
+        </div>
+      </div>
+    </section>
     <section class="page" id="page-rules">
       <div class="card">
         <div class="card-header">

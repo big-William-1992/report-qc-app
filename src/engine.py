@@ -94,7 +94,7 @@ class RuleEngine(MetaRulesMixin, TypoRulesMixin, TemplateRulesMixin,
                 + self._r18_region_coverage(text, meta)
                 + self._r20_template_completeness(text, meta)
                 + self._r21_gender_site(text, meta)
-                + self._r22_lesion_size(text, self._split_for_r5(text))
+                + self._r22_lesion_size(text, secs)
                 + (self._r19_homophone(text)
                    if self.rules_config.get("enable_r19", True) else [])
                 + (self._r16_followup_timeframe(text)
@@ -158,6 +158,17 @@ class RuleEngine(MetaRulesMixin, TypoRulesMixin, TemplateRulesMixin,
             s, e, correct = fx["start"], fx["end"], fx["correct"]
             fixed = fixed[:s] + correct + fixed[e:]
         return fixed, len(fixes), manual, fixes
+
+    def _secs(self, text: str) -> dict:
+        """分段结果惰性缓存：run() 与各规则共享同一份 secs，避免每规则重复计算。
+
+        缓存按文本对象身份（is）失效——run() 全程传同一 text 对象；
+        外部直接调用单个规则方法时自动重算，无陈旧风险。
+        """
+        if getattr(self, "_secs_text", None) is not text:
+            self._secs_text = text
+            self._secs_val = self._split_for_r5(text)
+        return self._secs_val
 
     @staticmethod
     def _split_for_r5(text: str) -> dict:

@@ -47,7 +47,7 @@ class LesionRulesMixin:
     # R5 描述-结论矛盾（按器官族核对：描述段某器官族出现阳性征，印象段未就该器官族给出对应结论）
     def _r5_consistency(self, text, ents) -> List[Finding]:
         out = []
-        secs = self._split_for_r5(text)
+        secs = self._secs(text)
         f_txt, i_txt = secs["findings"], secs["impression"]
         f0 = secs.get("findings_start", 0)
         # 按"规范器官族"归组：描述段出现阳性征的器官族
@@ -115,7 +115,7 @@ class LesionRulesMixin:
             #   结论段  → 仅 诊断印象/影像诊断/结论 段
             #   同一句  → 同一句内 A 与 B 同时出现才算冲突（"同一行前后错误"）
             #   描述vs结论 → A 出现在描述段 且 B 出现在结论段（跨段上下文错误）
-            secs = self._split_for_r5(text)
+            secs = self._secs(text)
             f_txt, i_txt = secs["findings"], secs["impression"]
             note = rule.get("note", "")
             hit = False
@@ -157,7 +157,7 @@ class LesionRulesMixin:
     # R12 同一句话逻辑错误（句级自相矛盾）
     def _r12_sentence(self, text, ents) -> List[Finding]:
         out = []
-        secs = self._split_for_r5(text)
+        secs = self._secs(text)
         f_txt = secs["findings"]
         if not f_txt:
             return out
@@ -232,7 +232,7 @@ class LesionRulesMixin:
     # R15 上下文逻辑错误（同一描述段内跨句一致性）
     def _r15_internal(self, text) -> List[Finding]:
         out = []
-        secs = self._split_for_r5(text)
+        secs = self._secs(text)
         f_txt = secs["findings"]
         if not f_txt:
             return out

@@ -371,7 +371,7 @@ class RegionRulesMixin:
         regions = _extract_regions(applied)
         if not regions:
             return out
-        secs = self._split_for_r5(text)
+        secs = self._secs(text)
         f_txt = secs["findings"]
         i_txt = secs["impression"]
         # 防误报：描述段整体为正常声明（含『未见异常』等且不带阳性征）→ 视为各区域已声明

@@ -140,7 +140,7 @@ class TemplateRulesMixin:
         req = REPORT_TYPE_REQUIREMENTS[matched]
         elems = req["要素"]
         # 描述段+结论段合并检查（必查要素可能分布在两段）
-        secs = self._split_for_r5(text)
+        secs = self._secs(text)
         combined = secs["findings"] + "\n" + secs["impression"]
         # 数值/量词噪声过滤：单纯出现『肝』但实际是『肝区不适』之类不适主体？不做过度过滤，
         # 以子串匹配为准，但排除『未见异常』整体声明对单要素的豁免——正常报告也应点名结构。

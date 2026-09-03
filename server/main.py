@@ -138,6 +138,7 @@ if _os.path.isdir(_STATIC_DIR):
     app.mount("/static", _NoCacheStaticFiles(directory=_STATIC_DIR), name="static")
 
 # ---- 注册路由子包 ----
+from server.routes import route_feedback
 from server.routes import route_qc
 from server.routes import route_ocr
 from server.routes import route_ris
@@ -149,6 +150,7 @@ from server.routes import route_screen
 from server.routes import route_settings
 from server.routes import route_push
 
+app.include_router(route_feedback.router)
 app.include_router(route_qc.router)
 app.include_router(route_ocr.router)
 app.include_router(route_ris.router)

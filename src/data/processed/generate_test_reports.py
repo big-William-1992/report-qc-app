@@ -12,6 +12,14 @@
   - OCR 类：空格插入、偏旁丢失、形近识别
 """
 from __future__ import annotations
+import os
+import sys
+
+# 确保能导入 paths（独立脚本不经 pytest）
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
 import random
 import itertools
 from typing import List, Tuple, Dict, Any
@@ -1115,7 +1123,8 @@ if __name__ == "__main__":
         else:
             d["id"] = f"normal_{i:03d}"
 
-    out_path = os.path.join(os.path.dirname(__file__), "test_reports.json")
+    import paths
+    out_path = paths.test_reports_path()
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(dataset, f, indent=2, ensure_ascii=False)
 

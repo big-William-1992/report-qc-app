@@ -31,8 +31,9 @@ from typing import List, Tuple, Set
 
 logger = logging.getLogger(__name__)
 
-# Path to test reports for bigram frequency analysis
-_TEST_REPORTS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "processed", "test_reports.json")
+# Path to test reports for bigram frequency analysis（统一由 paths 解析）
+import paths as _paths
+_TEST_REPORTS_PATH = _paths.test_reports_path()
 
 
 def _build_common_bigrams() -> Set[str]:
@@ -375,6 +376,29 @@ def covered_spans(text: str) -> List[Tuple[int, int]]:
     return sorted(result)
 
 
+def _covered_positions(text: str) -> List[bool]:
+    """返回每个字符位置是否被【某个 ≥2 字白名单词】覆盖（允许重叠匹配）。
+
+    与 covered_spans 的区别：covered_spans 用单一交替正则 finditer（非重叠），
+    长词会抢占短词区间，导致跨词边界字符（如「小脑及脑干未见」中「干」同时
+    属于「脑干」）漏覆盖。本函数逐词独立 finditer 再并集，覆盖判定更完整，
+    用于滑窗「每字符属于某合法词即豁免」的判定。
+    """
+    covered = [False] * len(text)
+    for w in _WHITELIST_SORTED:
+        if len(w) < 2:
+            continue
+        start = 0
+        while True:
+            i = text.find(w, start)
+            if i < 0:
+                break
+            for pos in range(i, i + len(w)):
+                covered[pos] = True
+            start = i + 1
+    return covered
+
+
 def _is_covered_by_whitelist(text: str, start: int, end: int) -> bool:
     """检查 [start, end) 是否被白名单中的某个词完全覆盖"""
     for s, e in covered_spans(text):
@@ -404,8 +428,9 @@ def find_suspicious_segments(
     if not text:
         return []
 
-    # 白名单覆盖区间
+    # 白名单覆盖区间（非重叠，供 c2 二次确认）与重叠覆盖位图（供 b 每字符豁免）
     covered = covered_spans(text)
+    _pos_covered = _covered_positions(text)
 
     # 提取所有中文连续段（>= min_len）
     cjk = re.compile(r"[一-鿿]{" + str(min_len) + r",}")
@@ -427,16 +452,28 @@ def find_suspicious_segments(
                 if sub in _WHITELIST:
                     continue
 
-                # b. 滑窗中每个字符都被白名单【≥2字】词覆盖（可跨词，如「膀胱充盈」=
-                #    膀胱|充盈 相邻）或为结构虚词（见/示/余/等/仍/尚，如「盆腔见子」的
-                #    「见」）→ 合法词组的子部分。
+                # b. 滑窗中每个字符都被白名单【≥2字】词覆盖（允许重叠，如「小脑及
+                #    脑干未见」中「干」同时属于「脑干」）或为结构虚词（见/示/余/等/
+                #    仍/尚，如「盆腔见子」的「见」）→ 合法词组的子部分。
                 # 注意：普通单字白名单【不】豁免——「大膀胱充」的 大/充 非结构虚词且
                 #    无 ≥2 字词覆盖，属滑窗碎片仍标记（此前用单字豁免导致「膀胱充盈
                 #    正常」被滑窗切出大量碎片误报）。
-                _struct_single = {"见", "示", "余", "等", "仍", "尚"}
+                _struct_single = {"见", "示", "余", "等", "仍", "尚",
+                                 "无", "未", "及", "与", "或", "并", "已",
+                                 "之", "其", "该", "此", "多", "少",
+                                 "约", "内", "外", "上", "下", "前", "后",
+                                 "左", "右", "中", "时", "间", "年", "月",
+                                 "日", "内径", "大小", "正常",
+                                 # 单字后缀量词/结构字（covered_spans 仅覆盖 ≥2 字词，
+                                 # 这些单字在 BI-RADS 4类/胸壁/腔隙灶/异常信号 等边界出现）
+                                 "类", "级", "型", "度", "性", "灶", "壁", "管",
+                                 "影", "信", "数", "腔", "位", "层", "区", "域",
+                                 "见", "于", "为", "有", "在", "伴", "可",
+                                 # 数字/量词（见一占位灶/约8mm/两枚/三个）
+                                 "一", "两", "三", "四", "五", "六", "七",
+                                 "八", "九", "十", "枚", "个", "每"}
                 all_covered = all(
-                    any(cs <= pos < ce for cs, ce in covered)
-                    or text[pos] in _struct_single
+                    _pos_covered[pos] or text[pos] in _struct_single
                     for pos in range(ss, se)
                 )
                 if all_covered:
