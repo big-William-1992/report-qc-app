@@ -2963,6 +2963,7 @@ function enterApp(status) {
   loadSettings();
   refreshUserUI();
   updateTrialBanner(LICENSE_STATUS);
+  refreshFeedbackBadge();  // 登录后立即刷新反馈待审徽章
 }
 
 function updateTrialBanner(status) {
@@ -3241,10 +3242,4 @@ async function refreshFeedbackBadge() {
     const badge = document.getElementById('navFeedbackBadge');
     if (badge) { badge.textContent = n; badge.style.display = n > 0 ? '' : 'none'; }
   } catch (e) { /* 静默 */ }
-}
-
-// 登录后与应用内轮询都刷新反馈徽章
-if (typeof initPolling === 'function') {
-  const _origPoll = window.initPolling || (() => {});
-  window.initPolling = function () { _origPoll(); setInterval(refreshFeedbackBadge, 60000); };
 }

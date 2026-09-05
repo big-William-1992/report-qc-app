@@ -204,7 +204,8 @@ if os.environ.get("AU_NO_LAUNCH") != "1":
     if os.path.exists(cmd):
         subprocess.Popen(["open", cmd])
     else:
-        subprocess.Popen([sys.executable, os.path.join(APP_DIR, "src", "app.py")],
+        # 兜底：启动 WebView 桌面壳（src/app.py 为退役 Tkinter 版，不再使用）
+        subprocess.Popen([sys.executable, os.path.join(APP_DIR, "desktop_app.py")],
                          cwd=APP_DIR)
 
 # 清理
