@@ -94,8 +94,6 @@ class LesionRulesMixin:
                 f"影像描述段内出现男女专属器官混用{g}（同一患者不可能同时存在）", "", (-1, -1)))
         return out
 
-    # R8 同音/近音错别字（多由语音录入产生：词典由 rules_config.json 维护，可在 GUI 增删）
-
     # R9 用户自定义互斥冲突（由 rules_config.json 维护：词A 与 词B 不应在同一范围内共存）
     def _r9_conflict(self, text) -> List[Finding]:
         out = []
@@ -152,8 +150,6 @@ class LesionRulesMixin:
                 out.append(Finding("R9-CONFLICT", "自定义互斥冲突", sev, msg, a, (-1, -1)))
         return out
 
-    # R10 结构化报告模板合规（必填段 + 随访建议；要点由 rules_config.json 的 template 维护）
-
     # R12 同一句话逻辑错误（句级自相矛盾）
     def _r12_sentence(self, text, ents) -> List[Finding]:
         out = []
@@ -179,8 +175,6 @@ class LesionRulesMixin:
                     f"同一句话内既称『未见异常』又描述阳性征（自相矛盾）：『{sent[:30]}…』",
                     sent[:30], (-1, -1)))
         return out
-
-    # R14 前后文逻辑错误（描述段 ↔ 结论段 一致性）
 
     # R14 前后文逻辑错误（描述段 ↔ 结论段 一致性）
     def _r14_cross(self, text, secs) -> List[Finding]:
@@ -226,8 +220,6 @@ class LesionRulesMixin:
                         "", (-1, -1)))
                     break
         return out
-
-    # R15 上下文逻辑错误（同一描述段内跨句一致性）
 
     # R15 上下文逻辑错误（同一描述段内跨句一致性）
     def _r15_internal(self, text) -> List[Finding]:
@@ -278,8 +270,6 @@ class LesionRulesMixin:
                     "", (-1, -1)))
                 break
         return out
-
-    # R17 逐部位精确比对（描述段 ↔ 结论段，按 器官 + 侧别 精确到同一部位）
 
     # R22 病灶尺寸-术语一致性：称『结节』但测量值 >3cm（应称肿块），或
     # 称『肿块』但测量值 <1cm（应称结节）。临床上结节≤3cm、肿块>3cm 是
@@ -337,7 +327,3 @@ class LesionRulesMixin:
                     m.group(0), (-1, -1)))
         return out
 
-    # R20 模板完整性校验：按检查类型（从登记部位/检查方式推断）校验必查要素缺项。
-    # 与 R18 互补：R18 查『区域是否有任意器官』，R20 查『该检查类型必查要素是否齐』。
-    # 防误报策略：报告头/描述段整体"未见异常"声明不豁免（与 R18 不同）——
-    # 胸部 CT 即使全部正常也应点名肺纹理/纵隔/胸膜等，故缺项仍提示（medium 级）。

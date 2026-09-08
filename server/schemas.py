@@ -14,24 +14,34 @@ class FindingOut(BaseModel):
     span: list = [-1, -1]
     suggestion: str = ""
 class CheckReq(BaseModel):
-    report: str
+    report: str = Field(..., min_length=1, max_length=50000)
     meta: Dict[str, str] = {}
     auto_fix: bool = False
 class BatchItem(BaseModel):
-    report: str
+    report: str = Field(..., min_length=1, max_length=50000)
     meta: Dict[str, str] = {}
     auto_fix: bool = False
 class BatchReq(BaseModel):
-    items: List[BatchItem]
+    items: List[BatchItem] = Field(..., max_length=50)
 class AccountCreate(BaseModel):
     emp_id: str
     password: str
     name: str = ""
+class RegisterReq(BaseModel):
+    """登录页自助注册：始终创建 doctor 角色（防滥用，绝不授予 admin）。"""
+    emp_id: str
+    password: str
+    name: str = ""
+class ChangePwdReq(BaseModel):
+    """登录页自助修改密码：需校验旧密码。"""
+    emp_id: str
+    old_password: str
+    new_password: str
 class LoginReq(BaseModel):
     emp_id: str
     password: str
 class SampleCreate(BaseModel):
-    report: str
+    report: str = Field(..., min_length=1, max_length=100000)
     meta: Dict[str, str] = {}
     findings: List[dict] = []
     score: Dict[str, Any] = {}

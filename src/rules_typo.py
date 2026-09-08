@@ -21,9 +21,6 @@ _engine_logger = _engine_logging.getLogger(__name__)
 
 # 高频正确词组库 + 读音相似推导（R19）：白名单锚定 → 读音相似标记疑似错字。
 # 依赖 pypinyin（运行时可选），未安装时 R19 自动降级为空（不影响既有 R8 词典）。
-import logging as _engine_logging
-_engine_logger = _engine_logging.getLogger(__name__)
-
 try:
     from highfreq_lexicon import (
         segment_candidates as _hf_segment_candidates,
@@ -181,6 +178,10 @@ class TypoRulesMixin:
             if wrong == typo_map.get(wrong):
                 continue  # 自映射无意义项
             correct = typo_map[wrong]
+            # 防御性跳过：错词是正确词的前缀/子串（如「未见明」⊂「未见明显」），
+            # 匹配正确文本会产生「未见明显显」式重复，且无法区分正确/错误上下文。
+            if len(wrong) < len(correct) and wrong in correct:
+                continue
             for m in re.finditer(re.escape(wrong), text):
                 s, e = m.start(), m.end()
                 # 跳过已被更长错词覆盖的区间
@@ -192,12 +193,6 @@ class TypoRulesMixin:
                     wrong, (s, e), correct))
         return out
 
-    # R19 读音相似错字（高频词组锚定 + pypinyin 自动推导）
-    # 思路：放射科高频正确词组作为「白名单锚定」。对文本中每个中文词组片段，
-    # 若其读音与某高频正确词完全相同（同音异字，语音录入最典型）或高度相似，
-    # 且该片段本身不是已知正确词，则标记为「可能错误」，给出最可能的正确词。
-    # 与 R8 的区别：R8 靠人工维护的错词表；R19 靠「高频词库 + 读音」自动推导，
-    # 能发现词表外的、读音相近但写法错误的词组。pypinyin 不可用时本规则静默关闭。
     # R19 读音/白名单双重错字检测
     # 第一层：医学白名单域外检测 — 不在任何医学词表中的中文片段直接标记
     # 第二层：pypinyin 读音相似检测 — 白名单内的词用读音比对补漏
@@ -205,18 +200,6 @@ class TypoRulesMixin:
     # 设计思路：医学文书有强烈的逻辑性和规范性，绝大多数词组都在词表中。
     # 「不明显」在白名单中 → 正确；「部明显」不在任何医学词表中 → 大概率错别字。
 
-    # R19 读音相似错字（高频词组锚定 + pypinyin 自动推导）
-    # 思路：放射科高频正确词组作为「白名单锚定」。对文本中每个中文词组片段，
-    # 若其读音与某高频正确词完全相同（同音异字，语音录入最典型）或高度相似，
-    # 且该片段本身不是已知正确词，则标记为「可能错误」，给出最可能的正确词。
-    # 与 R8 的区别：R8 靠人工维护的错词表；R19 靠「高频词库 + 读音」自动推导，
-    # 能发现词表外的、读音相近但写法错误的词组。pypinyin 不可用时本规则静默关闭。
-    # R19 读音/白名单双重错字检测
-    # 第一层：医学白名单域外检测 — 不在任何医学词表中的中文片段直接标记
-    # 第二层：pypinyin 读音相似检测 — 白名单内的词用读音比对补漏
-    #
-    # 设计思路：医学文书有强烈的逻辑性和规范性，绝大多数词组都在词表中。
-    # 「不明显」在白名单中 → 正确；「部明显」不在任何医学词表中 → 大概率错别字。
     def _r19_homophone(self, text) -> List[Finding]:
         out = []
         if not text:
@@ -345,5 +328,3 @@ class TypoRulesMixin:
             out.append(f)
         out.extend(hp_findings)
         return out
-
-    # R9 用户自定义互斥冲突（由 rules_config.json 维护：词A 与 词B 不应在同一范围内共存）

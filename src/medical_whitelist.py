@@ -239,6 +239,15 @@ def _collect_frequent_fp_terms() -> Set[str]:
     return _load_json_lexicon("frequent_fp_terms")
 
 
+def _collect_common_words() -> Set[str]:
+    """放射报告高频通用词（外部化：assets/lexicons/common_words.json）。
+
+    补充医学专有词表之外的中文常用词（自然/皮质/层次/集合等），
+    减少滑窗碎片因单个常用词缺失导致的误报。
+    """
+    return _load_json_lexicon("common_words")
+
+
 
 def build_whitelist() -> Set[str]:
     """从所有词源构建统一医学词组白名单"""
@@ -252,6 +261,7 @@ def build_whitelist() -> Set[str]:
     words |= _collect_common_particles()
     words |= _collect_from_en_zh_glossary()
     words |= _collect_frequent_fp_terms()
+    words |= _collect_common_words()
 
     # 过滤掉超长词组（>8字几乎不会是错别字）
     words = {w for w in words if len(w) <= 8}

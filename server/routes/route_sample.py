@@ -3,11 +3,11 @@ route_sample.py — 星衍放射质控 API 路由
 
 """
 
-from fastapi import APIRouter, Header, HTTPException, UploadFile, File, Depends, Query
+from fastapi import APIRouter, Header, HTTPException, UploadFile, File, Depends, Query, Request
 from fastapi.responses import JSONResponse, FileResponse
 from typing import Optional, Dict, Any, List
 from server.schemas import SampleCreate, SampleExportReq, SampleReportExportReq, SampleImportReq
-from server.deps import _envelope, _run_qc, _eng_scores, _worst_sev, require_emp_local, require_emp
+from server.deps import _envelope, _run_qc, _eng_scores, _worst_sev, require_emp_local, require_emp, log_audit
 import engine, samplelib, accounts, json, os
 from datetime import datetime, timedelta
 from version import APP_VERSION
@@ -15,7 +15,8 @@ from version import APP_VERSION
 router = APIRouter(tags=['samples'])
 
 @router.post("/api/v1/samples")
-def sample_create(req: SampleCreate, emp: str = Depends(require_emp_local)):
+def sample_create(req: SampleCreate, request: Request,
+                  emp: str = Depends(require_emp_local)):
     user_id = (req.user_id or emp).strip()
     raw_findings = list(req.findings) if req.findings else []
     # 入库即质控：未显式提供 findings 时，自动跑引擎生成发现与评分
@@ -43,6 +44,8 @@ def sample_create(req: SampleCreate, emp: str = Depends(require_emp_local)):
     sid = samplelib.save_sample(
         req.report, req.meta, findings, score,
         anonymize=req.anonymize, user_id=user_id)
+    log_audit(emp, "sample_created", {"id": sid, "user_id": user_id},
+              request.client.host if request.client else "")
     return _envelope(True, "OK", {"id": sid})
 
 
@@ -108,7 +111,7 @@ def sample_get(sid: int, emp: str = Depends(require_emp_local)):
 
 
 @router.delete("/api/v1/samples/{sid}")
-def sample_delete(sid: int, emp: str = Depends(require_emp_local)):
+def sample_delete(sid: int, request: Request, emp: str = Depends(require_emp_local)):
     s = samplelib.get_sample(sid)
     if not s:
         raise HTTPException(404, "样本不存在")
@@ -117,15 +120,20 @@ def sample_delete(sid: int, emp: str = Depends(require_emp_local)):
     if s.get("user_id") and emp != "local" and s.get("user_id") != emp:
         raise HTTPException(403, "无权删除他人样本")
     samplelib.delete_sample(sid)
+    log_audit(emp, "sample_deleted", {"id": sid},
+              request.client.host if request.client else "")
     return _envelope(True, "OK", None, "已删除")
 @router.post("/api/v1/samples/export")
-def sample_export(req: SampleExportReq, emp: str = Depends(require_emp_local)):
+def sample_export(req: SampleExportReq, request: Request,
+                   emp: str = Depends(require_emp_local)):
     """导出样本库为 CSV / JSON / DOCX / PDF（修正 Flask 版把输出路径误传为库路径参数的问题）。"""
     try:
         fmt = (req.fmt or "csv").lower()
         if fmt not in ("csv", "json", "docx", "pdf"):
             raise HTTPException(400, "fmt 仅支持 csv/json/docx/pdf")
         result_path = samplelib.export_samples(out_path=req.path or None, fmt=fmt)
+        log_audit(emp, "sample_exported", {"fmt": fmt, "path": result_path},
+                  request.client.host if request.client else "")
         return _envelope(True, "OK", {"path": result_path, "fmt": fmt})
     except HTTPException:
         raise
@@ -164,17 +172,23 @@ def file_download(file: str = Query(...), emp: str = Depends(require_emp_local))
         raise HTTPException(404, "文件不存在或已被清理")
     return FileResponse(full, filename=name)
 @router.post("/api/v1/samples/import")
-def sample_import(req: SampleImportReq, emp: str = Depends(require_emp_local)):
+def sample_import(req: SampleImportReq, request: Request,
+                  emp: str = Depends(require_emp_local)):
     """导入样本库文件（按服务端路径）。"""
     try:
         inserted, skipped = samplelib.import_samples(req.path)
+        log_audit(emp, "sample_imported", {"inserted": inserted, "skipped": skipped,
+                                            "source": "path"},
+                  request.client.host if request.client else "")
         return _envelope(True, "OK", {"inserted": inserted, "skipped": skipped})
     except Exception as exc:
         raise HTTPException(500, str(exc))
 
 
 @router.post("/api/v1/samples/import/upload")
-async def sample_import_upload(file: UploadFile = File(...), emp: str = Depends(require_emp_local)):
+async def sample_import_upload(request: Request,
+                               file: UploadFile = File(...),
+                               emp: str = Depends(require_emp_local)):
     """浏览器端上传 CSV/JSON 文件导入样本库。"""
     import tempfile
     suffix = os.path.splitext(file.filename or "import.csv")[1] or ".csv"
@@ -188,6 +202,10 @@ async def sample_import_upload(file: UploadFile = File(...), emp: str = Depends(
         tf.write(data)
         tf.close()
         inserted, skipped = samplelib.import_samples(tf.name)
+        log_audit(emp, "sample_imported", {"inserted": inserted, "skipped": skipped,
+                                            "source": "upload",
+                                            "filename": file.filename or ""},
+                  request.client.host if request.client else "")
         return _envelope(True, "OK", {"inserted": inserted, "skipped": skipped})
     except Exception as exc:
         raise HTTPException(500, str(exc))

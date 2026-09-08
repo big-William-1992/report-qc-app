@@ -77,3 +77,14 @@ class Setting(Base):
     value_json = Column(Text, comment="设置值（JSON）")
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True,
                     comment="NULL=全局设置；非 NULL=用户级覆盖")
+
+
+class AuditLog(Base):
+    """操作审计日志：记录关键操作（账号管理/规则变更/数据导入导出/授权激活等）。"""
+    __tablename__ = "audit_logs"
+    id = Column(Integer, primary_key=True)
+    ts = Column(DateTime, default=datetime.datetime.now)
+    emp_id = Column(String(64), nullable=False, comment="操作人工号")
+    action = Column(String(64), nullable=False, comment="操作类型")
+    detail = Column(Text, comment="操作详情（JSON）")
+    ip = Column(String(64), default="", comment="来源 IP")

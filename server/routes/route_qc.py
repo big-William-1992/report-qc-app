@@ -7,7 +7,7 @@ from fastapi import APIRouter, Header, HTTPException, UploadFile, File, Depends,
 from fastapi.responses import JSONResponse
 from typing import Optional, Dict, Any, List
 from server.schemas import CheckReq, BatchReq, BatchItem, QcReportExportReq, LearnTypoReq, TypoItemReq, TypoBatchImportReq
-from server.deps import SECRET, _envelope, _run_qc, require_emp_local, require_emp
+from server.deps import SECRET, _envelope, _run_qc, require_emp_local, require_emp, log_audit
 import engine, samplelib
 
 
@@ -15,14 +15,14 @@ router = APIRouter(tags=['qc'])
 
 # ----------------------------- 质控计算（无状态） -----------------------------
 @router.post("/api/v1/qc/check")
-def qc_check(req: CheckReq):
+def qc_check(req: CheckReq, emp: str = Depends(require_emp_local)):
     if not req.report.strip():
         raise HTTPException(400, "report 不能为空")
     return _envelope(True, "OK", _run_qc(req.report, req.meta, req.auto_fix))
 
 
 @router.post("/api/v1/qc/batch")
-def qc_batch(req: BatchReq):
+def qc_batch(req: BatchReq, emp: str = Depends(require_emp_local)):
     if len(req.items) > 50:
         raise HTTPException(400, "单次最多 50 条")
     results = []
@@ -92,21 +92,27 @@ def qc_rules_config_get(emp: str = Depends(require_emp_local)):
 
 
 @router.put("/api/v1/qc/rules/config")
-def qc_rules_config_put(cfg: Dict[str, Any], emp: str = Depends(require_emp_local)):
+def qc_rules_config_put(cfg: Dict[str, Any], request: Request,
+                         emp: str = Depends(require_emp_local)):
     """覆盖保存规则配置（typos/conflicts/ignores/template）。"""
     try:
         engine.save_rules_config(cfg)
+        log_audit(emp, "rules_config_saved",
+                  {"keys": list(cfg.keys())},
+                  request.client.host if request.client else "")
         return _envelope(True, "OK", engine.load_rules_config(), "规则配置已保存")
     except Exception as exc:
         raise HTTPException(500, str(exc))
 
 
 @router.post("/api/v1/qc/rules/config/reset")
-def qc_rules_config_reset(emp: str = Depends(require_emp_local)):
+def qc_rules_config_reset(request: Request, emp: str = Depends(require_emp_local)):
     """恢复出厂默认规则库（覆盖用户自定义）。"""
     try:
         cfg = engine.default_rules_config()
         engine.save_rules_config(cfg)
+        log_audit(emp, "rules_config_reset", None,
+                  request.client.host if request.client else "")
         return _envelope(True, "OK", engine.load_rules_config(), "已恢复默认规则库")
     except Exception as exc:
         raise HTTPException(500, str(exc))
@@ -115,11 +121,14 @@ def qc_rules_config_reset(emp: str = Depends(require_emp_local)):
 
 
 @router.post("/api/v1/qc/rules/learn-typo")
-def qc_rules_learn_typo(req: LearnTypoReq, emp: str = Depends(require_emp_local)):
+def qc_rules_learn_typo(req: LearnTypoReq, request: Request,
+                         emp: str = Depends(require_emp_local)):
     """P0 修正反馈闭环：用户确认的「错词→正确词」写入规则库，下次自动识别。"""
     ok = engine.learn_typo(req.wrong, req.correct)
     if not ok:
         raise HTTPException(400, "无效的错字对（为空或已存在反向冲突）")
+    log_audit(emp, "typo_learned", {"wrong": req.wrong, "correct": req.correct},
+              request.client.host if request.client else "")
     return _envelope(True, "OK", None, f"已学习错字对：{req.wrong}→{req.correct}")
 
 
@@ -129,7 +138,8 @@ def qc_rules_learn_typo(req: LearnTypoReq, emp: str = Depends(require_emp_local)
 
 
 @router.post("/api/v1/qc/rules/typos")
-def qc_rules_typo_add(req: TypoItemReq, emp: str = Depends(require_emp_local)):
+def qc_rules_typo_add(req: TypoItemReq, request: Request,
+                       emp: str = Depends(require_emp_local)):
     """新增单条错字对（若已存在则更新正确词并自动启用）。"""
     ok = engine.learn_typo(req.wrong, req.correct)
     if not ok:
@@ -140,11 +150,14 @@ def qc_rules_typo_add(req: TypoItemReq, emp: str = Depends(require_emp_local)):
     if req.wrong.strip() in disabled:
         cfg["disabled_typos"] = [d for d in disabled if d != req.wrong.strip()]
         engine.save_rules_config(cfg)
+    log_audit(emp, "typo_added", {"wrong": req.wrong, "correct": req.correct},
+              request.client.host if request.client else "")
     return _envelope(True, "OK", None, f"已新增错字对：{req.wrong}→{req.correct}")
 
 
 @router.post("/api/v1/qc/rules/typos/toggle")
-def qc_rules_typo_toggle(req: TypoItemReq, emp: str = Depends(require_emp_local)):
+def qc_rules_typo_toggle(req: TypoItemReq, request: Request,
+                          emp: str = Depends(require_emp_local)):
     """启用/停用单条错字：enabled=false 时把错词加入 disabled_typos，true 时移出。"""
     wrong = (req.wrong or "").strip()
     if not wrong:
@@ -160,11 +173,14 @@ def qc_rules_typo_toggle(req: TypoItemReq, emp: str = Depends(require_emp_local)
         msg = "已停用"
     cfg["disabled_typos"] = sorted(disabled)
     engine.save_rules_config(cfg)
+    log_audit(emp, "typo_toggled", {"wrong": wrong, "enabled": enabled},
+              request.client.host if request.client else "")
     return _envelope(True, "OK", {"wrong": wrong, "enabled": enabled}, f"{msg}错字词条「{wrong}」")
 
 
 @router.post("/api/v1/qc/rules/typos/delete")
-def qc_rules_typo_delete(req: TypoItemReq, emp: str = Depends(require_emp_local)):
+def qc_rules_typo_delete(req: TypoItemReq, request: Request,
+                          emp: str = Depends(require_emp_local)):
     """删除单条错字（同时从停用列表移除）。"""
     wrong = (req.wrong or "").strip()
     if not wrong:
@@ -177,11 +193,14 @@ def qc_rules_typo_delete(req: TypoItemReq, emp: str = Depends(require_emp_local)
     cfg["typos"] = typos
     cfg["disabled_typos"] = [d for d in (cfg.get("disabled_typos") or []) if d != wrong]
     engine.save_rules_config(cfg)
+    log_audit(emp, "typo_deleted", {"wrong": wrong},
+              request.client.host if request.client else "")
     return _envelope(True, "OK", None, f"已删除错字词条「{wrong}」")
 
 
 @router.post("/api/v1/qc/rules/typos/batch-import")
-def qc_rules_typo_batch_import(req: TypoBatchImportReq, emp: str = Depends(require_emp_local)):
+def qc_rules_typo_batch_import(req: TypoBatchImportReq, request: Request,
+                                emp: str = Depends(require_emp_local)):
     """批量导入错字对：自动跳过无效/反向冲突项，返回成功与失败数。"""
     cfg = engine.load_rules_config()
     typos = cfg.get("typos") or {}
@@ -210,6 +229,8 @@ def qc_rules_typo_batch_import(req: TypoBatchImportReq, emp: str = Depends(requi
     cfg["typos"] = typos
     cfg["disabled_typos"] = sorted(disabled)
     engine.save_rules_config(cfg)
+    log_audit(emp, "typo_batch_imported", {"ok": ok_n, "bad": bad_n},
+              request.client.host if request.client else "")
     return _envelope(True, "OK", {"ok": ok_n, "bad": bad_n, "bad_items": bad_items[:20]},
                      f"批量导入完成：成功 {ok_n} 条，跳过 {bad_n} 条")
 

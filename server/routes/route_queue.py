@@ -34,6 +34,8 @@ def queue_add(req: QueueItemReq, emp: str = Depends(require_emp_local)):
         "hash": h,
         "patient": (req.patient or req.meta.get("patient", "")).strip(),
         "site": (req.site or req.meta.get("applied_site", "")).strip(),
+        "findings_desc": (req.meta.get("findings_desc", "") or "").strip(),
+        "diagnosis": (req.meta.get("diagnosis", "") or "").strip(),
         "text": text,
         "source": req.source or "手动",
         "ts": time.strftime("%Y-%m-%d %H:%M"),
@@ -58,4 +60,3 @@ def queue_remove(qid: str, emp: str = Depends(require_emp_local)):
         raise HTTPException(404, "队列条目不存在")
     _save_queue(kept)
     return _envelope(True, "OK", {"count": len(kept)}, "已移出队列")
-

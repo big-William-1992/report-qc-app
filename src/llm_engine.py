@@ -22,40 +22,85 @@ from dataclasses import dataclass, asdict
 # 从现有引擎复用 Finding dataclass
 from engine import Finding, SEVERITY_WEIGHT, score, score_summary, error_type_counts
 
+# ---------- .env 自动加载（优先级：环境变量 > .env 文件 > 默认值） ----------
+def _load_env():
+    """从项目根目录加载 .env 文件（不存在则静默跳过）。"""
+    import pathlib
+    for p in (pathlib.Path(__file__).resolve().parent.parent / ".env",
+              pathlib.Path.cwd() / ".env"):
+        if p.is_file():
+            for line in p.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            break
+
+_load_env()
+
 # ---------- 环境变量 ----------
-QC_ENGINE = os.environ.get("QC_ENGINE", "api")          # api | local
+QC_ENGINE = os.environ.get("QC_ENGINE", "rule")         # rule | api | local
 QC_LLM_API_KEY = os.environ.get("QC_LLM_API_KEY", "")   # 通义千问 API Key
 QC_LLM_BASE_URL = os.environ.get("QC_LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-QC_LLM_MODEL = os.environ.get("QC_LLM_MODEL", "qwen-turbo-1101")  # 或 qwen-plus / qwen2.5-3b-instruct
+QC_LLM_MODEL = os.environ.get("QC_LLM_MODEL", "qwen-turbo-1101")  # 或 qwen-plus / qwen2.5-7b-instruct
 QC_LLM_TIMEOUT = int(os.environ.get("QC_LLM_TIMEOUT", "30"))
 QC_LLM_MAX_RETRIES = int(os.environ.get("QC_LLM_MAX_RETRIES", "2"))
 QC_LLM_FALLBACK = os.environ.get("QC_LLM_FALLBACK", "1")  # "1"=LLM 失败时降级到规则引擎
 
 # ---------- Prompt 模板 ----------
-_SYSTEM_PROMPT = """你是一名放射科报告质控专家。你的任务是对放射检查报告进行质控检查，找出所有质控缺陷。
+_SYSTEM_PROMPT = """你是放射科报告质控专家。检查报告质控缺陷，输出 JSON。
 
-规则说明：
-1. 检查报告描述段与结论段是否一致（R5-CONSISTENCY）
-2. 检查报告是否覆盖了扫描范围内所有应描述的器官/部位（R6-SITE）
-3. 检查报告是否存在自相矛盾的描述（R9-CONFLICT）
-4. 检查报告语句是否规范（R12-SENTENCE）
-5. 检查报告结构是否完整（R18-COVERAGE）
-6. 检查错别字（R8-TYPO）
-7. 检查阳性发现是否给出随访建议（R16-FOLLOWUP）
-8. 检查其他规则类缺陷（R1-R4, R7, R10-R11, R14-R15, R17, R19-R22）
+## 规则清单
 
-输出格式：必须输出一个 JSON 对象，包含一个 "findings" 数组。
-每个 finding 包含以下字段：
-- rule_id: 规则编码（如 R5-CONSISTENCY, R6-SITE 等）
-- error_type: 错误类型中文名（矛盾、漏写、误写、不规范、随访、错误、不一致、重复等）
-- severity: 严重程度（high / medium / low）
-- message: 问题描述，清晰说明为什么这是缺陷
-- snippet: 报告中导致缺陷的具体文本片段（精确原文，如无则空字符串）
-- span: [start_char, end_char] 在 report 中的字符偏移（如无则 [-1, -1]）
-- suggestion: 修改建议
+R1-GENDER 性别矛盾 — 描述与患者性别不符（如男性报告中出现"子宫"）
+R2-LATERALITY 侧别矛盾 — 左右描述混乱（如"右肺"与"左肺"混用无依据）
+R3-SCORE 评分缺失 — 应有评分但未给出（如 BI-RADS 分类）
+R4-UNIT 单位错误 — 测量值单位错误或缺失（mm/cm 混用）
+R5-CONSISTENCY 描述与结论矛盾 — 描述段与诊断印象互相矛盾
+R6-SITE 部位漏写 — 扫描范围内应描述但未提及的器官/部位
+R7-INTERNAL 内部逻辑矛盾 — 同一报告内自相矛盾（如"未见异常"但又描述病灶）
+R8-TYPO 错别字 — 明显错别字（如"费炎"→"肺炎"）
+R9-CONFLICT 互斥诊断 — 互斥诊断同时出现（如"良性"与"恶性"）
+R10-TEMPLATE 模板缺失 — 报告缺少必需段落（如缺"检查所见"或"诊断印象"）
+R11-ABNORMAL 异常描述模糊 — 异常发现描述不够具体（如仅"异常"无细节）
+R11-SIDE 侧别遗漏 — 双侧病变但只描述一侧
+R11-GENDER 性别相关异常 — 性别特异性发现缺失
+R12-SENTENCE 语句不规范 — 语句不通、用词不当、口语化
+R14-COUNT 数量描述矛盾 — 病灶数量前后不一致
+R14-NATURE 性质描述矛盾 — 病灶性质描述前后不一致
+R14-NORMAL 正常异常矛盾 — 同一部位既描述正常又描述异常
+R14-SIDE 侧别描述矛盾 — 侧别描述前后不一致
+R15-NORMAL 正常描述缺失 — 应提及的正常结构未提及
+R15-PRESENCE 存在性矛盾 — "有"与"无"对同一结构的描述矛盾
+R15-SIDE 侧别存在矛盾 — 侧别存在性描述矛盾
+R16-FOLLOWUP 随访缺失 — 阳性发现未给出随访/复查建议
+R17-PERREGION 逐部位比对 — 报告未覆盖所有相关解剖区域
+R18-COVERAGE 结构不完整 — 报告整体结构不完整（缺段落）
+R19-HOMOPHONE 同音错字 — 读音相近的错别字（如"部明显"→"不明显"）
+R19-WHITELIST 非标准词组 — 不在医学词表中的可疑片段
+R20-TEMPLATE 模板不规范 — 报告模板格式不规范
+R21-GENDER 性别相关部位 — 性别不相关的解剖部位出现在报告中
+R22-SIZE 病灶大小缺失 — 描述病灶但未给出具体大小
+R22-UNIT 病灶大小单位 — 病灶大小单位不规范
 
-如果报告没有缺陷，请输出 {"findings": []}。
-只输出 JSON，不要包含其他文字。"""
+## 输出格式
+
+严格输出 JSON：
+{"findings": [
+  {
+    "rule_id": "规则编码",
+    "error_type": "矛盾|漏写|误写|错误|不规范|随访|不一致|重复|歧义|模板缺失|模糊|缺陷",
+    "severity": "high|medium|low",
+    "message": "问题描述",
+    "snippet": "报告原文片段",
+    "span": [起始字符偏移, 结束字符偏移],
+    "suggestion": "修改建议"
+  }
+]}
+
+无缺陷时输出 {"findings": []}。只输出 JSON，不要其他文字。"""
 
 
 def _build_user_prompt(report: str, meta: dict) -> str:
@@ -178,7 +223,8 @@ def _parse_findings(raw: str) -> Optional[List[Finding]]:
         "R11-GENDER", "R12-SENTENCE", "R14-COUNT", "R14-NATURE",
         "R14-NORMAL", "R14-SIDE", "R15-NORMAL", "R15-PRESENCE",
         "R15-SIDE", "R16-FOLLOWUP", "R17-PERREGION", "R18-COVERAGE",
-        "R19-HOMOPHONE", "R20-TEMPLATE", "R21-GENDER", "R22-SIZE", "R22-UNIT",
+        "R19-HOMOPHONE", "R19-WHITELIST", "R20-TEMPLATE",
+        "R21-GENDER", "R22-SIZE", "R22-UNIT",
     }
     ALLOWED_ERROR_TYPES = {"矛盾", "漏写", "误写", "错误", "不规范", "随访",
                            "不一致", "重复", "歧义", "模板缺失", "模糊", "缺陷"}

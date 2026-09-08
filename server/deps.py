@@ -9,6 +9,7 @@ import hashlib
 import base64
 import json
 import threading
+import uuid as _uuid
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from fastapi import Header, HTTPException, Depends, Request
@@ -246,12 +247,15 @@ def _queue_add_text(text: str, meta: dict, source: str = "RIS轮询"):
     for it in items:
         if it.get("hash") == h:
             return it.get("id")
+    m = meta or {}
     item = {
         "id": _uuid.uuid4().hex[:8], "hash": h,
-        "patient": (meta or {}).get("patient", "").strip(),
-        "site": (meta or {}).get("applied_site", "").strip(),
+        "patient": (m.get("patient", "") or "").strip(),
+        "site": (m.get("applied_site", "") or "").strip(),
+        "findings_desc": (m.get("findings_desc", "") or "").strip(),
+        "diagnosis": (m.get("diagnosis", "") or "").strip(),
         "text": text, "source": source,
-        "ts": time.strftime("%Y-%m-%d %H:%M"), "meta": meta or {},
+        "ts": time.strftime("%Y-%m-%d %H:%M"), "meta": m,
     }
     items.append(item)
     _save_queue(items)
@@ -397,3 +401,61 @@ _DEFAULT_SETTINGS = {
 }
 def _settings_path() -> str:
     return os.path.join(_appdata_dir(), "web_settings.json")
+
+
+# ── 登录频率限制（防爆破） ──────────────────────────────────────────────────
+# 基于 IP 的 in-memory 限流：每个 IP 最多 N 次失败后锁定 M 秒。
+# 重启清空，对本地单用户部署足够；多实例部署建议改为 Redis。
+_LOGIN_FAIL_LIMIT = int(os.environ.get("QC_LOGIN_FAIL_LIMIT", "5"))   # 最大失败次数
+_LOGIN_FAIL_WINDOW = int(os.environ.get("QC_LOGIN_FAIL_WINDOW", "300"))  # 窗口秒数（5 分钟）
+_LOGIN_LOCK_DURATION = int(os.environ.get("QC_LOGIN_LOCK_SECONDS", "900"))  # 锁定时长（15 分钟）
+_login_failures: Dict[str, List[float]] = {}  # ip -> [timestamp, ...]
+
+
+def _check_login_rate(request: Request) -> None:
+    """登录限流依赖：超过阈值抛出 429。"""
+    client_ip = (request.client.host if request.client else "unknown")
+    now = time.time()
+    # 清理过期记录（窗口外的全部丢弃）
+    attempts = [ts for ts in _login_failures.get(client_ip, []) if now - ts < _LOGIN_FAIL_WINDOW]
+    if len(attempts) >= _LOGIN_FAIL_LIMIT:
+        earliest = min(attempts)
+        remaining = _LOGIN_FAIL_WINDOW - (now - earliest)
+        raise HTTPException(429,
+            f"登录尝试过于频繁，请 {int(max(remaining, 0))} 秒后重试")
+
+
+def _record_login_failure(request: Request) -> None:
+    """记录一次登录失败。"""
+    client_ip = (request.client.host if request.client else "unknown")
+    _login_failures.setdefault(client_ip, []).append(time.time())
+    # 上限保护：防止内存无限膨胀
+    if len(_login_failures) > 10000:
+        _login_failures.clear()
+
+
+def _clear_login_failures(request: Request) -> None:
+    """登录成功后清除该 IP 的失败计数。"""
+    client_ip = (request.client.host if request.client else "unknown")
+    _login_failures.pop(client_ip, None)
+
+
+# ── 审计日志 ───────────────────────────────────────────────────────────────
+def log_audit(emp_id: str, action: str, detail: Any = None, ip: str = "") -> None:
+    """写入一条审计记录到 SQLite。失败不抛异常（日志不应阻塞业务）。"""
+    try:
+        from server.models import AuditLog
+        from server.db import SessionLocal
+        sess = SessionLocal()
+        try:
+            sess.add(AuditLog(
+                emp_id=(emp_id or "anonymous").strip()[:64],
+                action=action.strip()[:64],
+                detail=json.dumps(detail, ensure_ascii=False) if isinstance(detail, (dict, list)) else str(detail or "")[:1024],
+                ip=(ip or "").strip()[:64],
+            ))
+            sess.commit()
+        finally:
+            sess.close()
+    except Exception:
+        pass  # 审计写入失败不阻断业务

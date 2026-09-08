@@ -42,8 +42,6 @@ class MetaRulesMixin:
         return out
 
     # R2 左右混淆（同一解剖族：描述段 vs 印象段方位互斥）
-
-    # R2 左右混淆（同一解剖族：描述段 vs 印象段方位互斥）
     def _r2_laterality(self, text, ents) -> List[Finding]:
         out = []
         # 取带左右前缀的解剖实体（左肾→L-kidney 等），按器官族归组
@@ -69,8 +67,6 @@ class MetaRulesMixin:
         return out
 
     # R3 评分缺失
-
-    # R3 评分缺失
     def _r3_score(self, text, meta) -> List[Finding]:
         out = []
         modality = meta.get("modality")
@@ -86,16 +82,12 @@ class MetaRulesMixin:
         return out
 
     # R4 单位错误
-
-    # R4 单位错误
     def _r4_unit(self, ents) -> List[Finding]:
         out = []
         for e in [x for x in ents if x.label == "bad_unit"]:
             out.append(Finding("R4-UNIT", "计量单位错误", "low",
                 f"检出非常规单位表示「{e.text}」（单位={e.canonical}）", e.text, (e.start, e.end)))
         return out
-
-    # R5 描述-结论矛盾（按器官族核对：描述段某器官族出现阳性征，印象段未就该器官族给出对应结论）
 
     # R6 登记部位不符（申请部位 vs 报告主体解剖）
     def _r6_site(self, text, meta) -> List[Finding]:
@@ -118,11 +110,6 @@ class MetaRulesMixin:
             out.append(Finding("R6-SITE", "登记部位不符", "high",
                 f"申请部位归一化={norm_applied}，但报告内容涉及{found_families}", "", (-1, -1)))
         return out
-
-    # R18 检查部位器官漏写（登记区域声明 → 影像描述段应含该区域器官）
-    # 与 R6(登记部位错配) 互补：R6 抓『申请胸部却写腹部』，R18 抓『申请了上腹部但描述段
-    # 对肝/胆/胰/脾/肾等上腹部器官一个都没提』。仅查检查所见段；整段"未见异常"整体声明
-    # （不点名器官）视为已覆盖，避免"上腹部CT未见异常"被误报。多区域分别校验、互不牵连。
 
     # R11 上下文逻辑错误（信息框 vs 描述框/结论框 跨框比对）
     def _r11_context(self, text, meta, secs) -> List[Finding]:
@@ -158,8 +145,6 @@ class MetaRulesMixin:
                 "", (-1, -1)))
         return out
 
-    # R12 同一句话逻辑错误（句级自相矛盾）
-
     # R21 性别-部位联动（检查类型级）：男性检查乳腺/子宫/卵巢，女性检查前列腺/睾丸。
     # 与 R1(正文出现异性别器官) 互补：R1 抓正文描述，R21 抓『检查部位登记』层面——
     # 登记部位/检查方式与性别不匹配（如男性做钼靶、女性做前列腺 MR）。
@@ -188,5 +173,3 @@ class MetaRulesMixin:
                     kw, (-1, -1)))
                 break
         return out
-
-    # R7 描述内部矛盾（同一描述段内出现男女专属器官混用 —— 真实自相矛盾）

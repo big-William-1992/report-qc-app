@@ -26,6 +26,7 @@ sys.path.insert(0, ROOT)
 
 import feedback_collector as fb  # noqa: E402
 from engine import RuleEngine  # noqa: E402
+from medical_whitelist import _WHITELIST  # noqa: E402
 
 
 def _still_flagged(p, eng) -> bool:
@@ -78,7 +79,26 @@ def main():
 
     for p in pending:
         seg = p.get("seg") or ""
-        if not _still_flagged(p, eng) and not _has_typo_candidate(seg) and seg in corpus_words:
+
+        # 新增：检查 R8 词典是否已覆盖该 seg
+        # 含精确匹配和双向子串：
+        #   seg="主肪" ⊂ "主动肪"(R8) → R8 覆盖
+        #   seg="界部清楚" ⊃ "界部"(R8) → seg 包含 R8 错字
+        typo_map = eng.rules_config.get("typos", {})
+        r8_covered = (
+            seg in typo_map or
+            any(seg in w for w in typo_map if len(w) >= 2) or      # seg 是 R8 条目的子串
+            any(w in seg for w in typo_map if len(w) >= 2)          # seg 包含 R8 条目
+        )
+
+        if r8_covered:
+            # R8 已收录 → 确认真错字，标记 y
+            to_y.append(p)
+        elif not _still_flagged(p, eng) and seg in _WHITELIST:
+            # 已在白名单 且 不再被标记 → 误报，直接放行
+            to_n.append(p)
+        elif not _still_flagged(p, eng) and not _has_typo_candidate(seg) and seg in corpus_words:
+            # 不在白名单但已不标记 且 无错字候选 且 语料中独立成词 → 补入
             to_n.append(p)
         elif (p.get("suggestion") or "").strip():
             to_y.append(p)

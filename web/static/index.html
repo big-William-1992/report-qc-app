@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>星衍AI放射质控</title>
-  <link rel="stylesheet" href="/static/css/style.css?v=20260816b" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260907e" />
 </head>
 <body>
 
@@ -72,7 +72,7 @@
 
     <!-- 创建首个账号 -->
     <div class="gate-step" id="gate-account" style="display:none">
-      <h2>创建首个账号</h2>
+      <h2 id="gaTitle">创建首个账号</h2>
       <p class="gate-hint">质控责任到人，请使用您的工号作为登录名。</p>
       <div class="gate-form">
         <input id="gaEmpId" placeholder="工号（登录名）" autocomplete="username" />
@@ -83,6 +83,9 @@
       <div class="gate-err" id="gaErr"></div>
       <div class="gate-actions">
         <button class="btn btn-primary btn-block" id="btnCreate" onclick="gateCreate()">创建并进入</button>
+      </div>
+      <div class="gate-links">
+        <button class="gate-link" onclick="gateToLogin()">← 返回登录</button>
       </div>
     </div>
 
@@ -96,6 +99,29 @@
       <div class="gate-err" id="glErr"></div>
       <div class="gate-actions">
         <button class="btn btn-primary btn-block" id="btnLogin" onclick="gateLogin()">登录</button>
+      </div>
+      <div class="gate-links">
+        <button class="gate-link" onclick="gateToRegister()">注册账号</button>
+        <button class="gate-link" onclick="gateToPwd()">修改密码</button>
+      </div>
+    </div>
+
+    <!-- 修改密码（登录界面自助） -->
+    <div class="gate-step" id="gate-pwd" style="display:none">
+      <h2>修改密码</h2>
+      <p class="gate-hint">输入工号与旧密码，设置新密码后请用新密码登录。</p>
+      <div class="gate-form">
+        <input id="gpEmpId" placeholder="工号" autocomplete="username" />
+        <input id="gpOld" type="password" placeholder="旧密码" autocomplete="current-password" />
+        <input id="gpNew" type="password" placeholder="新密码（至少 6 位）" autocomplete="new-password" />
+        <input id="gpNew2" type="password" placeholder="确认新密码" autocomplete="new-password" />
+      </div>
+      <div class="gate-err" id="gpErr"></div>
+      <div class="gate-actions">
+        <button class="btn btn-primary btn-block" id="btnPwd" onclick="gateChangePwd()">确认修改</button>
+      </div>
+      <div class="gate-links">
+        <button class="gate-link" onclick="gateToLogin()">← 返回登录</button>
       </div>
     </div>
 
@@ -117,10 +143,10 @@
 
 
 <!-- ==================== 左侧导航栏（宫格化） ==================== -->
-<aside class="sidebar">
+  <aside class="sidebar">
   <!-- 品牌区 -->
   <div class="sidebar-brand">
-    <div class="brand-name">✚ 星衍</div>
+    <div class="brand-name">✦ 星衍</div>
     <div class="brand-sub">放射质控系统</div>
   </div>
 
@@ -129,37 +155,59 @@
     <div class="nav-section-label">工作台</div>
     <div class="nav-grid">
       <div class="nav-cell active" data-page="qc" onclick="switchPage('qc',this)">
-        <span class="nav-cell-ico">📋</span>
+        <span class="nav-cell-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M9 9h6M9 13h6M9 17h3"/></svg>
+        </span>
         <span class="nav-cell-label">报告质控</span>
       </div>
       <div class="nav-cell" data-page="queue" onclick="switchPage('queue',this)">
-        <span class="nav-cell-ico">📥</span>
+        <span class="nav-cell-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l3-3h10l3 3v3a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V6z"/><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"/><path d="M12 13v4"/></svg>
+        </span>
         <span class="nav-cell-label" id="navQueueLabel">待质控队列</span>
         <span class="nav-badge" id="navQueueBadge" style="display:none">0</span>
       </div>
       <div class="nav-cell" data-page="dashboard" onclick="switchPage('dashboard',this)">
-        <span class="nav-cell-ico">📊</span>
+        <span class="nav-cell-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+        </span>
         <span class="nav-cell-label">质控看板</span>
       </div>
+    </div>
+    <div class="nav-section-label">数据接入</div>
+    <div class="nav-grid" data-group="2">
       <div class="nav-cell" data-page="ris" onclick="switchPage('ris',this)">
-        <span class="nav-cell-ico">🔗</span>
+        <span class="nav-cell-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+        </span>
         <span class="nav-cell-label">数据接入</span>
       </div>
       <div class="nav-cell" data-page="samples" onclick="switchPage('samples',this)">
-        <span class="nav-cell-ico">📦</span>
+        <span class="nav-cell-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>
+        </span>
         <span class="nav-cell-label">样本库</span>
       </div>
+    </div>
+    <div class="nav-section-label">系统管理</div>
+    <div class="nav-grid" data-group="3">
       <div class="nav-cell" data-admin-only data-page="users" onclick="switchPage('users',this)" style="display:none">
-        <span class="nav-cell-ico">👥</span>
+        <span class="nav-cell-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9" r="2.6"/><path d="M15.5 14.5a4.5 4.5 0 0 1 5 5.5"/></svg>
+        </span>
         <span class="nav-cell-label">用户管理</span>
       </div>
       <div class="nav-cell" data-page="feedback" onclick="switchPage('feedback',this)">
-        <span class="nav-cell-ico">🔍</span>
+        <span class="nav-cell-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.3 9 9 0 0 1-3-.5L3 21l1.7-5a8 8 0 0 1-.7-3.2A8.4 8.4 0 0 1 12.5 4 8.4 8.4 0 0 1 21 11.5z"/></svg>
+        </span>
         <span class="nav-cell-label" id="navFeedbackLabel">反馈审核</span>
         <span class="nav-badge" id="navFeedbackBadge" style="display:none">0</span>
       </div>
       <div class="nav-cell" data-page="rules" onclick="switchPage('rules',this)">
-        <span class="nav-cell-ico">⚙️</span>
+        <span class="nav-cell-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h10M18 8h2M4 16h2M10 16h10"/><circle cx="16" cy="8" r="2"/><circle cx="8" cy="16" r="2"/></svg>
+        </span>
         <span class="nav-cell-label">规则维护</span>
       </div>
     </div>
@@ -187,7 +235,9 @@
   <!-- 顶部 Header -->
   <header class="topbar">
     <div class="topbar-left">
-      <button class="sidebar-toggle-btn" title="展开菜单" onclick="toggleSidebar()">☰</button>
+      <button class="sidebar-toggle-btn" title="展开菜单" onclick="toggleSidebar()">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
       <div>
         <div class="page-title" id="pageTitle">报告质控</div>
         <div class="page-subtitle" id="pageSubtitle">AI 驱动的放射报告质量检测引擎</div>
@@ -198,9 +248,12 @@
       <span class="phi-badge" title="所有报告数据仅在本机处理，不会上传任何服务器">🔒 本机处理·无上传</span>
     </div>
     <div class="topbar-right">
-      <button class="topbar-btn" title="通知">🔔<span class="dot"></span></button>
-      <button class="topbar-btn" id="themeToggle" title="切换明暗主题" onclick="toggleTheme()">🌙</button>
-      <button class="topbar-btn" title="设置" onclick="openSettings()">⚙️</button>
+      <button class="topbar-btn" title="通知" style="display:none"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10.3 19a2 2 0 0 0 3.4 0"/></svg></button>
+      <button class="topbar-btn" id="themeToggle" title="切换明暗主题" onclick="toggleTheme()">
+        <svg class="btn-theme-ico btn-theme-moon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <svg class="btn-theme-ico btn-theme-sun" style="display:none" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.5M12 19.5V22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M2 12h2.5M19.5 12H22M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>
+      </button>
+      <button class="topbar-btn" title="设置" onclick="openSettings()"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg></button>
       <div class="user-dropdown" id="userDropdown" onclick="toggleUserMenu(event)">
         <div class="user-avatar" id="userAvatar">?</div>
         <span id="userName">未登录</span>
@@ -211,7 +264,7 @@
           <div class="user-menu-sub" id="userMenuSub"></div>
         </div>
         <div class="user-menu-row" id="userMenuStatus"></div>
-        <button class="user-menu-item" onclick="logout()">🚪 退出登录</button>
+        <button class="user-menu-item" onclick="logout()"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4"/><path d="M10 17l5-5-5-5M15 12H3"/></svg>&nbsp;退出登录</button>
       </div>
     </div>
   </header>
@@ -268,18 +321,46 @@
           <!-- 操作按钮条 -->
           <div class="action-bar">
             <button class="btn btn-primary btn-lg" id="btnRunQc" onclick="runQC()">
-              ▶ 运行质控 Ctrl+Enter
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M8 5.5v13l11-6.5-11-6.5z"/></svg>
+              <span id="btnRunQcLabel">运行质控 Ctrl+Enter</span>
             </button>
-            <button class="btn btn-outline" onclick="clearInput()">🗑 清空</button>
-            <button class="btn btn-outline" onclick="pasteAndSplit()" title="一次复制报告全文（含描述+诊断），自动按标题分栏填入并立即质控">📋 粘贴全文并质控</button>
-            <button class="btn btn-outline" onclick="applyAllFixes()" title="自动修正所有确定性错别字（R8/R19），并重新质控">✨ 一键采纳修正</button>
-            <button class="btn btn-outline" onclick="exportQcReport()" title="把当前质控结果导出为质控报告单（Word/PDF）">📄 导出报告单</button>
-            <button class="btn btn-outline" onclick="saveToLibrary()">💾 入库</button>
-            <button class="btn btn-outline" onclick="openOcrModal()">📷 框选设置</button>
-            <button class="btn btn-primary" onclick="ocrOneClick()" title="用已保存的框位一键抓屏识别并质控（Ctrl+Shift+O）">⚡ 一键识别</button>
-            <button class="btn btn-outline" onclick="enqueueCurrent('手动')">📥 加入队列</button>
+            <button class="btn btn-outline" onclick="clearInput()">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 .9h8a1 1 0 0 0 1-.9L18 7M10 11v6M14 11v6"/></svg>
+              清空
+            </button>
+            <button class="btn btn-outline" onclick="pasteAndSplit()" title="一次复制报告全文（含描述+诊断），自动按标题分栏填入并立即质控">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="10" height="16" rx="2"/><path d="M5 8a2 2 0 0 1 2-2v14a2 2 0 0 1-2-4V8z"/></svg>
+              粘贴全文并质控
+            </button>
+            <button class="btn btn-outline" onclick="applyAllFixes()" title="自动修正所有确定性错别字（R8/R19），并重新质控">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z"/></svg>
+              一键采纳修正
+            </button>
+            <button class="btn btn-outline" onclick="exportQcReport()" title="把当前质控结果导出为质控报告单（Word/PDF）">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/><path d="M14 2v4h4M9 13h6M9 17h4"/></svg>
+              导出报告单
+            </button>
+            <button class="btn btn-outline" onclick="saveToLibrary()">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+              入库
+            </button>
+            <button class="btn btn-outline" onclick="openOcrModal()">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
+              框选设置
+            </button>
+            <button class="btn btn-primary" onclick="ocrOneClick()" title="用已保存的框位一键抓屏识别并质控（Ctrl+Shift+O）">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V4a1 1 0 0 1 1-1h3M17 3h3a1 1 0 0 1 1 1v3M21 17v3a1 1 0 0 1-1 1h-3M7 21H4a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="12" r="3.6"/></svg>
+              一键识别
+            </button>
+            <button class="btn btn-outline" onclick="enqueueCurrent('手动')">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l3-3h10l3 3v3a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V6z"/><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"/><path d="M12 13v4"/></svg>
+              加入队列
+            </button>
             <div style="flex:1"></div>
-            <button class="btn btn-outline btn-sm" onclick="openSettings()">⚙ 高级设置</button>
+            <button class="btn btn-outline btn-sm" onclick="openSettings()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+              高级设置
+            </button>
           </div>
         </div>
 
@@ -288,7 +369,9 @@
           <!-- 多维评分卡片 -->
           <div class="card">
             <div class="card-header">
-              <h3><span class="icon">🎯</span> 多维评分</h3>
+              <h3><span class="icon svg-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z"/></svg>
+              </span> 多维评分</h3>
             </div>
             <div class="card-body">
               <div class="score-grid" id="scoreGrid">
@@ -327,21 +410,23 @@
           <!-- 发现列表 -->
           <div class="card" style="flex:1">
             <div class="card-header">
-              <h3><span class="icon">🔍</span> 质控发现</h3>
-              <div class="card-header-tabs">
-                <button class="qctab active" id="qctabList" onclick="showQcTab('list')">问题列表</button>
-                <button class="qctab" id="qctabAnno" onclick="showQcTab('anno')">原文标注</button>
+              <h3><span class="icon svg-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+              </span> 质控发现</h3>
+              <div class="card-header-tabs" role="tablist">
+                <button class="qctab active" id="qctabList" role="tab" aria-selected="true" aria-controls="findingListContainer" onclick="showQcTab('list')">问题列表</button>
+                <button class="qctab" id="qctabAnno" role="tab" aria-selected="false" aria-controls="findingListContainer" onclick="showQcTab('anno')">原文标注</button>
               </div>
-              <div class="card-header-actions" id="findingFilterBar" style="display:none">
-                <button class="sev-filter active" data-sev="all" onclick="setSevFilter('all')">全部</button>
-                <button class="sev-filter" data-sev="high" onclick="setSevFilter('high')">⛔ 严重</button>
-                <button class="sev-filter" data-sev="medium" onclick="setSevFilter('medium')">⚠ 警告</button>
-                <button class="sev-filter" data-sev="low" onclick="setSevFilter('low')">ℹ 提示</button>
+              <div class="card-header-actions" id="findingFilterBar" role="tablist" style="display:none">
+                <button class="sev-filter active" data-sev="all" role="tab" aria-selected="true" aria-controls="findingListContainer" onclick="setSevFilter('all')">全部</button>
+                <button class="sev-filter" data-sev="high" role="tab" aria-selected="false" aria-controls="findingListContainer" onclick="setSevFilter('high')">⛔ 严重</button>
+                <button class="sev-filter" data-sev="medium" role="tab" aria-selected="false" aria-controls="findingListContainer" onclick="setSevFilter('medium')">⚠ 警告</button>
+                <button class="sev-filter" data-sev="low" role="tab" aria-selected="false" aria-controls="findingListContainer" onclick="setSevFilter('low')">ℹ 提示</button>
                 <button class="btn btn-xs apply-fix-btn" onclick="applyAllFixes()" title="批量应用全部确定性错别字修正">✨ 全部采纳</button>
               </div>
               <span class="card-header-action" id="findingCount">0 条</span>
             </div>
-            <div class="card-body" style="max-height:360px;overflow-y:auto;" id="findingListContainer">
+            <div class="card-body" style="max-height:360px;overflow-y:auto;" id="findingListContainer" role="tabpanel" tabindex="0">
               <div class="empty-state" id="findingEmpty">
                 <div class="empty-icon">📭</div>
                 <p>运行质控后在此显示发现</p>
@@ -581,7 +666,7 @@
                 <span class="conn-status connected" id="pushStatus"><span class="led"></span> 就绪</span>
               </div>
               <div style="font-size:13px;color:var(--text-secondary);line-height:1.8;">
-                <p>院内 PACS/RIS 系统通过 HTTP POST 主动推送报告到本服务，替代传统数据库轮询。</p>
+                <p>院内 PACS/RIS 系统通过 HTTP POST 主动推送报告到本服务（患者姓名 / 性别 / 年龄 / 检查部位 / 检查方式 / 影像描述 / 影像诊断），替代传统数据库轮询。</p>
                 <div style="background:var(--bg-secondary);padding:12px 16px;border-radius:8px;margin:10px 0;font-family:monospace;font-size:12px;">
                   <div><b>端点地址：</b><code style="color:var(--accent);">POST /api/v1/push/report</code></div>
                   <div><b>鉴权方式：</b><code>X-API-Key: &lt;服务端配置的 PUSH_API_KEY&gt;</code></div>
@@ -590,7 +675,21 @@
                 <details style="margin-top:8px;">
                   <summary style="cursor:pointer;font-weight:600;font-size:12px;">📋 JSON 请求示例</summary>
                   <pre style="background:var(--bg-secondary);padding:12px;border-radius:6px;overflow-x:auto;font-size:11px;margin-top:6px;line-height:1.5;">{
-  "report_text": "检查所见：双肺纹理清晰，未见实质性病变。\\n诊断印象：胸部 CT 未见明显异常。",
+  "patient": "张三",
+  "gender": "男",
+  "age": "45",
+  "modality": "CT",
+  "applied_site": "胸部",
+  "findings_desc": "双肺纹理清晰，未见实质性病变。",
+  "diagnosis": "胸部 CT 未见明显异常。",
+  "exam_id": "202608210001",
+  "exam_date": "2026-08-21"
+}</pre>
+                </details>
+                <details style="margin-top:6px;">
+                  <summary style="cursor:pointer;font-weight:600;font-size:12px;">📋 JSON 整段式（兼容旧格式）</summary>
+                  <pre style="background:var(--bg-secondary);padding:12px;border-radius:6px;overflow-x:auto;font-size:11px;margin-top:6px;line-height:1.5;">{
+  "report_text": "影像描述：双肺纹理清晰，未见实质性病变。\\n影像诊断：胸部 CT 未见明显异常。",
   "patient": "张三",
   "gender": "男",
   "age": "45",
@@ -603,12 +702,13 @@
                 <details style="margin-top:6px;">
                   <summary style="cursor:pointer;font-weight:600;font-size:12px;">📋 XML 请求示例</summary>
                   <pre style="background:var(--bg-secondary);padding:12px;border-radius:6px;overflow-x:auto;font-size:11px;margin-top:6px;line-height:1.5;">&lt;Report&gt;
-  &lt;report_text&gt;检查所见：双肺纹理清晰，未见实质性病变。\n诊断印象：胸部 CT 未见明显异常。&lt;/report_text&gt;
   &lt;patient&gt;张三&lt;/patient&gt;
   &lt;gender&gt;男&lt;/gender&gt;
   &lt;age&gt;45&lt;/age&gt;
   &lt;modality&gt;CT&lt;/modality&gt;
   &lt;applied_site&gt;胸部&lt;/applied_site&gt;
+  &lt;findings_desc&gt;双肺纹理清晰，未见实质性病变。&lt;/findings_desc&gt;
+  &lt;diagnosis&gt;胸部 CT 未见明显异常。&lt;/diagnosis&gt;
   &lt;exam_id&gt;202608210001&lt;/exam_id&gt;
   &lt;exam_date&gt;2026-08-21&lt;/exam_date&gt;
 &lt;/Report&gt;</pre>
@@ -810,11 +910,11 @@
       </div>
 
       <!-- 新增错字对模态 -->
-      <div class="modal-overlay" id="typoAddModal" style="display:none;">
+      <div class="modal-overlay" id="typoAddModal" role="dialog" aria-modal="true" aria-labelledby="typoAddTitle" style="display:none;">
         <div class="modal" style="max-width:420px;">
           <div class="modal-header">
-            <h3>新增错字词条</h3>
-            <button class="modal-close" onclick="closeTypoAddModal()">×</button>
+            <h3 id="typoAddTitle">新增错字词条</h3>
+            <button class="modal-close" aria-label="关闭" onclick="closeTypoAddModal()">×</button>
           </div>
           <div class="modal-body">
             <div class="form-group"><label>错词（误写的写法）</label>
@@ -830,11 +930,11 @@
       </div>
 
       <!-- 批量导入模态 -->
-      <div class="modal-overlay" id="typoImportModal" style="display:none;">
+      <div class="modal-overlay" id="typoImportModal" role="dialog" aria-modal="true" aria-labelledby="typoImportTitle" style="display:none;">
         <div class="modal" style="max-width:520px;">
           <div class="modal-header">
-            <h3>批量导入错字对</h3>
-            <button class="modal-close" onclick="closeTypoImportModal()">×</button>
+            <h3 id="typoImportTitle">批量导入错字对</h3>
+            <button class="modal-close" aria-label="关闭" onclick="closeTypoImportModal()">×</button>
           </div>
           <div class="modal-body">
             <div class="form-group"><label>每行一条 <code>错词=正词</code>（自动跳过无效/反向冲突项）</label>
@@ -869,11 +969,11 @@
 </div><!-- /main-area -->
 
 <!-- ========== 框选 OCR 模态（PACS 屏幕三区识别） ========== -->
-<div class="modal-overlay" id="ocrModal" style="display:none">
+<div class="modal-overlay" id="ocrModal" role="dialog" aria-modal="true" aria-labelledby="ocrModalTitle" style="display:none">
   <div class="modal ocr-modal">
     <div class="modal-header">
-      <h3>📷 框选 OCR · PACS 屏幕三区识别</h3>
-      <button class="modal-close" onclick="closeOcrModal()">✕</button>
+      <h3 id="ocrModalTitle">📷 框选 OCR · PACS 屏幕三区识别</h3>
+      <button class="modal-close" aria-label="关闭" onclick="closeOcrModal()">✕</button>
     </div>
     <div class="modal-body">
       <div class="ocr-toolbar">
@@ -909,11 +1009,11 @@
 </div>
 
 <!-- ========== 设置模态 ========== -->
-<div class="modal-overlay" id="settingsModal" style="display:none">
+<div class="modal-overlay" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle" style="display:none">
   <div class="modal" style="max-width:560px">
     <div class="modal-header">
-      <h3>⚙️ 系统设置</h3>
-      <button class="modal-close" onclick="closeSettings()">✕</button>
+      <h3 id="settingsModalTitle">⚙️ 系统设置</h3>
+      <button class="modal-close" aria-label="关闭" onclick="closeSettings()">✕</button>
     </div>
     <div class="modal-body">
       <div class="form-grid">
@@ -1005,11 +1105,11 @@
 </div>
 
 <!-- ========== 导出格式选择模态（pywebview 不支持 prompt，用按钮选择） ========== -->
-<div class="modal-overlay" id="exportFmtModal" style="display:none">
+<div class="modal-overlay" id="exportFmtModal" role="dialog" aria-modal="true" aria-labelledby="exportFmtTitle" style="display:none">
   <div class="modal" style="max-width:560px">
     <div class="modal-header">
       <h3 id="exportFmtTitle">选择导出格式</h3>
-      <button class="modal-close" onclick="closeExportFmtModal()">✕</button>
+      <button class="modal-close" aria-label="关闭" onclick="closeExportFmtModal()">✕</button>
     </div>
     <div class="modal-body">
       <div id="exportFmtDesc" style="font-size:13px;color:var(--text-secondary);margin-bottom:14px;"></div>
@@ -1043,11 +1143,11 @@
 </div>
 
 <!-- ========== 样本详情模态 ========== -->
-<div class="modal-overlay" id="sampleModal" style="display:none">
+<div class="modal-overlay" id="sampleModal" role="dialog" aria-modal="true" aria-labelledby="sampleModalTitle" style="display:none">
   <div class="modal" style="max-width:760px">
     <div class="modal-header">
       <h3 id="sampleModalTitle">📄 样本详情</h3>
-      <button class="modal-close" onclick="closeSampleModal()">✕</button>
+      <button class="modal-close" aria-label="关闭" onclick="closeSampleModal()">✕</button>
     </div>
     <div class="modal-body" id="sampleModalBody" style="max-height:60vh;overflow:auto;"></div>
     <div class="modal-footer">
@@ -1060,9 +1160,26 @@
   </div>
 </div>
 
-<!-- Toast 容器 -->
-<div class="toast-container" id="toastContainer"></div>
+<!-- 通用确认模态（替代原生 confirm：桌面壳/pywebview 下原生对话框体验不稳定） -->
+<div class="modal-overlay" id="confirmModal" role="alertdialog" aria-modal="true" aria-labelledby="confirmModalTitle" aria-describedby="confirmModalMsg" style="display:none">
+  <div class="modal" style="max-width:420px;">
+    <div class="modal-header">
+      <h3 id="confirmModalTitle">请确认</h3>
+      <button class="modal-close" aria-label="关闭" onclick="confirmModalResolve(false)">×</button>
+    </div>
+    <div class="modal-body">
+      <p id="confirmModalMsg" style="margin:0;white-space:pre-line;line-height:1.6;"></p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="confirmModalResolve(false)">取消</button>
+      <button class="btn btn-primary" id="confirmModalOk" onclick="confirmModalResolve(true)">确定</button>
+    </div>
+  </div>
+</div>
 
-<script src="/static/js/app.js?v=20260816c"></script>
+<!-- Toast 容器 -->
+<div class="toast-container" id="toastContainer" role="status" aria-live="polite"></div>
+
+<script type="module" src="/static/js/app.js?v=20260908"></script>
 </body>
 </html>

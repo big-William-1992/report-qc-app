@@ -220,7 +220,15 @@ def _resolve_port(preferred: int) -> int:
     return p
 
 
-PORT = _resolve_port(int(os.environ.get("XY_QC_PORT", "8500")))
+# 仅主进程模式做端口解析（_resolve_port 会 lsof 并按 cmdline 特征清理「本应用残留」）。
+# 子进程热键助手模式必须跳过：助手导入本模块时若执行 _resolve_port，
+# lsof 会看到主进程的 uvicorn 正占用该端口、且 cmdline 含 desktop_app 特征，
+# 从而被误判为残留实例而被 SIGTERM 杀掉 —— 表现为「GUI 启动约 1 秒后自行退出」。
+_HOTKEY_HELPER_MODE = "--hotkey-helper" in sys.argv
+if _HOTKEY_HELPER_MODE:
+    PORT = 8500   # 实际端口由 __main__ 分支从 --port 参数解析后传入 _hotkey_helper_main
+else:
+    PORT = _resolve_port(int(os.environ.get("XY_QC_PORT", "8500")))
 HOST = "127.0.0.1"
 BASE = f"http://{HOST}:{PORT}"
 
@@ -308,6 +316,10 @@ def apply_global_hotkeys(shortcuts: dict) -> bool:
 def _restart_hotkey_listener():
     """停止并重启全局热键监听器（在独立线程），使新映射立即生效。"""
     global _HOTKEY_LISTENER
+    if sys.platform == "darwin":
+        # macOS：监听在子进程助手内，无需/不可在本进程重启；
+        # 助手轮询 /api/v1/internal/hotkey-config 自动应用新映射（延迟 ≤2s）。
+        return
     try:
         if _HOTKEY_LISTENER is not None:
             _HOTKEY_LISTENER.stop()
@@ -489,11 +501,141 @@ def _eval_js(js: str):
 
 def _start_hotkeys():
     """后台线程：注册系统级全局热键（支持设置页自定义重绑），触发时调用 SPA 内对应函数。"""
+    if sys.platform == "darwin":
+        # macOS：pynput 每按一次键都会在后台线程调用 TIS/TSM API，
+        # 与主线程（WebView 文本输入等）并发调用会触发 HIToolbox 直接 abort（SIGABRT）。
+        # 由子进程助手（--hotkey-helper）承载，见 _spawn_hotkey_helper。
+        return
     if not _HAVE_PYNPUT:
         print("[提示] 未安装 pynput，全局快捷键（后台热键）不可用；"
               "窗口聚焦时仍可用 SPA 内快捷键。安装：pip install pynput")
         return
     _run_hotkey_listener()
+
+
+# macOS 热键子进程助手（已声明在 _start_hotkeys 之后使用）
+_HOTKEY_HELPER_PROC = None   # macOS 子进程句柄（主进程退出时由 helper 自检父进程退出）
+
+
+def _spawn_hotkey_helper():
+    """macOS：把 pynput 全局热键监听放进独立子进程。
+
+    主进程保持「纯 UI+服务」身份，杜绝 pynput 后台线程调用 TIS/TSM 与
+    主线程（WebView 输入等）并发导致的 HIToolbox SIGABRT。
+    子进程命中热键后 POST /api/v1/internal/hotkey，由主进程 evaluate_js 执行。
+    """
+    global _HOTKEY_HELPER_PROC
+    if sys.platform != "darwin":
+        return
+    try:
+        _helper_log = open("/tmp/xingyan_hotkey_helper.log", "a", encoding="utf-8", buffering=1)
+        _HOTKEY_HELPER_PROC = subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__),
+             "--hotkey-helper", "--port", str(PORT)],
+            start_new_session=True,      # 脱离主进程的进程组/终端会话，防会话回收误杀
+            stdout=_helper_log, stderr=_helper_log,
+        )
+        print(f"[全局热键] 子进程助手已启动 pid={_HOTKEY_HELPER_PROC.pid}（端口 {PORT}）")
+    except Exception as e:  # noqa: BLE001
+        print("[全局热键] 子进程助手启动失败:", e)
+
+
+def _mount_internal_routes():
+    """给 FastAPI 挂内部路由：热键子进程 ↔ 主进程 的本地回环通道。
+
+    - POST /api/v1/internal/hotkey      body {"js": "runQC()"} → evaluate_js
+    - GET  /api/v1/internal/hotkey-config → 当前 combo→js 映射（设置页重绑后助手自动同步）
+    仅桌面壳进程挂载；纯 server 运行（uvicorn server.main）不受影响。
+    """
+    try:
+        import server.main as _srv
+        _app = _srv.app
+
+        def _hotkey_trigger(payload: dict):
+            _eval_js((payload or {}).get("js", ""))
+            return {"ok": True}
+
+        def _hotkey_config():
+            with _HOTKEY_LOCK:
+                _cur = dict(_ACTIVE_HOTKEYS)
+            return {"ok": True, "data": _cur}
+
+        _app.add_api_route("/api/v1/internal/hotkey-config", _hotkey_config, methods=["GET"])
+        _app.add_api_route("/api/v1/internal/hotkey", _hotkey_trigger, methods=["POST"])
+        # 把内部路由挪到路由表最前：server 的通配 GET /{full_path:path} 会抢先匹配
+        # /api/v1/internal/* 的 GET 请求，导致 hotkey-config 返回 404（POST 不受影响）。
+        for _seg in ("/api/v1/internal/hotkey-config", "/api/v1/internal/hotkey"):
+            for _i, _r in enumerate(_app.routes):
+                if getattr(_r, "path", "") == _seg:
+                    _app.routes.insert(0, _app.routes.pop(_i))
+                    break
+    except Exception as e:  # noqa: BLE001
+        print("[内部路由] 挂载失败:", e)
+
+
+def _hotkey_helper_main(port: int):
+    """子进程模式（--hotkey-helper）：仅跑 pynput 全局热键监听。
+
+    独立于 UI 进程，可合法地在后台线程调用 TIS/TSM；命中热键后
+    POST /api/v1/internal/hotkey 回主进程执行 JS。每 2s 轮询主进程
+    config（设置页重绑自动生效），并自检父进程存活（主进程退出即退出）。
+    """
+    import json as _json
+    if not _HAVE_PYNPUT:
+        print("[热键子进程] pynput 不可用，退出")
+        return
+    base = f"http://127.0.0.1:{port}"
+
+    def _fetch_config():
+        try:
+            with urllib.request.urlopen(base + "/api/v1/internal/hotkey-config", timeout=2) as _r:
+                _d = _json.loads(_r.read().decode("utf-8"))
+                return _d.get("data") or {}
+        except Exception:
+            return None
+
+    def _trigger(js: str):
+        try:
+            _req = urllib.request.Request(
+                base + "/api/v1/internal/hotkey",
+                data=_json.dumps({"js": js}).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST")
+            urllib.request.urlopen(_req, timeout=2).read()
+        except Exception:
+            pass
+
+    parent_pid = os.getppid()
+    hot = None
+    sig = None
+    while True:
+        if os.getppid() != parent_pid:   # 主进程已退出
+            break
+        try:
+            os.kill(parent_pid, 0)
+        except Exception:
+            break
+        cfg = _fetch_config()
+        cur = cfg if cfg is not None else dict(GLOBAL_HOTKEYS)
+        new_sig = _json.dumps(cur, sort_keys=True)
+        if new_sig != sig:
+            if hot is not None:
+                try:
+                    hot.stop()
+                except Exception:
+                    pass
+            try:
+                bindings = {combo: (lambda js=js: _trigger(js))
+                            for combo, js in cur.items()}
+                hot = _pynput_kb.GlobalHotKeys(bindings)
+            except Exception as e:  # noqa: BLE001
+                print("[热键子进程] 注册失败:", e)
+                hot = None
+            else:
+                sig = new_sig
+                print(f"[热键子进程] 注册 {len(bindings)} 个：", ", ".join(cur.keys()))
+                threading.Thread(target=hot.run, daemon=True).start()
+        time.sleep(2)
+    print("[热键子进程] 退出（主进程已终止）")
 
 
 # 冻结（PyInstaller，console=False）后 sys.stdout/sys.stderr 为 None。
@@ -574,7 +716,10 @@ def _get_screen_work_area():
 
     - Windows：用 ctypes Win32 取工作区物理像素，并校正 DPI 缩放（125%/150% 等）为逻辑像素，
       pywebview 的 width/height 是逻辑像素，需这样换算窗口才不会超出屏幕。
-    - macOS / Linux：用 tkinter 的 winfo_screenwidth/screenheight。
+    - macOS：用 AppKit NSScreen.visibleFrame() 取主屏可见工作区。
+      不能用 tkinter.Tk()——Tk 初始化键盘源会调用 macOS TIS/TSM API，
+      与 pynput 全局热键监听线程并发调用时，HIToolbox 会直接 abort（SIGABRT）。
+    - Linux：用 tkinter 的 winfo_screenwidth/screenheight。
     任何一步失败都返回 None，由调用方回退到默认窗口尺寸，保证不影响启动。
     """
     try:
@@ -599,7 +744,13 @@ def _get_screen_work_area():
             except Exception:
                 pass
             return phys_w / scale, phys_h / scale
-        else:
+        elif sys.platform == "darwin":
+            from AppKit import NSScreen
+            if not NSScreen.screens():
+                return None
+            fr = NSScreen.mainScreen().visibleFrame()
+            return int(fr.size.width), int(fr.size.height)
+        elif sys.platform.startswith("linux"):
             import tkinter as tk
             r = tk.Tk()
             r.withdraw()
@@ -639,6 +790,9 @@ def main():
                "详细错误已写入同目录 crash.log。")
         show_fatal("启动失败", msg + "\n\n" + _tb.format_exc())
         sys.exit(2)
+
+    # 挂内部路由：macOS 热键子进程经本地回环把命中事件转给 WebView 执行
+    _mount_internal_routes()
 
     srv = threading.Thread(target=_start_uvicorn, daemon=True)
     srv.start()
@@ -681,8 +835,12 @@ def main():
         import webview as _wv
         global _WEBVIEW
         _WEBVIEW = _wv
-        # 启动全局热键监听（后台线程，不阻塞 WebView 主事件循环）
-        threading.Thread(target=_start_hotkeys, daemon=True).start()
+        if sys.platform == "darwin":
+            # macOS：pynput 监听放子进程（TIS/TSM 并发 abort 防护）；主进程不跑 pynput
+            _spawn_hotkey_helper()
+        else:
+            # Windows/Linux：后台线程注册全局热键（无 TIS 冲突问题）
+            threading.Thread(target=_start_hotkeys, daemon=True).start()
         # 剪贴板监听（复制即质控）：默认关闭，由前端设置页开关控制
         threading.Thread(target=_clipwatch_loop, daemon=True).start()
         try:
@@ -741,6 +899,14 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--hotkey-helper" in sys.argv:
+        _hp = 8500
+        try:
+            _hp = int(sys.argv[sys.argv.index("--port") + 1])
+        except Exception:
+            pass
+        _hotkey_helper_main(_hp)
+        sys.exit(0)
     try:
         main()
     except Exception:  # noqa: BLE001

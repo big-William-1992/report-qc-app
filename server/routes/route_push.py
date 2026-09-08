@@ -52,7 +52,9 @@ def _constant_time_compare(a: str, b: str) -> bool:
 
 class PushReportJSON(BaseModel):
     """PACS/RIS 推送报告 JSON 请求体。"""
-    report_text: str = Field(..., description="报告正文（纯文本）")
+    report_text: str = Field(default="", description="报告正文（纯文本，与描述/诊断二选一）")
+    findings_desc: str = Field(default="", description="影像描述（独立字段推送时使用）")
+    diagnosis: str = Field(default="", description="影像诊断（独立字段推送时使用）")
     patient: str = Field(default="", description="患者姓名")
     gender: str = Field(default="", description="性别")
     age: str = Field(default="", description="年龄")
@@ -61,6 +63,18 @@ class PushReportJSON(BaseModel):
     exam_id: str = Field(default="", description="检查号/影像号")
     exam_date: str = Field(default="", description="检查日期（ISO 格式）")
     source: str = Field(default="PACS推送", description="来源标识")
+
+    # 兼容常见别名：description/findings → 影像描述；impression/conclusion → 影像诊断
+    @classmethod
+    def from_payload(cls, payload: dict):
+        p = dict(payload)
+        if not p.get("findings_desc"):
+            p["findings_desc"] = (p.get("findings") or p.get("description")
+                                  or p.get("desc") or p.get("findingsDescription") or "")
+        if not p.get("diagnosis"):
+            p["diagnosis"] = (p.get("impression") or p.get("conclusion")
+                              or p.get("diagnosisImpression") or "")
+        return cls(**p)
 
 
 # ── XML 辅助解析 ─────────────────────────────────────────────────────
@@ -108,6 +122,12 @@ def _parse_xml_report(body: str) -> dict:
 
         return {
             "report_text": _val("report_text", "reportText", "ReportText", "ReportText"),
+            "findings_desc": (_val("findings_desc", "findingsDesc", "FindingsDescription",
+                                   "Description", "description", "Desc", "desc",
+                                   "Findings", "findings") or ""),
+            "diagnosis": (_val("diagnosis", "Diagnosis", "Impression", "impression",
+                               "Conclusion", "conclusion", "DiagnosticImpression",
+                               "diagnosis_impression") or ""),
             "patient": _val("patient", "Patient", "PatientName", "patient_name", "PatientName"),
             "gender": _val("gender", "Gender", "Sex", "sex"),
             "age": _val("age", "Age"),
@@ -124,6 +144,12 @@ def _parse_xml_report(body: str) -> dict:
             "report_text": (_text_of(root, "ReportContent", "report_content", "ReportText",
                                      "report_text", "DiagnosticReport", "diagnostic_report")
                             or _text_of(root, "Body", "body", "Content", "content")),
+            "findings_desc": (_text_of(root, "FindingsDescription", "findings_desc",
+                                       "Description", "description", "Desc", "desc",
+                                       "Findings", "findings") or ""),
+            "diagnosis": (_text_of(root, "Diagnosis", "diagnosis", "Impression",
+                                   "impression", "Conclusion", "conclusion",
+                                   "DiagnosticImpression", "diagnosis_impression") or ""),
             "patient": (_text_of(root, "PatientName", "patient_name", "Patient",
                                  "patient") or ""),
             "gender": (_text_of(root, "Gender", "gender", "Sex", "sex") or ""),
@@ -176,16 +202,26 @@ async def push_report(
         # JSON 解析
         try:
             parsed = json.loads(body_str)
-            data = PushReportJSON(**parsed).model_dump()
+            data = PushReportJSON.from_payload(parsed).model_dump()
         except Exception as exc:
             raise HTTPException(400, f"JSON 解析失败：{exc}")
     else:
         raise HTTPException(400, "不支持的 Content-Type，请使用 application/json 或 application/xml")
 
-    # ── 校验必要字段 ──────────────────────────────────────────────
+    # ── 校验必要字段：影像描述/影像诊断 或 整段 report_text 至少一项 ──
+    findings_desc = (data.get("findings_desc") or "").strip()
+    diagnosis = (data.get("diagnosis") or "").strip()
     report_text = (data.get("report_text") or "").strip()
+    if not report_text and (findings_desc or diagnosis):
+        # 字段化推送：按「影像描述：…\n影像诊断：…」拼接为质控/入库文本
+        parts = []
+        if findings_desc:
+            parts.append(f"影像描述：{findings_desc}")
+        if diagnosis:
+            parts.append(f"影像诊断：{diagnosis}")
+        report_text = "\n".join(parts)
     if not report_text:
-        raise HTTPException(400, "report_text 不能为空")
+        raise HTTPException(400, "report_text 与 findings_desc/diagnosis 不能同时为空")
 
     # ── 构建元数据 ─────────────────────────────────────────────────
     meta = {
@@ -195,6 +231,10 @@ async def push_report(
         "modality": data.get("modality", ""),
         "applied_site": data.get("applied_site", ""),
     }
+    if findings_desc or diagnosis:
+        # 字段化推送：描述/诊断作为独立字段随 meta 一并入库、入队
+        meta["findings_desc"] = findings_desc
+        meta["diagnosis"] = diagnosis
     source = data.get("source", "PACS推送")
 
     # ── 执行质控 ──────────────────────────────────────────────────
@@ -233,6 +273,15 @@ async def push_report(
     return _envelope(True, "PUSH_OK", {
         "qc": qc_result,
         "meta": meta,
+        "fields": {
+            "patient": meta.get("patient", ""),
+            "gender": meta.get("gender", ""),
+            "age": meta.get("age", ""),
+            "applied_site": meta.get("applied_site", ""),
+            "modality": meta.get("modality", ""),
+            "findings_desc": meta.get("findings_desc", ""),
+            "diagnosis": meta.get("diagnosis", ""),
+        },
         "source": source,
         "warnings": qc_result.get("_warnings", []),
     }, "报告已接收并完成质控")
