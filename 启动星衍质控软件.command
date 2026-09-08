@@ -6,8 +6,8 @@ cd "$(dirname "$0")"
 
 # 优先使用托管虚拟环境（已含 fastapi/uvicorn/pywebview）；
 # 缺失时依次回退到基础解释器、Homebrew Python、系统 python3。
-VENV="/Users/xiejun/.workbuddy/binaries/python/envs/default/bin/python3"
-BASE="/Users/xiejun/.workbuddy/binaries/python/versions/3.13.12/bin/python3"
+VENV="$HOME/.workbuddy/binaries/python/envs/default/bin/python3"
+BASE="$HOME/.workbuddy/binaries/python/versions/3.13.12/bin/python3"
 HB="/opt/homebrew/bin/python3"
 if [ -x "$VENV" ]; then
   PY="$VENV"

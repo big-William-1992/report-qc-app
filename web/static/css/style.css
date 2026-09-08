@@ -101,6 +101,24 @@ button {
   font-size: inherit;
 }
 
+/* 键盘焦点可见性（shadcn 规范：仅键盘导航显示 focus ring，不影响鼠标点击观感） */
+:focus-visible {
+  outline: 2px solid var(--primary, #2d6cdf);
+  outline-offset: 2px;
+}
+.btn:focus-visible, .topbar-btn:focus-visible, .nav-cell:focus-visible,
+.modal-close:focus-visible, .sidebar-toggle-btn:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+/* 按钮禁用态：与 loading 态一致的降透明度，光标提示不可点 */
+button:disabled, .btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  pointer-events: auto;
+}
+
 input, select, textarea {
   font-family: inherit;
   font-size: inherit;
@@ -196,7 +214,18 @@ input, select, textarea {
   border-color: rgba(255,255,255,0.12);
   box-shadow: 0 4px 12px rgba(45,108,223,0.35);
 }
-.nav-cell .nav-cell-ico { font-size: 19px; line-height: 1; }
+.nav-cell .nav-cell-ico {
+  font-size: 19px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.nav-cell .nav-cell-ico svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
 .nav-cell .nav-cell-label { font-size: 11.5px; text-align: center; }
 /* 末尾奇数格（如 5/7 项时的最后一项）跨满整行，保持宫格平衡。
    由 applyRoleUI() 基于「可见项」动态加 .span-full，避免 DOM 里
@@ -211,6 +240,10 @@ input, select, textarea {
   color: rgba(160,174,192,0.5);
   font-weight: 600;
 }
+.nav-grid + .nav-section-label { padding-top: 20px; }
+
+/* 运行质控按钮运行中状态 */
+.btn-busy { opacity: .72; cursor: progress; pointer-events: none; }
 
 .sidebar-footer {
   padding: 8px 0 12px;
@@ -362,6 +395,7 @@ input, select, textarea {
   position: relative;
 }
 .topbar-btn:hover { background: var(--border-color); color: var(--text-primary); }
+.topbar-btn svg { display: block; }
 .topbar-btn .dot {
   position: absolute; top: 7px; right: 7px;
   width: 8px; height: 8px; border-radius: 50%;
@@ -426,6 +460,8 @@ input, select, textarea {
   gap: 8px;
 }
 .card-header h3 .icon { font-size: 16px; }
+.card-header h3 .icon.svg-icon { display: inline-flex; align-items: center; }
+.card-header h3 .icon.svg-icon svg { width: 16px; height: 16px; }
 .card-body { padding: 18px 20px; }
 
 .card-header-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; margin-right: 8px; }
@@ -520,26 +556,31 @@ input, select, textarea {
 /* 元信息卡 */
 .meta-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr) repeat(2, 1.5fr) repeat(2, 1fr);
-  gap: 12px;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
 }
 .meta-field label {
   display: block;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text-secondary);
-  margin-bottom: 5px;
+  margin-bottom: 4px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .meta-field input, .meta-field select {
   width: 100%;
-  padding: 9px 12px;
+  height: 34px;
+  padding: 0 10px;
   border: 1.5px solid var(--border-color);
   border-radius: var(--radius-sm);
-  font-size: 13.5px;
+  font-size: 13px;
   color: var(--text-primary);
   background: var(--input-bg);
+  box-sizing: border-box;
   transition: border-color 0.2s;
 }
 .meta-field input:focus, .meta-field select:focus {
@@ -1005,17 +1046,15 @@ mark.anno-info { background: rgba(122, 134, 153, 0.14); color: var(--text-second
   .content { padding: 20px 22px; }
   .qc-layout { grid-template-columns: 1fr 380px; }
 }
-/* 1200px 以下：患者信息降 4 列、看板卡片降 2 列 */
+/* 1200px 以下：看板卡片降 2 列 */
 @media (max-width: 1200px) {
   .qc-layout { grid-template-columns: 1fr 360px; }
   .stat-cards { grid-template-columns: repeat(2, 1fr); }
-  .meta-grid { grid-template-columns: repeat(4, 1fr); }
 }
 /* 1024px 以下（桌面最小宽）：质控单栏、患者信息降 2 列、侧边栏折叠为抽屉、看板卡片降 1 列 */
 @media (max-width: 1024px) {
   .qc-layout { grid-template-columns: 1fr; }
   .qc-result-col { position: static; }
-  .meta-grid { grid-template-columns: repeat(2, 1fr); }
   .form-grid { grid-template-columns: 1fr; }
   .stat-cards { grid-template-columns: 1fr; }
   .sidebar { transform: translateX(-100%); }
@@ -1034,7 +1073,7 @@ mark.anno-info { background: rgba(122, 134, 153, 0.14); color: var(--text-second
 }
 /* 900px 以下（浏览器窄窗兜底） */
 @media (max-width: 900px) {
-  .meta-grid { grid-template-columns: repeat(2, 1fr); }
+  .meta-grid { grid-template-columns: repeat(3, 1fr); }
   .stat-cards { grid-template-columns: 1fr; }
   .resp-grid { grid-template-columns: 1fr !important; }
 }
@@ -1160,6 +1199,12 @@ mark.anno-info { background: rgba(122, 134, 153, 0.14); color: var(--text-second
   font-size: 12px; color: var(--text-secondary, #5b6b85); margin-top: 5px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.queue-preview .preview-tag {
+  display: inline-block; margin: 0 6px 0 2px; padding: 0 6px;
+  font-size: 11px; line-height: 18px; border-radius: 4px;
+  color: var(--accent, #4f6ef7); background: var(--bg-secondary, #eef2f9);
+  vertical-align: 1px;
+}
 .queue-acts { display: flex; gap: 8px; flex-shrink: 0; }
 
 /* 错误类型分布：横向条 */
@@ -1211,6 +1256,15 @@ mark.anno-info { background: rgba(122, 134, 153, 0.14); color: var(--text-second
 }
 .gate-err { color: #e53e3e; font-size: 12.5px; min-height: 16px; }
 .gate-actions { margin-top: 6px; }
+.gate-links {
+  display: flex; gap: 20px; justify-content: center; margin-top: 14px;
+}
+.gate-link {
+  background: none; border: none; padding: 2px 4px; cursor: pointer;
+  color: var(--primary, #2b6cb0); font-size: 13px; text-decoration: underline;
+}
+.gate-link:hover { color: var(--primary-hover, #1e54c7); text-decoration: underline; }
+.gate-link:focus-visible { outline: 2px solid var(--primary, #2b6cb0); outline-offset: 2px; border-radius: 4px; }
 .gate-mid {
   font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 15px; letter-spacing: 1px;
   background: var(--bg-input, #f5f7fb); border: 1px dashed var(--border-color, #cbd5e0);

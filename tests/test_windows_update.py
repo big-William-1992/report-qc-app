@@ -31,7 +31,6 @@ def main():
         print("SKIP: 非 Windows 平台，跳过 Windows 自动更新实测。")
         return 0
 
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
     import auto_updater as au
 
     # 校验平台分支选择正确
