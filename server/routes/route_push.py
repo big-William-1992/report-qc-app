@@ -23,17 +23,24 @@ router = APIRouter(tags=["push"])
 
 # ── 推送鉴权 ─────────────────────────────────────────────────────────
 
-_PUSH_API_KEY = os.environ.get("PUSH_API_KEY", "").strip()
+def _push_api_key() -> str:
+    """读取推送 API Key。
+
+    每次请求从环境变量读取，避免进程启动时未设置、测试中途才注入导致 503；
+    生产部署仍只需设置一次 PUSH_API_KEY 环境变量。
+    """
+    return os.environ.get("PUSH_API_KEY", "").strip()
 
 
 def _require_push_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")) -> str:
     """验证推送来源的 API Key。"""
-    if not _PUSH_API_KEY:
+    configured_key = _push_api_key()
+    if not configured_key:
         raise HTTPException(503, "推送服务未配置：请设置 PUSH_API_KEY 环境变量")
     if not x_api_key:
         raise HTTPException(401, "缺少 X-API-Key 头")
     # 恒定时间比较防时序攻击
-    if len(x_api_key) != len(_PUSH_API_KEY) or not _constant_time_compare(x_api_key, _PUSH_API_KEY):
+    if len(x_api_key) != len(configured_key) or not _constant_time_compare(x_api_key, configured_key):
         raise HTTPException(403, "X-API-Key 无效")
     return x_api_key
 

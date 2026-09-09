@@ -60,6 +60,16 @@ class AccountCreate(BaseModel):
     name: str = ""
 
 
+class RegisterReq(BaseModel):
+    """登录页自助注册：始终创建 doctor 角色（防滥用，绝不授予 admin）。"""
+    emp_id: str
+    password: str
+    name: str = ""
+class ChangePwdReq(BaseModel):
+    """登录页自助修改密码：需校验旧密码。"""
+    emp_id: str
+    old_password: str
+    new_password: str
 class LoginReq(BaseModel):
     emp_id: str
     password: str

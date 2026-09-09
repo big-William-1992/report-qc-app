@@ -10,7 +10,7 @@ from server.schemas import (AccountCreate, RegisterReq, ChangePwdReq, LoginReq,
                             RoleReq, PwdReq, DeptReq, DeptCreateReq)
 from server.deps import (SECRET, _envelope, _emp_from_auth, make_token,
                           require_emp, require_admin, log_audit,
-                          _check_login_rate, _record_login_failure, _clear_login_failures)
+                          _login_locked, _record_login_failure, _clear_login_failures)
 import accounts
 
 router = APIRouter(tags=['accounts'])
@@ -41,7 +41,8 @@ def account_create(request: Request, req: AccountCreate,
 def account_register(req: RegisterReq, request: Request):
     """登录页自助注册：始终创建 doctor 角色（绝不授予 admin，防滥用）。
     与 /api/v1/accounts 的差异：后者创建账号需登录（管理员/首账号引导）。"""
-    _check_login_rate(request)
+    if _login_locked(req.emp_id):
+        return _envelope(False, "ERR", {}, "登录失败次数过多，请稍后再试")
     # 空库必须走「创建首个账号」引导（自动 admin）；自助注册拒绝，防止抢先注册提权
     if accounts.count_accounts() == 0:
         return _envelope(False, "ERR", {}, "系统尚未初始化，请先创建首个账号")
@@ -56,17 +57,19 @@ def account_register(req: RegisterReq, request: Request):
 @router.post("/api/v1/accounts/change-password")
 def account_change_password(req: ChangePwdReq, request: Request):
     """登录页自助修改密码：校验旧密码后可重置为任意 >=6 位新密码。"""
-    _check_login_rate(request)
+    if _login_locked(req.emp_id):
+        return _envelope(False, "ERR", {}, "登录失败次数过多，请稍后再试")
     if len(req.new_password or "") < 6:
         return _envelope(False, "ERR", {}, "新密码至少 6 位")
     if not accounts.verify_account(req.emp_id, req.old_password):
-        _record_login_failure(request)
+        _record_login_failure(req.emp_id)
         log_audit(req.emp_id, "password_change_failed", {"reason": "旧密码错误"},
                   request.client.host if request.client else "")
         return _envelope(False, "ERR", {}, "旧密码不正确")
-    if not accounts.reset_password(req.emp_id, req.new_password):
-        return _envelope(False, "ERR", {}, "账号不存在")
-    _clear_login_failures(request)
+    ok, msg = accounts.reset_password(req.emp_id, req.new_password)
+    if not ok:
+        return _envelope(False, "ERR", {}, msg)
+    _clear_login_failures(req.emp_id)
     log_audit(req.emp_id, "password_changed", {"via": "login_screen"},
               request.client.host if request.client else "")
     return _envelope(True, "OK", {}, "密码已修改，请用新密码登录")
@@ -74,13 +77,14 @@ def account_change_password(req: ChangePwdReq, request: Request):
 
 @router.post("/api/v1/accounts/login")
 def account_login(req: LoginReq, request: Request):
-    _check_login_rate(request)
+    if _login_locked(req.emp_id):
+        return _envelope(False, "ERR", {}, "登录失败次数过多，请稍后再试")
     if not accounts.verify_account(req.emp_id, req.password):
-        _record_login_failure(request)
+        _record_login_failure(req.emp_id)
         ip = request.client.host if request.client else ""
         log_audit(req.emp_id, "login_failed", {"reason": "密码错误"}, ip)
         return _envelope(False, "ERR", {}, "工号或密码错误")
-    _clear_login_failures(request)
+    _clear_login_failures(req.emp_id)
     ip = request.client.host if request.client else ""
     log_audit(req.emp_id, "login_success", None, ip)
     token = make_token(req.emp_id)
@@ -126,10 +130,9 @@ def account_set_role(request: Request, emp_id: str, req: RoleReq,
 @router.post("/api/v1/accounts/{emp_id}/password")
 def account_reset_password(request: Request, emp_id: str, req: PwdReq,
                            admin: str = Depends(require_admin)):
-    if len(req.password or "") < 6:
-        return _envelope(False, "ERR", {}, "密码至少 6 位")
-    if not accounts.reset_password(emp_id, req.password):
-        return _envelope(False, "ERR", {}, "账号不存在")
+    ok, msg = accounts.reset_password(emp_id, req.password)
+    if not ok:
+        return _envelope(False, "ERR", {}, msg)
     log_audit(admin, "password_reset", {"target": emp_id},
               request.client.host if request.client else "")
     return _envelope(True, "OK", {}, "密码已重置")

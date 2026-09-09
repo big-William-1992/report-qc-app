@@ -1,9 +1,4 @@
-"""server/core.py — 星衍质控后端共享层（2026-08-18 从 main.py 拆分）
-
-承载与具体路由无关的通用能力：统一日志、响应封装、评分键翻译、
-跨平台数据目录、JSON 原子写、队列/设置的数据层（ORM，qc.db 收敛）。
-路由模块（server/main.py 等）通过 `from server.core import ...` 复用。
-"""
+"""server/core.py — 星衍质控后端共享层（2026-09-09 改为动态 SessionLocal）"""
 import os
 import sys
 import json
@@ -12,7 +7,13 @@ import threading
 import datetime
 from typing import Any
 
-from server.db import SessionLocal
+from server import db as _db
+
+
+def SessionLocal():
+    """会话工厂代理：始终读取 server.db 当前绑定，避免测试切库后残留旧引用。"""
+    return _db.SessionLocal()
+
 
 
 # ----------------------------- 跨平台文件权限保护 -----------------------------
@@ -20,8 +21,8 @@ def _restrict_file_access(path: str) -> None:
     """限制敏感文件（密钥/口令/激活码）仅当前用户可读写。
 
     POSIX: os.chmod 0o600（标准做法）。
-    Windows: os.chmod 静默无效——改用 icacls 禁用继承、仅授予当前用户完全控制。
-    icacls 是 Windows 内置命令（Vista+），无需额外依赖。失败静默忽略（不阻塞主流程）。
+    Windows: os.chmod 静默无效——改用 icacls 禁用继承，仅授予当前用户完全控制。
+    icacls 是 Windows 内置工具（Vista+），无需额外依赖。失败静默忽略（不阻塞主流程）。
     """
     try:
         if sys.platform.startswith("win"):
@@ -70,7 +71,7 @@ def _eng_scores(cn: dict) -> dict:
     """把引擎中文维度键映射为前端期望的英文键；未知键透传。"""
     out = {}
     for k, v in (cn or {}).items():
-        out[_SCORE_EN.get(k, k)] = v
+        out[k] = _SCORE_EN.get(k, k)
     return out
 
 
@@ -97,11 +98,11 @@ def _atomic_json_write(path: str, obj) -> None:
     """临时文件 + os.replace 原子写，配合 _JSON_IO_LOCK 防并发撕裂/覆盖。"""
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(obj, fh, ensure_ascii=False, indent=2)
+        json.dump(obj, ensure_ascii=False, indent=2, fp=fh)
     os.replace(tmp, path)
 
 
-# ----------------------------- 队列数据层（qc.db QueueItem，2026-08-18 收敛） -----------------------------
+# ----------------------------- 队列数据层（qc.db QueueItem，2026-09-09 收敛） -----------------------------
 def _queue_orm_all() -> list:
     """读队列（ORM）：返回与旧 JSON 结构兼容的 dict 列表（id/hash/patient/site/text/source/ts/meta）。"""
     from server.models import QueueItem
@@ -115,7 +116,6 @@ def _queue_orm_all() -> list:
                 meta = {}
             out.append({
                 "id": str(q.id),
-                # 2026-08-18：优先用 DB 列 report_hash，避免列表页对每条现算 MD5
                 "hash": q.report_hash or hashlib.md5("".join((q.report_text or "").split()).encode("utf-8", "ignore")).hexdigest(),
                 "patient": meta.get("patient", ""),
                 "site": meta.get("applied_site", ""),
@@ -167,7 +167,6 @@ def _queue_orm_add_dedup(report_text: str, meta: dict):
                 s.commit()
                 return (item.id, False)
             except Exception:
-                # 唯一索引冲突（并发窗口）：回退查现有条目
                 s.rollback()
                 exist = s.query(QueueItem).filter(QueueItem.report_hash == h).first()
                 return (exist.id if exist else None, True)
@@ -177,7 +176,7 @@ def _queue_orm_remove(qid: int) -> bool:
     from server.models import QueueItem
     with SessionLocal() as s:
         q = s.query(QueueItem).filter(QueueItem.id == qid).first()
-        if not q:
+        if q is None:
             return False
         s.delete(q)
         s.commit()
@@ -214,10 +213,8 @@ def _migrate_queue_to_db() -> None:
                     meta = dict(it.get("meta") or {})
                     meta.setdefault("patient", it.get("patient", ""))
                     meta.setdefault("applied_site", it.get("site", ""))
-                    meta.setdefault("source", it.get("source", "手动"))
+                    meta.setdefault("source", it.get("source", ""))
                     meta.setdefault("ts", it.get("ts", ""))
-                    # 2026-08-18：历史条目补归属（ris-poll）——否则非 admin
-                    # 的 queue_list 归属过滤对迁移条目全部不可见
                     meta.setdefault("_emp", "ris-poll")
                     s.add(QueueItem(report_text=it.get("text", ""),
                                     meta_json=json.dumps(meta, ensure_ascii=False),
@@ -261,7 +258,7 @@ def _settings_orm_save(data: dict) -> None:
 
 
 def _migrate_settings_to_db() -> None:
-    """旧 web_settings.json → Setting 表（一次性，2026-08-18 收敛）；完成后改名 .bak。"""
+    """旧 web_settings.json → Setting 表（user_id 为空），2026-08-18 收敛。"""
     from server.models import Setting
     spath = os.path.join(_appdata_dir(), "web_settings.json")
     if not os.path.exists(spath):
@@ -273,10 +270,12 @@ def _migrate_settings_to_db() -> None:
         data = {}
     if data:
         with SessionLocal() as s:
-            if s.query(Setting).filter(Setting.user_id.is_(None)).count() == 0:
-                for k, v in data.items():
-                    s.add(Setting(key=k, value_json=json.dumps(v, ensure_ascii=False), user_id=None))
-                s.commit()
+            for k, v in data.items():
+                row = s.query(Setting).filter(Setting.key == k, Setting.user_id.is_(None)).first()
+                if row is None:
+                    s.add(Setting(key=k, value_json=json.dumps(v, ensure_ascii=False),
+                                  user_id=None))
+            s.commit()
     try:
         os.rename(spath, spath + ".bak")
     except Exception:

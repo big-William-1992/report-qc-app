@@ -14,7 +14,9 @@ import secrets
 import datetime
 
 from server import db, models
-SessionLocal = db.SessionLocal
+def SessionLocal():
+    """会话工厂代理：始终读取 server.db 当前绑定，避免测试切库后残留旧引用。"""
+    return db.SessionLocal()
 User = models.User
 Department = models.Department
 
@@ -98,6 +100,32 @@ def _verify_password(pw: str, salt: str, stored: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
+# ── 密码强度策略 ────────────────────────────────────────────────────
+
+_MIN_PW_LEN = 8
+_WEAK_PASSWORDS = {
+    "12345678", "11111111", "00000000", "password", "passw0rd",
+    "admin123", "admin1234", "qwerty123", "abc12345", "abc123456",
+    "letmein", "welcome", "iloveyou", "monkey", "1234567890",
+}
+
+def validate_password_strength(pw: str) -> tuple:
+    """校验密码强度。返回 (ok, msg)。
+    规则：长度 ≥8、含字母和数字、不在常见弱密码清单。"""
+    pw = pw or ""
+    if len(pw) < _MIN_PW_LEN:
+        return False, f"密码至少 {_MIN_PW_LEN} 位，当前 {len(pw)} 位"
+    if pw.strip().lower() in _WEAK_PASSWORDS:
+        return False, "密码强度不足：请勿使用常见弱密码"
+    has_alpha = any(c.isalpha() for c in pw)
+    has_digit = any(c.isdigit() for c in pw)
+    if not has_alpha:
+        return False, "密码需包含字母"
+    if not has_digit:
+        return False, "密码需包含数字"
+    return True, ""
+
+
 def create_account(emp_id: str, password: str, name: str = "",
                    role: str = "doctor", dept_id=None) -> tuple:
     """创建账号。返回 (ok, msg)。工号为登录名，唯一。role 默认 doctor。"""
@@ -107,8 +135,9 @@ def create_account(emp_id: str, password: str, name: str = "",
     role = (role or "doctor").strip()
     if not emp_id:
         return False, "工号不能为空"
-    if len(password) < 6:
-        return False, "密码至少 6 位"
+    ok, msg = validate_password_strength(password)
+    if not ok:
+        return False, msg
     salt = secrets.token_hex(16)
     pwd_hash = _hash_password(password, salt)
     init_db()
@@ -194,21 +223,24 @@ def set_role(emp_id: str, role: str) -> bool:
     return True
 
 
-def reset_password(emp_id: str, new_pw: str) -> bool:
+def reset_password(emp_id: str, new_pw: str) -> tuple:
     """管理员重置某账号密码（或本人修改）。"""
     emp_id = (emp_id or "").strip()
-    if not emp_id or not new_pw:
-        return False
+    if not emp_id:
+        return False, "工号不能为空"
+    ok, msg = validate_password_strength(new_pw)
+    if not ok:
+        return False, msg
     init_db()
     with SessionLocal() as s:
         u = s.query(User).filter(User.emp_id == emp_id).first()
         if not u:
-            return False
+            return False, "账号不存在"
         salt = secrets.token_hex(16)
         u.salt = salt
         u.pwd_hash = _hash_password(new_pw, salt)
         s.commit()
-    return True
+    return True, ""
 
 
 def get_dept_id(emp_id: str):

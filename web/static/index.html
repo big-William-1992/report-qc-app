@@ -153,6 +153,10 @@
         <span class="nav-cell-ico">👥</span>
         <span class="nav-cell-label">用户管理</span>
       </div>
+      <div class="nav-cell" data-admin-only data-page="audit" onclick="switchPage('audit',this)" style="display:none">
+        <span class="nav-cell-ico">📋</span>
+        <span class="nav-cell-label">审计日志</span>
+      </div>
       <div class="nav-cell" data-page="rules" onclick="switchPage('rules',this)">
         <span class="nav-cell-ico">⚙️</span>
         <span class="nav-cell-label">规则维护</span>
@@ -681,6 +685,63 @@
       </div>
     </section>
 
+    <section class="page" id="page-audit">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <div>
+          <h3 style="font-size:18px;font-weight:700;">审计日志</h3>
+          <p style="font-size:13px;color:var(--text-secondary);margin-top:2px;">记录敏感操作（登录 / 账号管理 / 角色变更 / 密码重置），供管理员事后审查</p>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="loadAudit(1)">🔄 刷新</button>
+      </div>
+      <div class="card">
+        <div class="card-body" style="padding:0;">
+          <!-- 筛选栏 -->
+          <div style="display:flex;gap:8px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border-color);">
+            <select id="auditFilterAction" class="cfg-textarea" style="min-height:0;height:30px;padding:2px 8px;font-size:13px;width:150px;">
+              <option value="">全部操作</option>
+              <option value="login_success">登录成功</option>
+              <option value="login_failed">登录失败</option>
+              <option value="login_locked">账号锁定</option>
+              <option value="account_created">创建账号</option>
+              <option value="role_changed">角色变更</option>
+              <option value="password_reset">密码重置</option>
+              <option value="dept_changed">科室变更</option>
+              <option value="department_created">创建科室</option>
+            </select>
+            <input id="auditFilterEmpId" class="cfg-textarea" placeholder="🔍 按工号过滤..." style="min-height:0;height:30px;padding:2px 10px;font-size:13px;width:140px;" />
+            <input id="auditFilterStart" type="datetime-local" style="height:30px;padding:2px 6px;font-size:12px;" />
+            <span style="font-size:12px;color:var(--text-muted);">至</span>
+            <input id="auditFilterEnd" type="datetime-local" style="height:30px;padding:2px 6px;font-size:12px;" />
+            <button class="btn btn-outline btn-sm" onclick="loadAudit(1)">🔍 搜索</button>
+            <span id="auditTotalInfo" style="margin-left:auto;font-size:12px;color:var(--text-muted);">加载中...</span>
+          </div>
+          <!-- 审计表格 -->
+          <div style="max-height:520px;overflow:auto;">
+            <table class="data-table" style="margin:0;">
+              <thead>
+                <tr>
+                  <th style="width:140px;">时间</th>
+                  <th style="width:90px;">工号</th>
+                  <th style="width:110px;">操作</th>
+                  <th>详情</th>
+                  <th style="width:120px;">IP</th>
+                </tr>
+              </thead>
+              <tbody id="auditBody">
+                <tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:32px;">加载中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <!-- 分页 -->
+          <div id="auditPagination" style="display:flex;justify-content:center;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid var(--border-color);">
+            <button class="btn btn-outline btn-sm" onclick="loadAudit(AUTH_PAGE - 1)" id="auditPrevBtn">◀ 上一页</button>
+            <span id="auditPageInfo" style="font-size:12px;color:var(--text-muted);"></span>
+            <button class="btn btn-outline btn-sm" onclick="loadAudit(AUTH_PAGE + 1)" id="auditNextBtn">下一页 ▶</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ========== 页面5：规则维护 ========== -->
     <section class="page" id="page-rules">
       <div class="card">
@@ -1025,7 +1086,6 @@
 <!-- Toast 容器 -->
 <div class="toast-container" id="toastContainer"></div>
 
-<script src="/static/js/core.js?v=20260818"></script>
-<script src="/static/js/app.js?v=20260818c"></script>
+<script type="module" src="/static/js/app.js?v=20260910"></script>
 </body>
 </html>

@@ -109,7 +109,9 @@ from server import license_web
 import ocr_provider  # noqa: F401 (副作用导入: 确保 PyInstaller 收集 OCR 引擎)
 from version import APP_VERSION
 from server import db  # SQLAlchemy 统一数据层（users/departments/queue/settings）
-from server.db import SessionLocal  # noqa: F401 (会话工厂: 转发给旧引用方/打包占位)
+def SessionLocal():
+    """会话工厂代理：转发到当前 server.db 绑定，避免测试切库后 main 残留旧引用。"""
+    return db.SessionLocal()
 from server.core import (  # 共享层（2026-08-18 拆分）：日志/响应封装/数据目录/队列与设置数据层
     _log, _envelope, _eng_scores, _appdata_dir, _atomic_json_write, _JSON_IO_LOCK,
     _queue_orm_all, _queue_orm_add,  # noqa: F401 (re-export)
@@ -118,6 +120,7 @@ from server.core import (  # 共享层（2026-08-18 拆分）：日志/响应封
     _migrate_queue_to_db, _settings_orm_all, _settings_orm_save, _migrate_settings_to_db,
     _restrict_file_access,
 )
+from server.deps import log_audit, _login_locked, _record_login_failure, _clear_login_failures  # 审计日志 + 登录限流
 
 # ----------------------------- 鉴权（stdlib HMAC 签名 token） -----------------------------
 def _load_or_create_secret() -> str:
@@ -1079,6 +1082,7 @@ def account_create(req: AccountCreate, request: Request,
     # 首个账号免鉴权引导（boot）；已存在账号则必须登录后才能创建（防滥用）。
     # X-Emp-Id 头仅限本机（127.0.0.1）兜底：内网 --host 0.0.0.0 部署时，
     # 任意客户端伪造 X-Emp-Id 即可批量创建账号（2026-08-18 修复）。
+    emp = None
     if accounts.count_accounts() > 0:
         emp = _emp_from_auth(authorization)
         if not emp:
@@ -1089,9 +1093,13 @@ def account_create(req: AccountCreate, request: Request,
             raise HTTPException(401, "创建账号需登录：Authorization: Bearer <token>")
         if accounts.get_role(emp) != "admin":
             raise HTTPException(403, "仅管理员可创建账号")
+    _client_ip = request.client.host if request.client else ""
+    _operator = emp or "boot"
     ok, msg = accounts.create_account(req.emp_id, req.password, req.name)
     if not ok:
         return _envelope(False, "ERR", {}, msg)
+    log_audit(_operator, "account_created",
+              {"target": req.emp_id}, _client_ip)
     # 首账号自动 admin 已在 create_account 的 INSERT 事务内原子判定（BEGIN IMMEDIATE），
     # 无需在此二次 count+set_role（旧实现有并发竞态，两个并发首账号可都成 admin）
     token = make_token(req.emp_id)   # 首个账号创建即登录，免去二次登录
@@ -1100,42 +1108,28 @@ def account_create(req: AccountCreate, request: Request,
                       "role": accounts.get_role(req.emp_id)}, msg)
 
 
-# 登录失败限速（内存态）：连续失败 5 次锁定该工号 5 分钟，防弱口令爆破（2026-08-18 新增）
-_LOGIN_FAIL: Dict[str, List] = {}
-_LOGIN_MAX_FAIL = 5
-_LOGIN_LOCK_SEC = 300
+# 登录失败限速：统一走 server.deps 的 emp_id 内存限流（测试可直接重置 main._LOGIN_FAIL）
+from server import deps as _deps_auth  # noqa: E402
 
-
-def _login_locked(emp_id: str) -> bool:
-    rec = _LOGIN_FAIL.get(emp_id)
-    if not rec:
-        return False
-    fails, first_ts, locked_until = rec
-    if locked_until:
-        if time.time() < locked_until:
-            return True
-        # 锁定期满：清除记录（此前不清 fails 会退化为"锁 10 分钟窗口"，与 5 分钟承诺不符）
-        _LOGIN_FAIL.pop(emp_id, None)
-        return False
-    if time.time() - first_ts > 600:  # 10 分钟窗口内累计，超窗重置
-        _LOGIN_FAIL.pop(emp_id, None)
-        return False
-    return fails >= _LOGIN_MAX_FAIL
+_LOGIN_FAIL = _deps_auth._LOGIN_FAIL
+LOGIN_LOCK_SECONDS = _deps_auth._LOGIN_LOCK_DURATION
 
 
 @app.post("/api/v1/accounts/login")
-def account_login(req: LoginReq):
+def account_login(req: LoginReq, request: Request):
     emp_id = (req.emp_id or "").strip()
+    _client_ip = request.client.host if request.client else ""
     if _login_locked(emp_id):
+        log_audit(emp_id, "login_locked", {}, _client_ip)
         return _envelope(False, "ERR", {}, "登录失败次数过多，请稍后再试")
     if not accounts.verify_account(emp_id, req.password):
-        rec = _LOGIN_FAIL.setdefault(emp_id, [0, time.time(), None])
-        rec[0] += 1
-        if rec[0] >= _LOGIN_MAX_FAIL:
-            rec[2] = time.time() + _LOGIN_LOCK_SEC
+        _record_login_failure(emp_id)
+        rec = _deps_auth._LOGIN_FAIL.get(emp_id, [0, 0, None])
+        log_audit(emp_id, "login_failed", {"attempts": rec[0]}, _client_ip)
         return _envelope(False, "ERR", {}, "工号或密码错误")
-    _LOGIN_FAIL.pop(emp_id, None)
+    _clear_login_failures(emp_id)
     token = make_token(emp_id)
+    log_audit(emp_id, "login_success", {}, _client_ip)
     return _envelope(True, "OK",
                       {"token": token, "emp_id": emp_id,
                        "name": accounts.get_name(emp_id),
@@ -1160,31 +1154,40 @@ def account_list(emp: str = Depends(require_emp)):
 
 
 @app.post("/api/v1/accounts/{emp_id}/role")
-def account_set_role(emp_id: str, req: RoleReq, admin: str = Depends(require_admin)):
+def account_set_role(request: Request, emp_id: str, req: RoleReq,
+                    admin: str = Depends(require_admin)):
+    _ip = request.client.host if request.client else ""
     if req.role not in ("admin", "doctor"):
         return _envelope(False, "ERR", {}, "角色只能是 admin 或 doctor")
     if not accounts.set_role(emp_id, req.role):
         return _envelope(False, "ERR", {}, "账号不存在")
+    log_audit(admin, "role_changed",
+              {"target": emp_id, "new_role": req.role}, _ip)
     return _envelope(True, "OK", {}, "角色已更新")
 
 
 
 
 @app.post("/api/v1/accounts/{emp_id}/password")
-def account_reset_password(emp_id: str, req: PwdReq, admin: str = Depends(require_admin)):
+def account_reset_password(request: Request, emp_id: str, req: PwdReq,
+                           admin: str = Depends(require_admin)):
+    _ip = request.client.host if request.client else ""
     if len(req.password or "") < 6:
         return _envelope(False, "ERR", {}, "密码至少 6 位")
     if not accounts.reset_password(emp_id, req.password):
         return _envelope(False, "ERR", {}, "账号不存在")
+    log_audit(admin, "password_reset", {"target": emp_id}, _ip)
     return _envelope(True, "OK", {}, "密码已重置")
 
 
 
 
 @app.post("/api/v1/accounts/{emp_id}/dept")
-def account_set_dept(emp_id: str, req: DeptReq, admin: str = Depends(require_admin)):
+def account_set_dept(request: Request, emp_id: str, req: DeptReq, admin: str = Depends(require_admin)):
+    _ip = request.client.host if request.client else ""
     if not accounts.set_dept(emp_id, req.dept_id):
         return _envelope(False, "ERR", {}, "账号不存在")
+    log_audit(admin, "dept_changed", {"target": emp_id, "dept_id": req.dept_id}, _ip)
     return _envelope(True, "OK", {}, "科室已更新")
 
 
@@ -1196,10 +1199,12 @@ def department_list(admin: str = Depends(require_admin)):
 
 
 @app.post("/api/v1/departments")
-def department_create(req: DeptCreateReq, admin: str = Depends(require_admin)):
+def department_create(request: Request, req: DeptCreateReq, admin: str = Depends(require_admin)):
+    _ip = request.client.host if request.client else ""
     ok, msg = accounts.create_department(req.name)
     if not ok:
         return _envelope(False, "ERR", {}, str(msg))
+    log_audit(admin, "department_created", {"name": req.name}, _ip)
     return _envelope(True, "OK", {}, "科室已创建")
 
 
@@ -2103,6 +2108,60 @@ class _NoCacheStaticFiles(StaticFiles):
         resp.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
         return resp
 
+
+# ── 路由模块注册（2026-09-09）──────────────────────────────────────────
+# route_push 定义在 server/routes/ 下，含 PACS 推送端点。
+# route_account 有缺失 schema（RegisterReq/ChangePwdReq），暂不注册。
+from server.routes.route_push import router as _router_push
+app.include_router(_router_push)
+
+# ── 审计日志查询（2026-09-09 新增）────────────────────────────────────
+@app.get("/api/v1/admin/audit-logs")
+def audit_log_list(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=100),
+                   action: str = "", emp_id: str = "",
+                   start: str = "", end: str = "",
+                   admin: str = Depends(require_admin)):
+    """管理员查看操作审计日志（按时间倒序，支持按操作类型/工号/时间范围筛选）。"""
+    from datetime import datetime as _dt
+    from sqlalchemy import desc
+    from server.models import AuditLog
+
+    def _parse_dt(value: str):
+        if not value:
+            return None
+        try:
+            return _dt.fromisoformat(value)
+        except Exception:
+            raise HTTPException(400, "时间格式无效")
+
+    start_dt = _parse_dt(start)
+    end_dt = _parse_dt(end)
+
+    sess = SessionLocal()
+    try:
+        q = sess.query(AuditLog)
+        if action:
+            q = q.filter(AuditLog.action == action)
+        if emp_id:
+            q = q.filter(AuditLog.emp_id == emp_id)
+        if start_dt:
+            q = q.filter(AuditLog.ts >= start_dt)
+        if end_dt:
+            q = q.filter(AuditLog.ts <= end_dt)
+        q = q.order_by(desc(AuditLog.ts), desc(AuditLog.id))
+        total = q.count()
+        rows = q.offset((page - 1) * page_size).limit(page_size).all()
+        items = [{"id": r.id, "ts": r.ts.isoformat() if r.ts else "",
+                  "emp_id": r.emp_id, "action": r.action,
+                  "detail": r.detail or "", "ip": r.ip or ""}
+                 for r in rows]
+        return _envelope(True, "OK", {
+            "total": total, "items": items,
+            "page": page, "page_size": page_size,
+            "pages": (total + page_size - 1) // page_size,
+        })
+    finally:
+        sess.close()
 
 if _os.path.isdir(_STATIC_DIR):
     app.mount("/static", _NoCacheStaticFiles(directory=_STATIC_DIR), name="static")

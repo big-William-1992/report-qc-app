@@ -1,0 +1,58 @@
+# coverage.py 配置 — 星衍放射质控软件
+# 用法：coverage run -m pytest && coverage html
+
+[run]
+source = server, src
+omit =
+    # 桌面壳（pywebview 需显示环境，覆盖率无意义）
+    desktop_app.py
+    # Tkinter 遗留代码（仅历史参考，不再维护）
+    src/app.py
+    # 测试文件自身
+    tests/*
+    test/*
+    # 工具脚本（独立运行，不依赖主流程）
+    tools/*
+    # 构建脚本
+    build/*
+    # 自动更新（需网络 + 独立进程，测试环境无法触发）
+    src/auto_updater.py
+    # 更新检查（同上）
+    src/update_check.py
+    # 数据集目录（仅数据文件，非业务逻辑）
+    src/dataset_catalog.py
+    # LLM 引擎（需 API Key 或本地模型，测试环境跳过）
+    src/llm_engine.py
+    # 日志工具（纯 I/O，无分支逻辑）
+    src/log_utils.py
+    # Pydantic 模型（无业务逻辑，仅数据定义）
+    server/schemas.py
+    # 路径解析（跨平台分支，覆盖率统计意义不大）
+    src/paths.py
+    # 授权（需 Ed25519 密钥对，测试环境无法验证）
+    src/license_utils.py
+    server/license_web.py
+    # 旧入口（已退役，保留兼容）
+    src/app.py
+    # 版本信息（常量 + 读取逻辑）
+    src/version.py
+
+[report]
+show_missing = True
+skip_covered = True
+precision = 1
+fail_under = 60
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    pass
+    raise NotImplementedError
+    if TYPE_CHECKING:
+    # 条件导入（缺失库时自动降级，测试环境无法覆盖分支）
+    except ImportError:
+    except ModuleNotFoundError:
+    # 可选规则（R16/R19 默认关闭）
+    if not self.rules_config.get("enable_
+
+[html]
+directory = coverage_html

@@ -16,29 +16,33 @@ import time
 import unittest
 import tempfile
 
-# 2026-08-18：/tmp 硬编码在 Windows 不存在（CI 单元测试闸失败根因），改系统临时目录
-_TMP = os.path.join(tempfile.gettempdir(), "qc_api_guard_tests")
-os.makedirs(_TMP, exist_ok=True)
+# 2026-08-18：/tmp 硬编码在 Windows 不存在（CI 单元测试闸失败根因），改系统临时目录。
+# 2026-09-09：与其他测试一致，使用 mkdtemp 独立目录，避免交叉污染。
+_TMP = tempfile.mkdtemp(prefix="qc_api_guard_")
+_APPDATA = os.path.join(_TMP, "appdata")
+os.makedirs(_APPDATA, exist_ok=True)
 os.environ["QC_DB_OVERRIDE"] = os.path.join(_TMP, "guard.db")
-os.environ["QC_APPDATA"] = os.path.join(_TMP, "appdata")
+os.environ["QC_APPDATA"] = _APPDATA
 os.environ["QC_API_SECRET"] = "guard-test-secret"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fastapi.testclient import TestClient  # noqa: E402
+from conftest import set_test_db  # noqa: E402
 from server import main  # noqa: E402
+
+set_test_db(os.path.join(_TMP, "guard.db"), _APPDATA)
 
 
 def _fresh_db():
     """首个用例类清库（连接池绑定固定路径，仅在进程开始时清理一次）。"""
-    for f in ("guard.db",):
-        p = os.path.join(_TMP, f)
-        if os.path.exists(p):
-            os.remove(p)
-    for p in os.listdir(_TMP):
-        fp = os.path.join(_TMP, p)
-        if os.path.isfile(fp) and p.startswith("appdata"):
+    p = os.path.join(_TMP, "guard.db")
+    if os.path.exists(p):
+        os.remove(p)
+    for f in os.listdir(_APPDATA):
+        fp = os.path.join(_APPDATA, f)
+        if os.path.isfile(fp):
             os.remove(fp)
 
 

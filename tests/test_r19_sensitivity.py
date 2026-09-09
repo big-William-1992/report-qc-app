@@ -40,11 +40,10 @@ def test_p1_shape_similar_high():
 
 def test_p1_shape_similar_medium_silent():
     eng.rules_config["r19_sensitivity"] = "medium"
-    # medium 灵敏度下，"王动脉" 仍被 R19 检出（形近字层）
+    # medium 灵敏度下，形近候选不纳入（仅同音/近音），"王动脉"→"主动脉" 不报
     hits = [f for f in eng.run("影像描述：见王动脉增宽。\n影像诊断：王动脉增宽。", {})
             if f.rule_id in ("R19-WHITELIST", "R19-HOMOPHONE")]
-    assert hits, "王动脉 不在白名单中，medium 灵敏度下应被 R19 检出"
-    assert any("王动脉" in f.snippet for f in hits), f"Expected 王动脉 in snippets: {[f.snippet for f in hits]}"
+    assert not hits, f"medium 灵敏度下形近候选应静默: {[f.snippet for f in hits]}"
 
 
 # ---------- P2 词表扩展（R8 直接命中形近/输入法错） ----------

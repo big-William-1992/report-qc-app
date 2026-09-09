@@ -9,16 +9,20 @@ import sys
 import tempfile
 import unittest
 
+# 与 test_auth_security.py 一致：把 src / 项目根加入 sys.path，保证 discover 全流程可导入。
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 import accounts
+from conftest import set_test_db
 
 
 class TestAccounts(unittest.TestCase):
     def setUp(self):
-        # 每个用例用独立临时库
+        # 每个用例用独立临时库（统一入口，保证 SQLAlchemy/accounts/server 同一绑定）
         self._tmp = tempfile.mkdtemp(prefix="acct_test_")
         self._db = os.path.join(self._tmp, "accounts.db")
-        accounts._DB_OVERRIDE = self._db
-        accounts.init_db()
+        set_test_db(self._db)
 
     def tearDown(self):
         accounts._DB_OVERRIDE = None
@@ -32,7 +36,7 @@ class TestAccounts(unittest.TestCase):
     def test_password_min_length(self):
         ok, msg = accounts.create_account("1002", "123", "李四")
         self.assertFalse(ok)
-        self.assertIn("6", msg)
+        self.assertIn("8", msg)
 
     def test_empty_emp_id(self):
         ok, msg = accounts.create_account("   ", "secret123")

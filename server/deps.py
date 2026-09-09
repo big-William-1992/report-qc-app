@@ -404,40 +404,47 @@ def _settings_path() -> str:
 
 
 # ── 登录频率限制（防爆破） ──────────────────────────────────────────────────
-# 基于 IP 的 in-memory 限流：每个 IP 最多 N 次失败后锁定 M 秒。
-# 重启清空，对本地单用户部署足够；多实例部署建议改为 Redis。
+# 统一为 emp_id 维度的内存限流，避免 main.py / route_account.py 各写一套口径。
 _LOGIN_FAIL_LIMIT = int(os.environ.get("QC_LOGIN_FAIL_LIMIT", "5"))   # 最大失败次数
-_LOGIN_FAIL_WINDOW = int(os.environ.get("QC_LOGIN_FAIL_WINDOW", "300"))  # 窗口秒数（5 分钟）
-_LOGIN_LOCK_DURATION = int(os.environ.get("QC_LOGIN_LOCK_SECONDS", "900"))  # 锁定时长（15 分钟）
-_login_failures: Dict[str, List[float]] = {}  # ip -> [timestamp, ...]
+_LOGIN_FAIL_WINDOW = int(os.environ.get("QC_LOGIN_FAIL_WINDOW", "600"))  # 累计窗口（秒）
+_LOGIN_LOCK_DURATION = int(os.environ.get("QC_LOGIN_LOCK_SECONDS", "900"))  # 锁定时长（秒）
+_LOGIN_FAIL: Dict[str, list] = {}  # emp_id -> [fails, first_ts, locked_until]
 
 
-def _check_login_rate(request: Request) -> None:
-    """登录限流依赖：超过阈值抛出 429。"""
-    client_ip = (request.client.host if request.client else "unknown")
-    now = time.time()
-    # 清理过期记录（窗口外的全部丢弃）
-    attempts = [ts for ts in _login_failures.get(client_ip, []) if now - ts < _LOGIN_FAIL_WINDOW]
-    if len(attempts) >= _LOGIN_FAIL_LIMIT:
-        earliest = min(attempts)
-        remaining = _LOGIN_FAIL_WINDOW - (now - earliest)
-        raise HTTPException(429,
-            f"登录尝试过于频繁，请 {int(max(remaining, 0))} 秒后重试")
+def _login_locked(emp_id: str) -> bool:
+    """当前工号是否处于锁定状态。"""
+    emp_id = (emp_id or "").strip()
+    rec = _LOGIN_FAIL.get(emp_id)
+    if not rec:
+        return False
+    fails, first_ts, locked_until = rec
+    if locked_until:
+        if time.time() < locked_until:
+            return True
+        _LOGIN_FAIL.pop(emp_id, None)
+        return False
+    if time.time() - first_ts > _LOGIN_FAIL_WINDOW:
+        _LOGIN_FAIL.pop(emp_id, None)
+        return False
+    return fails >= _LOGIN_FAIL_LIMIT
 
 
-def _record_login_failure(request: Request) -> None:
-    """记录一次登录失败。"""
-    client_ip = (request.client.host if request.client else "unknown")
-    _login_failures.setdefault(client_ip, []).append(time.time())
-    # 上限保护：防止内存无限膨胀
-    if len(_login_failures) > 10000:
-        _login_failures.clear()
+def _record_login_failure(emp_id: str) -> None:
+    """记录一次登录失败；达到阈值即锁定。"""
+    emp_id = (emp_id or "").strip()
+    if not emp_id:
+        return
+    rec = _LOGIN_FAIL.setdefault(emp_id, [0, time.time(), None])
+    rec[0] += 1
+    if rec[0] >= _LOGIN_FAIL_LIMIT:
+        rec[2] = time.time() + _LOGIN_LOCK_DURATION
 
 
-def _clear_login_failures(request: Request) -> None:
-    """登录成功后清除该 IP 的失败计数。"""
-    client_ip = (request.client.host if request.client else "unknown")
-    _login_failures.pop(client_ip, None)
+def _clear_login_failures(emp_id: str) -> None:
+    """登录成功后清零该工号失败计数。"""
+    emp_id = (emp_id or "").strip()
+    if emp_id:
+        _LOGIN_FAIL.pop(emp_id, None)
 
 
 # ── 审计日志 ───────────────────────────────────────────────────────────────

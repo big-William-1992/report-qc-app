@@ -82,3 +82,18 @@ class Setting(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True,
                     comment="NULL=全局设置；非 NULL=用户级覆盖")
     __table_args__ = (UniqueConstraint("key", "user_id", name="ux_settings_key_user"),)
+
+
+class AuditLog(Base):
+    """审计日志（2026-09-09）：记录敏感操作，供管理员事后审查。"""
+    __tablename__ = "audit_log"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ts = Column(DateTime, default=datetime.datetime.now, nullable=False)
+    emp_id = Column(String(64), nullable=False)
+    action = Column(String(64), nullable=False, comment="操作类型：login_success / login_failed / account_created / password_reset / ...")
+    detail = Column(Text, nullable=True)
+    ip = Column(String(64), nullable=True)
+    __table_args__ = (
+        Index("ix_audit_action", "action"),
+        Index("ix_audit_ts", "ts"),
+    )

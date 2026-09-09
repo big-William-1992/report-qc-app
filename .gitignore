@@ -97,3 +97,10 @@ saves/**/0000*_adapters.safetensors
 .coverage
 *.db-shm
 *.db-wal
+
+# ---------- 安全 ----------
+.env
+
+# ---------- 开发/备份 ----------
+*.bak
+assets/db_dump.txt
