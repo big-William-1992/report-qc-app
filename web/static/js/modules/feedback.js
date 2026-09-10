@@ -9,7 +9,7 @@ function escHtml(s) {
 async function loadFeedback() {
   const body = document.getElementById('feedbackBody');
   const applyBtn = document.getElementById('fbApplyBtn');
-  body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px;">加载中...</td></tr>';
+  body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:32px;">加载中...</td></tr>';
   try {
     const st = await (await apiFetch('/api/v1/feedback/stats')).json();
     const stats = (st && st.data) || {};
@@ -22,15 +22,27 @@ async function loadFeedback() {
     const res = await (await apiFetch('/api/v1/feedback/pending?limit=0')).json();
     const items = (res && res.data) || [];
     if (!items.length) {
-      body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px;">🎉 暂无待审核反馈</td></tr>';
+      body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:32px;">🎉 暂无待审核反馈</td></tr>';
       return;
     }
     body.innerHTML = items.map(it => {
       const ctx = escHtml((it.report_snippet || '').slice(0, 60));
+      const explainItems = Array.isArray(it.explain) ? it.explain.map(x => String(x || '')).filter(Boolean) : [];
+      const explainText = explainItems.join('\n');
+      const explainCell = explainItems.length
+        ? `<div class="fb-explain" title="${escHtml(explainText)}">
+            <div class="fb-explain-preview">${escHtml(explainItems[0])}</div>
+            ${explainItems.length > 1 ? `<details class="fb-explain-more">
+              <summary>+${explainItems.length - 1} 条依据</summary>
+              <div class="fb-explain-detail">${escHtml(explainItems.slice(1).join('\n'))}</div>
+            </details>` : ''}
+          </div>`
+        : '<span style="color:var(--text-muted)">—</span>';
       return `<tr>
         <td style="white-space:nowrap">${escHtml(it.rule_id)}</td>
         <td><b>「${escHtml(it.seg)}」</b></td>
         <td>${it.suggestion ? escHtml(it.suggestion) : '<span style="color:var(--text-muted)">—</span>'}</td>
+        <td style="font-size:12px;color:var(--text-secondary);max-width:260px;">${explainCell}</td>
         <td style="font-size:12px;color:var(--text-muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${ctx}">${ctx}</td>
         <td style="white-space:nowrap;font-size:12px;color:var(--text-muted)">${escHtml((it.timestamp || '').slice(5, 16))}</td>
         <td style="white-space:nowrap">
@@ -41,7 +53,7 @@ async function loadFeedback() {
       </tr>`;
     }).join('');
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#c0392b;padding:24px;">加载失败：${escHtml(e.message)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#c0392b;padding:24px;">加载失败：${escHtml(e.message)}</td></tr>`;
   }
 }
 

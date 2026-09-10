@@ -316,6 +316,15 @@ function _renderFindingList() {
     } else if (hasSug) {
       fixBtns = `<span class="sug-text" title="建议修正文本">建议：${escapeHtml(f.suggestion)}</span>`;
     }
+    const explainItems = Array.isArray(f.explain) ? f.explain.map(x => String(x || '')).filter(Boolean) : [];
+    const explainText = explainItems.join('\n');
+    const explainLine = explainItems.length ? `<div class="finding-explain" title="${escapeHtml(explainText)}">
+      <div class="finding-explain-preview">🔍 ${escapeHtml(explainItems[0])}</div>
+      ${explainItems.length > 1 ? `<details class="finding-explain-more">
+        <summary>+${explainItems.length - 1} 条依据</summary>
+        <div class="finding-explain-detail">${escapeHtml(explainItems.slice(1).join('\n'))}</div>
+      </details>` : ''}
+    </div>` : '';
     return `
     <li class="finding-item">
       <span class="severity-dot ${f.severity}"></span>
@@ -323,6 +332,7 @@ function _renderFindingList() {
       <div>
         <div class="finding-text ${m.cls}">${escapeHtml(f.message)}</div>
         <div class="finding-meta">${f.rule_id} · ${escapeHtml(f.category || '')}${fixBtns}</div>
+        ${explainLine}
       </div>
     </li>`;
   }).join('');

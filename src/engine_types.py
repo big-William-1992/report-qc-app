@@ -30,3 +30,4 @@ class Finding:
     snippet: str = ""
     span: tuple = (-1, -1)
     suggestion: str = ""   # 可自动修正的建议值（仅 R8 错别字填充）
+    explain: Optional[List[str]] = None  # 告警解释：判定依据/证据/建议动作

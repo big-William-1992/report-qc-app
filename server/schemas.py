@@ -23,6 +23,7 @@ class FindingOut(BaseModel):
     snippet: str = ""
     span: list = [-1, -1]
     suggestion: str = ""
+    explain: List[str] = []
 
 
 class CheckReq(BaseModel):

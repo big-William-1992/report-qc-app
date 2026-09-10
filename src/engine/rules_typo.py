@@ -77,7 +77,12 @@ class TypoRulesMixin:
             reported.add(wrong)
             out.append(Finding("R8-TYPO", "同音错别字", "medium",
                 f"检出疑似错别字「{wrong}」，疑为「{correct}」（常见语音录入误写）",
-                wrong, (s, e), correct))
+                wrong, (s, e), correct,
+                [
+                    f"规则库已维护词对：{wrong} → {correct}",
+                    f"命中位置：报告第 {s + 1}-{e} 字符；建议优先核对该处语境",
+                    "若确认为合法用词，可在反馈中记为误报并补入白名单",
+                ]))
         return out
 
     # R19 读音相似错字（高频词组锚定 + pypinyin 自动推导）
@@ -184,7 +189,12 @@ class TypoRulesMixin:
                             "R19-HOMOPHONE", "读音/形近错字", "low",
                             f"「{seg}」{reason}与高频词「{best}」（{cat}）相近，"
                             f"疑为语音或输入法录入误写，请核对",
-                            seg, (s, e), best))
+                            seg, (s, e), best,
+                            [
+                                f"判定方式：{reason}匹配；词表锚点「{best}」",
+                                f"相似度={sim:.2f}；当前敏感度={sensitivity}",
+                                "R19 为低严重度提示，建议人工核对后再采用修正",
+                            ]))
                         seen_spans.add((s, e))
         return out
 

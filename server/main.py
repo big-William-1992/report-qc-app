@@ -1276,6 +1276,7 @@ def sample_create(req: SampleCreate, request: Request, emp: str = Depends(requir
                 snippet=f.get("snippet", ""),
                 span=tuple(f.get("span", (-1, -1))),
                 suggestion=f.get("suggestion", ""),
+                explain=list(f.get("explain", []) or []),
             ))
         except Exception:
             continue

@@ -45,6 +45,8 @@ class Finding:
     snippet: str = ""
     span: tuple = (-1, -1)
     suggestion: str = ""   # 可自动修正的建议值（仅 R8 错别字填充）
+    explain: List[str] = field(default_factory=list)  # 告警解释：判定依据/证据/建议动作
+
 
 
 # 确凿繁体独有字（简体不使用这些字形；放射报告高频，2026-08-18 新增检测用）。

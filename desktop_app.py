@@ -610,7 +610,8 @@ def _get_screen_work_area():
 
     - Windows：用 ctypes Win32 取工作区物理像素，并校正 DPI 缩放（125%/150% 等）为逻辑像素，
       pywebview 的 width/height 是逻辑像素，需这样换算窗口才不会超出屏幕。
-    - macOS / Linux：用 tkinter 的 winfo_screenwidth/screenheight。
+    - macOS：用 Quartz.CGDisplayBounds 取主屏尺寸，避免 tkinter 初始化在主线程里 abort。
+    - Linux：回退到 tkinter 的 winfo_screenwidth/screenheight。
     任何一步失败都返回 None，由调用方回退到默认窗口尺寸，保证不影响启动。
     """
     try:
@@ -635,6 +636,10 @@ def _get_screen_work_area():
             except Exception:
                 pass
             return phys_w / scale, phys_h / scale
+        elif sys.platform == "darwin":
+            import Quartz
+            bounds = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
+            return bounds.size.width, bounds.size.height
         else:
             import tkinter as tk
             r = tk.Tk()

@@ -10,7 +10,7 @@
 
 数据结构：
   data/feedback/
-  ├── pending.json      # [{id, text, rule_id, seg, suggestion, timestamp, context}]
+  ├── pending.json      # [{id, text, rule_id, seg, suggestion, explain, timestamp, context}]
   ├── reviewed.json     # [{id, verdict, note, reviewed_at}]
   └── whitelist_delta.json  # {"add": [...], "remove": [...]}
 """
@@ -87,6 +87,7 @@ def collect(findings: List[Any], report_text: str, context: Optional[dict] = Non
             "error_type": f.error_type,
             "seg": f.snippet or "",          # 可疑片段
             "suggestion": f.suggestion or "", # 建议的正确词（R19-HOMOPHONE 有值）
+            "explain": list(getattr(f, "explain", []) or []),  # 判定依据/证据，供网页审核展示
             "message": f.message,
             "span": list(f.span),            # [start, end]
             "severity": f.severity,
@@ -107,6 +108,8 @@ def get_pending(limit: int = 0) -> List[Dict]:
     _ensure_dir()
     pending = _load_json(PENDING_FILE)
     unreviewed = [p for p in pending if p["verdict"] is None]
+    for p in unreviewed:
+        p.setdefault("explain", [])  # 兼容旧数据：网页审核表需要 explain 字段
     unreviewed.sort(key=lambda x: x["timestamp"], reverse=True)
     if limit > 0:
         unreviewed = unreviewed[:limit]

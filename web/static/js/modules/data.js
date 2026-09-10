@@ -482,11 +482,20 @@ async function viewSample(sid) {
       <div style="font-size:12px;font-weight:700;margin:14px 0 6px;">质控发现（${findings.length} 条）</div>
       ${findings.length ? `<ul class="finding-list" style="display:block">${findings.map(f => {
         const m = SEV_META[f.severity] || SEV_META.low;
+        const explainItems = Array.isArray(f.explain) ? f.explain.map(x => String(x || '')).filter(Boolean) : [];
+        const explainText = explainItems.join('\n');
+        const explainLine = explainItems.length ? `<div class="finding-explain" title="${escapeHtml(explainText)}">
+          <div class="finding-explain-preview">🔍 ${escapeHtml(explainItems[0])}</div>
+          ${explainItems.length > 1 ? `<details class="finding-explain-more">
+            <summary>+${explainItems.length - 1} 条依据</summary>
+            <div class="finding-explain-detail">${escapeHtml(explainItems.slice(1).join('\n'))}</div>
+          </details>` : ''}
+        </div>` : '';
         return `<li class="finding-item">
           <span class="severity-dot ${f.severity}"></span>
           <span class="sev-badge ${m.cls}">${m.icon} ${m.label}</span>
           <div><div class="finding-text ${m.cls}">${escapeHtml(f.message)}</div>
-          <div class="finding-meta">${escapeHtml(f.rule_id || '')} · ${escapeHtml(f.error_type || '')}</div></div>
+          <div class="finding-meta">${escapeHtml(f.rule_id || '')} · ${escapeHtml(f.error_type || '')}</div>${explainLine}</div>
         </li>`; }).join('')}</ul>`
         : '<div style="font-size:13px;color:var(--text-muted);">无发现，报告质量良好</div>'}
     `;
