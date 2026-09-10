@@ -2168,9 +2168,18 @@ if _os.path.isdir(_STATIC_DIR):
 
     @app.get("/{full_path:path}")
     async def spa_fallback(full_path: str):
-        # SPA 路由兜底：非 API / static / 文档 的请求一律返回 index.html
+        # 1) 静态资源：相对路径文件存在则直接返回（兼容 file:// 与 http:// 双模式）
+        #    例如 /css/style.css → web/static/css/style.css
+        if not full_path.startswith(("api/", "docs", "openapi", "redoc")):
+            candidate = _os.path.normpath(_os.path.join(_STATIC_DIR, full_path))
+            if candidate.startswith(_STATIC_DIR) and _os.path.isfile(candidate):
+                return FileResponse(candidate, headers={
+                    "Cache-Control": "no-cache, max-age=0, must-revalidate"
+                })
+        # 2) 显式拒绝旧绝对路径 /static/ 和 API 文档路径
         if full_path.startswith(("api/", "static/", "docs", "openapi", "redoc")):
             raise HTTPException(404, "Not Found")
+        # 3) SPA 路由兜底：返回 index.html
         index = _os.path.join(_STATIC_DIR, "index.html")
         if _os.path.exists(index):
             return FileResponse(index)

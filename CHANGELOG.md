@@ -12,7 +12,8 @@
 
 ### 修复 (Fixed)
 - **前端加载修复**：ES 模块 → 经典脚本 bundle（app.bundle.js），消除 file:// 模式下 CORS 拦截导致闸门函数无法加载的问题
-- **index.html 精简**：移除旧 core.js 独立引用，仅加载 app.bundle.js
+- **file:// 双协议兼容**：index.html 资源路径改为相对路径（css/style.css、js/app.bundle.js），
+  直接双击 HTML 或经 HTTP 服务器访问均正常；server/main.py SPA 兜底路由增加根级静态文件解析（防路径穿越）
 
 ### 变更 (Changed)
 - **密码策略强化**：最少 8 位 + 字母数字组合 + 弱密码黑名单（zxcvbn 校验）
