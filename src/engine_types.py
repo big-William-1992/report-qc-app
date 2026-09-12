@@ -8,7 +8,7 @@ RuleEngine.run() 与全部 R1-R22 规则统一返回 List[Finding]；
 auto_fix 依赖 rule_id ∈ ("R8-TYPO", "R19-HOMOPHONE") + suggestion 的命名契约。
 """
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 
 @dataclass

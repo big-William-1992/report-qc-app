@@ -3,8 +3,7 @@ route_license.py — 星衍放射质控 API 路由
 
 """
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Request
 from server.schemas import ActivateReq
 from server.deps import _envelope, _appdata_dir, log_audit
 from server import license_web

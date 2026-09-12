@@ -13,7 +13,6 @@ route_feedback.py — 反馈闭环审核 API 路由
 - s（跳过）→ 仅记录
 """
 from fastapi import APIRouter, Depends, HTTPException
-from typing import Optional
 
 from server.deps import _envelope, require_emp_local
 import feedback_collector as fb

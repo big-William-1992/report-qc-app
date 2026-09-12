@@ -30,17 +30,8 @@ from anatomy_lexicon import SIDE_CHECK_ORGANS, R2_COVERED, EN_SIDE_ORGANS  # noq
 
 # 数据模型 / 共享 helper / NER / 元信息抽取 / 配置层
 from engine_types import Entity, Finding  # noqa: F401
-from engine_helpers import (_KG, _zh, _norm_gender, _parse_gender_from_text,
-                         _norm_laterality, _detect_side_in_text, _project_side,
-                         _claims_normal, _has_positive, _word_effectively_present,
-                         _split_sentences, _cn_to_int, _extract_lesion_count,
-                         _has_marker_unnegated, _organ_sides_in_text, _organ_sides_en)
+from engine_helpers import (_KG)
 from engine_ner import ChineseRadiologyNER
-from engine_meta import (extract_meta, extract_meta_full, format_patient_ident,
-                         _extract_gender_cn, _extract_age, _extract_modality,
-                         _extract_site, _extract_laterality, _extract_patient,
-                         _extract_exam_no, _lab_re, _site_from_text,
-                         _site_from_fulltext, _meta_header_region, _ocr_fix_num)
 from engine_config import (TYPO_MAP_DEFAULT, DEFAULT_TEMPLATE, RULES_CONFIG_PATH,  # noqa: F401
                            default_rules_config, load_rules_config,
                            save_rules_config, learn_typo)

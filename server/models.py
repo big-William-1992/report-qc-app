@@ -84,6 +84,27 @@ class Setting(Base):
     __table_args__ = (UniqueConstraint("key", "user_id", name="ux_settings_key_user"),)
 
 
+class Order(Base):
+    """订单记录（2026-09-12 商业化）：手动/扫码收款，状态跟踪。"""
+    __tablename__ = "orders"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    order_no = Column(String(32), unique=True, nullable=False, comment="订单号 ORD-YYYYMMDD-XXXX")
+    product = Column(String(64), nullable=False, default="年费授权", comment="产品名称")
+    amount = Column(Integer, nullable=False, default=59, comment="金额（元）")
+    customer_name = Column(String(120), nullable=False, comment="客户名称")
+    customer_contact = Column(String(120), nullable=True, comment="联系方式")
+    department_id = Column(String(120), nullable=True, comment="科室/机构标识")
+    status = Column(String(20), nullable=False, default="pending",
+                    comment="pending | paid | cancelled | refunded")
+    paid_at = Column(DateTime, nullable=True, comment="确认收款时间")
+    created_at = Column(DateTime, default=datetime.datetime.now)
+    notes = Column(Text, nullable=True, comment="备注")
+    __table_args__ = (
+        Index("ix_orders_status", "status"),
+        Index("ix_orders_created_at", "created_at"),
+    )
+
+
 class AuditLog(Base):
     """审计日志（2026-09-09）：记录敏感操作，供管理员事后审查。"""
     __tablename__ = "audit_log"

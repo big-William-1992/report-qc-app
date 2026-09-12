@@ -40,7 +40,6 @@ try:
     from medical_whitelist import (
         covered_spans as _mw_covered_spans,
         find_suspicious_segments as _mw_find_suspicious,
-        whitelist_size as _mw_size,
     )
     _MW_OK = True
 except Exception:  # pragma: no cover - 仅防御性降级

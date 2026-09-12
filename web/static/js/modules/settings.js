@@ -44,6 +44,8 @@ function openSettings() {
   syncClipWatchUI();           // 同步桌面壳「监听剪贴板」开关状态
   renderShortcuts();
   populateLicenseSettings();   // 填授权状态 + 机器码
+  if (typeof refreshLicenseInfo === 'function') refreshLicenseInfo();
+  if (typeof loadChangelog === 'function') loadChangelog();
   document.getElementById('settingsModal').style.display = 'flex';
 }
 

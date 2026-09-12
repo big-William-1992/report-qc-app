@@ -5,9 +5,7 @@ route_ris.py — 星衍放射质控 API 路由：RIS 直连（遗留兼容）
 主线数据获取已切换为 PACS 推送模式（见 route_push.py）。
 """
 
-from fastapi import APIRouter, Header, HTTPException, Depends, Query
-from fastapi.responses import JSONResponse
-from typing import Optional, Dict, Any
+from fastapi import APIRouter, Depends, Query
 from server.schemas import RisConfigReq
 from server.deps import _envelope, require_emp_local
 import ris

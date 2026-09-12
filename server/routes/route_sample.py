@@ -3,13 +3,11 @@ route_sample.py — 星衍放射质控 API 路由
 
 """
 
-from fastapi import APIRouter, Header, HTTPException, UploadFile, File, Depends, Query, Request
-from fastapi.responses import JSONResponse, FileResponse
-from typing import Optional, Dict, Any, List
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Query, Request
+from typing import Optional
 from server.schemas import SampleCreate, SampleExportReq, SampleReportExportReq, SampleImportReq
 from server.deps import _envelope, _run_qc, _eng_scores, _worst_sev, require_emp_local, require_emp, log_audit
 import engine, samplelib, accounts, json, os
-from datetime import datetime, timedelta
 from version import APP_VERSION
 
 router = APIRouter(tags=['samples'])

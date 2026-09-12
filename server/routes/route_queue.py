@@ -3,8 +3,7 @@ route_queue.py — 星衍放射质控 API 路由
 
 """
 
-from fastapi import APIRouter, Header, HTTPException, Depends
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Depends
 from server.schemas import QueueItemReq
 from server.deps import _envelope, require_emp_local, _load_queue, _save_queue
 import hashlib, time, uuid as _uuid

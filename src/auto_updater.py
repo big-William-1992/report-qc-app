@@ -23,13 +23,17 @@ auto_updater.py — 自动下载并更新（零依赖，纯标准库）
 Windows 便携版无需安装即可替换，安装版（ReportQcSetup.exe）作为人工
 兜底入口保留。两套逻辑均通过 AU_NO_LAUNCH=1 跳过重启，便于自动化测试。
 """
+import datetime
+import json
 import os
+import shutil
 import sys
 import subprocess
 import threading
 import hashlib
 import base64
 import urllib.request
+from typing import Optional
 
 APP_NAME = "星衍放射质控软件"
 
@@ -41,6 +45,53 @@ TARBALL_URL = "https://api.github.com/repos/big-William-1992/report-qc-app/tarba
 PORTABLE_ZIP_URL = ("https://github.com/big-William-1992/report-qc-app/"
                     "releases/download/latest/report-qc-portable.zip")
 RELEASE_PAGE = "https://github.com/big-William-1992/report-qc-app/releases/latest"
+
+# ── 离线更新通道（P0 改造，2026-09-12）─────────────────────────────
+# 设置 QC_UPDATE_LOCAL_DIR 为本地目录（共享盘/U盘/FTP挂载点）后，
+# 程序跳过 GitHub 下载，直接从该目录读取更新包。
+# 期望目录结构：
+#   $QC_UPDATE_LOCAL_DIR/latest.tar.gz   (macOS)
+#   $QC_UPDATE_LOCAL_DIR/latest.zip       (Windows)
+#   $QC_UPDATE_LOCAL_DIR/latest.tar.gz.sha256 / .sig （可选，校验文件）
+#   $QC_UPDATE_LOCAL_DIR/latest.zip.sha256 / .sig    （可选）
+_UPDATE_LOCAL_DIR = os.environ.get("QC_UPDATE_LOCAL_DIR", "").strip()
+
+
+def is_offline_update_mode() -> bool:
+    """是否启用离线更新模式。"""
+    return bool(_UPDATE_LOCAL_DIR)
+
+
+def local_archive_path() -> Optional[str]:
+    """离线模式下返回本地更新包路径；不存在则返回 None。"""
+    if not _UPDATE_LOCAL_DIR:
+        return None
+    fname = "latest.zip" if IS_WINDOWS else "latest.tar.gz"
+    p = os.path.join(_UPDATE_LOCAL_DIR, fname)
+    return p if os.path.isfile(p) else None
+
+
+def local_archive_version() -> str:
+    """离线模式下返回版本号标签（用于 UI 展示）。"""
+    p = local_archive_path()
+    if not p:
+        return "本地更新包不存在"
+    try:
+        mtime = os.path.getmtime(p)
+        return f"{datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')} | {os.path.getsize(p)/1e6:.0f}MB"
+    except OSError:
+        return "不可读"
+
+
+def copy_local_archive(dest: str) -> str:
+    """将本地更新包复制到缓存目录，供后续安装流程使用。"""
+    src = local_archive_path()
+    if not src:
+        raise FileNotFoundError("本地更新包不存在，请检查 QC_UPDATE_LOCAL_DIR")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    shutil.copy2(src, dest)
+    return dest
+
 
 # 更新包最大字节数（防 tar/zip 炸弹占满磁盘，2026-08-18 H4）
 _MAX_ARCHIVE_BYTES = 800 * 1024 * 1024
@@ -442,13 +493,76 @@ def _download_url():
     return PORTABLE_ZIP_URL if IS_WINDOWS else TARBALL_URL
 
 
+def check_for_update() -> dict:
+    """检查是否有可用更新。支持在线和离线模式。
+
+    返回：
+      {"available": bool, "version": str, "source": "online"|"offline", ...}
+    """
+    result: dict = {"available": False, "source": "none"}
+
+    # 离线模式
+    if is_offline_update_mode():
+        p = local_archive_path()
+        if p:
+            result["available"] = True
+            result["source"] = "offline"
+            result["local_path"] = p
+            result["version"] = local_archive_version()
+        return result
+
+    # 在线模式：查询 GitHub Releases
+    try:
+        req = urllib.request.Request(
+            "https://api.github.com/repos/big-William-1992/report-qc-app/releases/latest",
+            headers={"User-Agent": "xingyan-qc-update",
+                     "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8", "ignore"))
+            tag = data.get("tag_name", "")
+            published = data.get("published_at", "")
+            if tag:
+                result["available"] = True
+                result["source"] = "online"
+                result["version"] = tag
+                result["published_at"] = published
+                result["download_url"] = _download_url()
+    except Exception:
+        pass  # 网络不可用，静默降级
+    return result
+
+
 def download(dest, progress_cb=None, timeout=180):
     """流式下载更新包到 dest。progress_cb(done, total) 回调（单位字节）。
 
     平台自动选择：macOS 下载源码 tarball，Windows 下载便携 zip。
+    离线模式（QC_UPDATE_LOCAL_DIR）：从本地目录复制更新包。
     2026-08-18 加固：下载后若发布物附带 `<url>.sha256` 校验文件则强制校验，
     不匹配抛 RuntimeError 并删除（防 GitHub 被入侵/缓存被替换后执行任意代码）。
     """
+    # ── 离线模式：从本地目录复制 ──
+    if is_offline_update_mode():
+        src = local_archive_path()
+        if not src:
+            raise FileNotFoundError(
+                f"本地更新包不存在: {os.path.join(_UPDATE_LOCAL_DIR, 'latest' + ('.zip' if IS_WINDOWS else '.tar.gz'))}")
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        # 分块复制，支持进度回调
+        file_size = os.path.getsize(src)
+        with open(src, "rb") as fin, open(dest, "wb") as fout:
+            done = 0
+            while True:
+                chunk = fin.read(65536)
+                if not chunk:
+                    break
+                fout.write(chunk)
+                done += len(chunk)
+                if progress_cb:
+                    progress_cb(done, file_size)
+        # 离线模式下校验文件（如 .sha256 / .sig）
+        _verify_local_checksum(dest, src)
+        return dest
+
     req = urllib.request.Request(
         _download_url(),
         headers={"User-Agent": "xingyan-qc-update",
@@ -496,6 +610,30 @@ def download(dest, progress_cb=None, timeout=180):
     _verify_download_sha256(dest)
     _verify_update_signature(dest)
     return dest
+
+
+def _verify_local_checksum(dest, src):
+    """离线模式下：若同目录下存在 <文件名>.sha256 则校验文件完整性。"""
+    sha_path = src + ".sha256"
+    if not os.path.isfile(sha_path):
+        return  # 无校验文件则跳过（与在线模式一致）
+    try:
+        with open(sha_path, "r", encoding="utf-8") as f:
+            expected = f.read().strip().split()[0].lower()  # 支持 "hash  filename" 格式
+        h = hashlib.sha256()
+        with open(dest, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        if h.hexdigest() != expected:
+            try:
+                os.remove(dest)
+            except Exception:
+                pass
+            raise RuntimeError("本地更新包校验失败（sha256 不匹配）")
+    except RuntimeError:
+        raise
+    except Exception:
+        pass  # 校验文件读取失败不阻断
 
 
 def _verify_download_sha256(dest):

@@ -16,11 +16,10 @@ import json
 import os
 import re
 import time
-from typing import List, Dict, Optional, Tuple
-from dataclasses import dataclass, asdict
+from typing import List, Optional
 
 # 从现有引擎复用 Finding dataclass
-from engine import Finding, SEVERITY_WEIGHT, score, score_summary, error_type_counts
+from engine import Finding
 
 # ---------- .env 自动加载（优先级：环境变量 > .env 文件 > 默认值） ----------
 def _load_env():

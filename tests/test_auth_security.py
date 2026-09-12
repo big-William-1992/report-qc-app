@@ -380,5 +380,32 @@ class TestApiSecretIsolation(_AuthBase):
         self.assertEqual(r.status_code, 401)
 
 
+class TestNetworkHostSecretPolicy(unittest.TestCase):
+    """非本机监听必须显式配置 QC_API_SECRET；本机回环保持桌面端兼容。"""
+
+    def _set_secret(self, val: str):
+        """设置 security 模块内真实的 QC_API_SECRET（re-export 副本不生效）。"""
+        from server import security
+        security.QC_API_SECRET = val
+
+    def test_local_hosts_allow_random_secret_mode(self):
+        """本机地址不应触发非本机密钥强制校验。"""
+        self._set_secret("")
+        for host in ("127.0.0.1", "::1", "localhost", "localhost:port"):
+            self.assertFalse(main._is_network_host(host))
+            main._require_secret_for_network_host(host)
+
+    def test_network_host_requires_secret(self):
+        """0.0.0.0 等非本机监听在缺少密钥时应阻止启动。"""
+        self._set_secret("")
+        with self.assertRaises(SystemExit):
+            main._require_secret_for_network_host("0.0.0.0")
+
+    def test_network_host_allows_explicit_secret(self):
+        """显式配置 QC_API_SECRET 后，非本机监听应允许启动。"""
+        self._set_secret("auth-test-secret")
+        main._require_secret_for_network_host("0.0.0.0")
+
+
 if __name__ == "__main__":
     unittest.main()

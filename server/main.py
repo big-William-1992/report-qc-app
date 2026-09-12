@@ -20,14 +20,12 @@ import sys
 import io
 import re
 import time
-import hmac
 import hashlib
 import base64
 import json
-import secrets
 import threading
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 
 def _bundle_root() -> str:
     """资源（server/web/assets/src）在磁盘上的根目录。
@@ -118,142 +116,23 @@ from server.core import (  # 共享层（2026-08-18 拆分）：日志/响应封
     _queue_orm_add_dedup, _queue_orm_remove,
     _queue_orm_clear, _load_queue,  # noqa: F401 (部分符号 re-export 给旧引用)
     _migrate_queue_to_db, _settings_orm_all, _settings_orm_save, _migrate_settings_to_db,
-    _restrict_file_access,
+)
+from server.security import (  # noqa: F401 (re-export 给旧引用)
+    QC_API_SECRET,
+    SECRET,
+    TOKEN_TTL,
+    _is_network_host,
+    _require_secret_for_network_host,
+    _emp_from_auth,
+    make_token,
+    verify_token,
+    require_emp,
+    require_emp_local,
+    require_admin,
 )
 from server.deps import log_audit, _login_locked, _record_login_failure, _clear_login_failures  # 审计日志 + 登录限流
 
-# ----------------------------- 鉴权（stdlib HMAC 签名 token） -----------------------------
-def _load_or_create_secret() -> str:
-    """QC_API_SECRET 未设置时：从用户数据目录读持久化随机密钥；无则生成并 0600 保存。
-
-    2026-08-18 H1b 修复：此前缺失时回退硬编码 'change-me-in-prod'，该默认值随
-    软件分发即任何拿到代码者都能离线伪造任意工号 token。改为首启生成随机密钥
-    （多 worker/多进程共享同一文件，token 验签一致），不拒绝启动（保本地双击即用）。
-    """
-    path = os.path.join(_appdata_dir(), "qc_secret.key")
-    try:
-        if os.path.isfile(path):
-            with open(path, encoding="utf-8") as fh:
-                v = fh.read().strip()
-            if v:
-                return v
-    except Exception:
-        try:
-            from .log_utils import log_quiet
-        except ImportError:
-            from log_utils import log_quiet
-        log_quiet(__name__)
-    v = secrets.token_hex(32)
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(v)
-        _restrict_file_access(path)
-    except Exception:
-        try:
-            from .log_utils import log_quiet
-        except ImportError:
-            from log_utils import log_quiet
-        log_quiet(__name__)
-    return v
-
-
-QC_API_SECRET = os.environ.get("QC_API_SECRET", "").strip()
-if QC_API_SECRET:
-    SECRET = QC_API_SECRET
-else:
-    # 本地演示/桌面单机默认值；公网/内网多用户部署必须设置强随机密钥。
-    SECRET = _load_or_create_secret()
-    _audit_log("\n[SECURITY] 警告: 未设置 QC_API_SECRET，已生成本机随机密钥并持久化到用户数据目录。"
-          "公网/内网多用户部署请 export QC_API_SECRET=<强随机串> 保持各节点一致。\n")
-TOKEN_TTL = int(os.environ.get("QC_API_TTL", "86400"))  # 默认 24h
-
-
-def make_token(emp_id: str, ttl: int = TOKEN_TTL) -> str:
-    exp = int(time.time()) + ttl
-    payload = f"{emp_id}.{exp}"
-    sig = hmac.new(SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
-    return base64.urlsafe_b64encode(f"{payload}.{sig}".encode()).decode()
-
-
-def verify_token(tok: str) -> Optional[str]:
-    try:
-        raw = base64.urlsafe_b64decode(tok.encode()).decode()
-        payload, sig = raw.rsplit(".", 1)
-        emp_id, exp = payload.rsplit(".", 1)
-        if int(exp) < time.time():
-            return None
-        expect = hmac.new(SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
-        if hmac.compare_digest(expect, sig):
-            return emp_id
-    except Exception:
-        return None
-    return None
-
-
-def _emp_from_auth(authorization: Optional[str]) -> Optional[str]:
-    if not authorization:
-        return None
-    tok = authorization
-    if tok.lower().startswith("bearer "):
-        tok = tok[7:]
-    return verify_token(tok)
-
-
-def require_emp(request: Request,
-                authorization: Optional[str] = Header(None),
-                x_emp_id: Optional[str] = Header(None)) -> str:
-    """写操作鉴权：优先 Bearer token；X-Emp-Id 头仅限本机（127.0.0.1）调用时兜底。
-    远程请求一律拒绝 X-Emp-Id——该头无任何凭证，可被任意伪造冒充他人（2026-08-18 收紧）。"""
-    emp = _emp_from_auth(authorization)
-    if not emp and request.client and request.client.host in ("127.0.0.1", "::1", "localhost"):
-        emp = (x_emp_id or "").strip()
-    if not emp:
-        raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token>（远程访问不接受 X-Emp-Id 头）")
-    if not accounts.account_exists(emp):
-        raise HTTPException(401, "账号不存在或已注销")
-    return emp
-
-
-def require_emp_local(request: Request,
-                      authorization: Optional[str] = Header(None),
-                      x_emp_id: Optional[str] = Header(None)) -> str:
-    """写操作鉴权（本地优先）：
-
-    - 来自 127.0.0.1/::1 的调用（桌面端 WebView、浏览器同源 localhost）自动放行，
-      避免 SPA 必须携带鉴权头，保持本地"双击即用"体验；
-    - 公网/远程部署强制 Bearer token（不再接受 X-Emp-Id 头，防止伪造冒充）。
-    - 2026-08-24 安全加固：localhost 的 X-Emp-Id 必须对应已存在账号，防止任意冒充。
-    """
-    if request.client and request.client.host in ("127.0.0.1", "::1", "localhost"):
-        emp = (x_emp_id or "").strip()
-        if emp and accounts.account_exists(emp):
-            return emp
-        # 无有效 emp_id 时，仅当系统无任何账号（首次启动）才允许 "local" 兜底
-        if not emp and accounts.count_accounts() == 0:
-            return "local"
-        if emp:
-            raise HTTPException(401, f"账号 '{emp}' 不存在或已注销")
-        raise HTTPException(401, "缺少鉴权：请通过 X-Emp-Id 头指定有效账号，或使用 Bearer token")
-    emp = _emp_from_auth(authorization)
-    if not emp:
-        raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token>（远程访问不接受 X-Emp-Id 头）")
-    if not accounts.account_exists(emp):
-        raise HTTPException(401, "账号不存在或已注销")
-    return emp
-
-
-def require_admin(authorization: Optional[str] = Header(None)) -> str:
-    """管理员操作依赖：强制 Bearer token（不享受 localhost 放行，防止伪造 X-Emp-Id 提权）。
-    定义在认证区块（规则写接口之前），2026-08-18 由 731 行前移，避免默认参数求值顺序问题。"""
-    emp = _emp_from_auth(authorization)
-    if not emp:
-        raise HTTPException(401, "管理员操作需登录（Bearer token）")
-    if not accounts.account_exists(emp):
-        raise HTTPException(401, "账号不存在或已注销")
-    if accounts.get_role(emp) != "admin":
-        raise HTTPException(403, "需要管理员权限")
-    return emp
+_require_secret_for_network_host(os.environ.get("QC_HOST", "127.0.0.1"))
 
 
 def _scope_user_id(emp: str) -> Optional[str]:
@@ -621,7 +500,6 @@ _OCR_MAX_BYTES = int(os.environ.get("QC_OCR_MAX_BYTES", str(20 * 1024 * 1024)))
 async def ocr_upload(file: UploadFile = File(...), emp: str = Depends(require_emp_local),
                   _lic: bool = Depends(require_license_active)):
     from PIL import Image
-    import ocr_provider  # noqa: F401 (副作用导入: 确保 PyInstaller 收集 OCR 引擎)
     ok, why = ocr_provider.availability()
     if not ok:
         return JSONResponse(status_code=503,
@@ -644,7 +522,6 @@ async def ocr_upload(file: UploadFile = File(...), emp: str = Depends(require_em
 def ocr_base64(req: OCRB64, emp: str = Depends(require_emp_local),
                _lic: bool = Depends(require_license_active)):
     from PIL import Image
-    import ocr_provider  # noqa: F401 (副作用导入: 确保 PyInstaller 收集 OCR 引擎)
     import base64 as _b64
     ok, why = ocr_provider.availability()
     if not ok:
@@ -1023,6 +900,16 @@ except Exception as _w_e:
             from log_utils import log_quiet
         log_quiet(__name__)
 db.init_db()
+# ── 自动备份调度器（P0 改造，2026-09-12）─────────────────────────────
+try:
+    import backup as _bk
+    _bk.start_scheduler()
+except Exception:
+    try:
+        from .log_utils import log_quiet
+    except ImportError:
+        from log_utils import log_quiet
+    log_quiet(__name__)
 try:
     samplelib.migrate_legacy_samples()
     samplelib.rescue_samples_conv()   # 抢救 samples_conv_old 滞留历史样本（2026-08-18 P0）
@@ -1214,9 +1101,18 @@ def department_create(request: Request, req: DeptCreateReq, admin: str = Depends
 
 @app.get("/api/v1/license/status")
 def license_status_get():
-    """前端闸门用：免责/激活/试用剩余天数/机器码/账号数。"""
-    return _envelope(True, "OK",
-                      license_web.license_status(_appdata_dir(), accounts.count_accounts()))
+    """前端闸门用：免责/激活/试用剩余天数/机器码/账号数 + 扩展信息。"""
+    base = license_web.license_status(_appdata_dir(), accounts.count_accounts())
+    # 合并扩展信息（试用告警/到期日期/授权类型）
+    try:
+        ext = _lu.get_license_info()
+        for k in ("trial_days_remaining", "trial_warning", "license_type",
+                  "expires_at", "licensed_to", "seat_count"):
+            if k not in base and k in ext:
+                base[k] = ext[k]
+    except Exception:
+        pass
+    return _envelope(True, "OK", base)
 
 
 @app.get("/api/v1/license/disclaimer")
@@ -1573,18 +1469,85 @@ def sample_dashboard(emp: str = Depends(require_emp_local)):
     })
 
 
+@app.get("/api/v1/version")
+def version_info():
+    """返回当前软件版本及最近发布说明。"""
+    return _envelope(True, "OK", {"version": APP_VERSION, "name": "星衍放射质控软件"})
+
+
 @app.get("/api/v1/health")
 def health():
-    return _envelope(True, "OK", {"status": "up", "version": APP_VERSION})
+    """增强健康检查（P1 改造，2026-09-12）：DB 连通性 / 磁盘空间 / 活跃会话 / 授权状态。"""
+    data: Dict[str, Any] = {"status": "up", "version": APP_VERSION}
+
+    # DB 连通性检测
+    try:
+        from server import db as _db_mod
+        from sqlalchemy import text as _text
+        with _db_mod.get_db() as _sess:
+            _sess.execute(_text("SELECT 1"))
+        data["db"] = "connected"
+    except Exception as _db_exc:
+        data["db"] = f"error: {type(_db_exc).__name__}"
+
+    # 磁盘空间
+    try:
+        import shutil as _shutil
+        _db_root = os.path.dirname(samplelib.db_path())
+        _usage = _shutil.disk_usage(_db_root)
+        _total_gb = round(_usage.total / 1e9, 2)
+        _free_gb = round(_usage.free / 1e9, 2)
+        data["disk"] = {
+            "total_gb": _total_gb, "free_gb": _free_gb,
+            "used_pct": round((_usage.total - _usage.free) / _usage.total * 100, 1),
+        }
+    except Exception:
+        data["disk"] = "unknown"
+
+    # 活跃会话（粗略：当前已登录 token 计数）
+    try:
+        data["active_sessions"] = len(_LOGIN_FAIL)  # 用限流表计数作代理
+    except Exception:
+        data["active_sessions"] = "unknown"
+
+    # 授权状态
+    try:
+        import license_utils as _lu
+        _lic_status, _lic_data = _lu.check_trial()
+        data["license"] = {"status": _lic_status, "remaining_days": _lic_data or 0}
+    except Exception:
+        data["license"] = "unknown"
+
+    # 初始化告警（迁移失败等）
+    try:
+        _warn_flag = os.path.join(os.path.dirname(samplelib.db_path()), ".init_warning")
+        if os.path.isfile(_warn_flag):
+            with open(_warn_flag, "r", encoding="utf-8") as _wf:
+                data["init_warning"] = _wf.read().strip()[:200]
+    except Exception:
+        pass
+
+    return _envelope(True, "OK", data)
 
 
 @app.get("/api/v1/update/check")
 def update_check(emp: str = Depends(require_emp_local)):
-    """检查更新（2026-08-18 接入：update_check.check_update_sync 此前无任何生产调用方）。
+    """检查更新（支持在线和离线模式）。
 
-    返回 {status: update|latest|unknown|error, message, url, published_at}。
-    仅读取 GitHub Release，幂等、无副作用。
+    在线模式：查询 GitHub Releases。
+    离线模式（QC_UPDATE_LOCAL_DIR）：读取本地更新包信息。
+    返回 {status, message, url, published_at, source}。
     """
+    import auto_updater as _au
+    if _au.is_offline_update_mode():
+        result = _au.check_for_update()
+        return _envelope(True, "OK", {
+            "status": "update" if result.get("available") else "latest",
+            "message": f"离线更新模式 | {result.get('version', '')}",
+            "url": "",
+            "published_at": "",
+            "source": "offline",
+        })
     import update_check as _uc
     result = _uc.check_update_sync(timeout=5)
     return _envelope(True, "OK", {
@@ -1592,6 +1555,7 @@ def update_check(emp: str = Depends(require_emp_local)):
         "message": result.get("message", ""),
         "url": result.get("url", ""),
         "published_at": result.get("published_at", ""),
+        "source": "online",
     })
 
 
@@ -1740,7 +1704,6 @@ def screen_capture(emp: str = Depends(require_emp_local), _lic: bool = Depends(r
 @app.post("/api/v1/screen/ocr")
 def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
     """按比例框在缓存的整屏原图上裁剪并 OCR，返回三区文本 + 结构化 meta。"""
-    import ocr_provider  # noqa: F401 (副作用导入: 确保 PyInstaller 收集 OCR 引擎)
     ok, why = ocr_provider.availability()
     if not ok:
         return JSONResponse(status_code=503,
@@ -2164,6 +2127,390 @@ def audit_log_list(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, 
     finally:
         sess.close()
 
+
+@app.get("/api/v1/admin/audit-logs/export")
+def audit_log_export(format: str = "json", action: str = "",
+                     emp_id: str = "", start: str = "", end: str = "",
+                     admin: str = Depends(require_admin)):
+    """批量导出审计日志（JSON/CSV），用于多台部署集中归档（P2 改造，2026-09-12）。
+
+    参数：
+      format: "json"（默认）或 "csv"
+      action / emp_id / start / end: 同 audit-logs 端点
+    返回：
+      JSON: {"ok": true, "items": [...], "count": N}
+      CSV:  text/csv 文件（Content-Disposition 触发下载）
+    """
+    import csv
+    import io
+    from datetime import datetime as _dt
+    from sqlalchemy import desc
+    from server.models import AuditLog
+    from fastapi.responses import Response
+
+    def _parse_dt(value: str):
+        if not value:
+            return None
+        try:
+            return _dt.fromisoformat(value)
+        except Exception:
+            raise HTTPException(400, "时间格式无效")
+
+    start_dt = _parse_dt(start)
+    end_dt = _parse_dt(end)
+
+    sess = SessionLocal()
+    try:
+        q = sess.query(AuditLog)
+        if action:
+            q = q.filter(AuditLog.action == action)
+        if emp_id:
+            q = q.filter(AuditLog.emp_id == emp_id)
+        if start_dt:
+            q = q.filter(AuditLog.ts >= start_dt)
+        if end_dt:
+            q = q.filter(AuditLog.ts <= end_dt)
+        q = q.order_by(desc(AuditLog.ts), desc(AuditLog.id))
+        rows = q.all()
+
+        items = [{"id": r.id, "ts": r.ts.isoformat() if r.ts else "",
+                  "emp_id": r.emp_id, "action": r.action,
+                  "detail": r.detail or "", "ip": r.ip or ""}
+                 for r in rows]
+
+        if format.lower() == "csv":
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(["id", "ts", "emp_id", "action", "detail", "ip"])
+            for it in items:
+                w.writerow([it["id"], it["ts"], it["emp_id"], it["action"],
+                            it["detail"], it["ip"]])
+            csv_content = buf.getvalue()
+            return Response(
+                content=csv_content,
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename=audit_log_{_dt.now().strftime('%Y%m%d')}.csv"})
+
+        return _envelope(True, "OK", {"items": items, "count": len(items)})
+    finally:
+        sess.close()
+
+
+# ── 授权管理 API（2026-09-12 商业化）──────────────────────────────────
+@app.get("/api/v1/admin/license/status")
+def license_status(admin: str = Depends(require_admin)):
+    """查看授权状态：单机/浮动、座位数、试用期、剩余天数等。"""
+    import license_utils as _lu
+    return _envelope(True, "OK", _lu.get_license_info())
+
+
+@app.post("/api/v1/admin/license/deactivate")
+def license_deactivate(req: Dict[str, Any], admin: str = Depends(require_admin)):
+    """吊销授权。单机模式清除本机激活；浮动模式移除指定机器心跳。"""
+    import license_utils as _lu
+    machine_id_str = (req.get("machine_id") or "").strip()
+    result = _lu.deactivate(machine_id_str)
+    if not result.get("ok"):
+        raise HTTPException(500, result.get("message", "吊销失败"))
+    return _envelope(True, "OK", result, "吊销成功")
+
+
+@app.post("/api/v1/admin/license/extend")
+def license_extend(req: Dict[str, Any], admin: str = Depends(require_admin)):
+    """延长试用/授权天数。"""
+    import license_utils as _lu
+    days = int(req.get("days") or 0)
+    reason = (req.get("reason") or "").strip()
+    if days <= 0:
+        raise HTTPException(400, "天数必须大于 0")
+    result = _lu.extend_license(days, reason)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("message", "延长失败"))
+    return _envelope(True, "OK", result, "延长成功")
+
+
+# ── 订单管理 API（2026-09-12 商业化）──────────────────────────────────
+@app.get("/api/v1/admin/orders")
+def orders_list(status: str = "", limit: int = Query(100, ge=1, le=500),
+                admin: str = Depends(require_admin)):
+    """查询订单列表。"""
+    from sqlalchemy import desc
+    from server.models import Order
+    db_s = db.get_session()
+    try:
+        q = db_s.query(Order).order_by(desc(Order.created_at)).limit(limit)
+        if status:
+            q = q.filter(Order.status == status)
+        rows = q.all()
+        return _envelope(True, "OK", [
+            {"id": r.id, "order_no": r.order_no, "product": r.product,
+             "amount": r.amount, "customer_name": r.customer_name,
+             "customer_contact": r.customer_contact, "department_id": r.department_id,
+             "status": r.status, "paid_at": r.paid_at.isoformat() if r.paid_at else None,
+             "created_at": r.created_at.isoformat() if r.created_at else None,
+             "notes": r.notes or ""} for r in rows
+        ])
+    finally:
+        db_s.close()
+
+
+@app.post("/api/v1/admin/orders/create")
+def orders_create(req: Dict[str, Any], admin: str = Depends(require_admin)):
+    """创建订单（手动收款时记录）。"""
+    from datetime import datetime
+    from server.models import Order
+    import uuid
+    customer_name = (req.get("customer_name") or "").strip()
+    if not customer_name:
+        raise HTTPException(400, "缺少客户名称")
+    amount = int(req.get("amount") or 59)
+    order_no = f"ORD-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8]}"
+    db_s = db.get_session()
+    try:
+        o = Order(
+            order_no=order_no,
+            product=req.get("product", "年费授权"),
+            amount=amount,
+            customer_name=customer_name,
+            customer_contact=req.get("customer_contact", ""),
+            department_id=req.get("department_id", ""),
+            notes=req.get("notes", ""),
+        )
+        db_s.add(o)
+        db_s.commit()
+        db_s.refresh(o)
+        return _envelope(True, "OK", {
+            "id": o.id, "order_no": o.order_no, "amount": o.amount,
+            "customer_name": o.customer_name, "status": o.status,
+            "created_at": o.created_at.isoformat() if o.created_at else None,
+        }, "订单已创建")
+    finally:
+        db_s.close()
+
+
+@app.post("/api/v1/admin/orders/confirm")
+def orders_confirm(req: Dict[str, Any], admin: str = Depends(require_admin)):
+    """确认收款（手动核销）。"""
+    from datetime import datetime
+    from server.models import Order
+    order_no = (req.get("order_no") or "").strip()
+    if not order_no:
+        raise HTTPException(400, "缺少订单号")
+    db_s = db.get_session()
+    try:
+        o = db_s.query(Order).filter(Order.order_no == order_no).first()
+        if not o:
+            raise HTTPException(404, f"订单 {order_no} 不存在")
+        if o.status != "pending":
+            raise HTTPException(400, f"订单状态已是 {o.status}，不能重复确认")
+        o.status = "paid"
+        o.paid_at = datetime.now()
+        if req.get("notes"):
+            o.notes = (o.notes or "") + " | " + req["notes"]
+        db_s.commit()
+        return _envelope(True, "OK", {"order_no": o.order_no, "status": o.status},
+                         "收款已确认")
+    finally:
+        db_s.close()
+
+
+@app.post("/api/v1/admin/orders/cancel")
+def orders_cancel(req: Dict[str, Any], admin: str = Depends(require_admin)):
+    """取消订单或退款。"""
+    from server.models import Order
+    order_no = (req.get("order_no") or "").strip()
+    if not order_no:
+        raise HTTPException(400, "缺少订单号")
+    new_status = (req.get("new_status") or "cancelled").strip()
+    if new_status not in ("cancelled", "refunded"):
+        raise HTTPException(400, "状态必须是 cancelled 或 refunded")
+    db_s = db.get_session()
+    try:
+        o = db_s.query(Order).filter(Order.order_no == order_no).first()
+        if not o:
+            raise HTTPException(404, f"订单 {order_no} 不存在")
+        o.status = new_status
+        db_s.commit()
+        return _envelope(True, "OK", {"order_no": o.order_no, "status": o.status},
+                         f"订单已{new_status}")
+    finally:
+        db_s.close()
+
+
+@app.get("/api/v1/admin/orders/export")
+def orders_export(format: str = "csv", admin: str = Depends(require_admin)):
+    """导出订单记录为 CSV。"""
+    import csv, io
+    from datetime import datetime
+    from sqlalchemy import desc
+    from server.models import Order
+    from fastapi.responses import Response
+    db_s = db.get_session()
+    try:
+        rows = db_s.query(Order).order_by(desc(Order.created_at)).all()
+    finally:
+        db_s.close()
+    if format == "json":
+        return _envelope(True, "OK", [
+            {"order_no": r.order_no, "product": r.product, "amount": r.amount,
+             "customer_name": r.customer_name, "customer_contact": r.customer_contact,
+             "department_id": r.department_id, "status": r.status,
+             "paid_at": r.paid_at.isoformat() if r.paid_at else None,
+             "created_at": r.created_at.isoformat() if r.created_at else None,
+             "notes": r.notes or ""} for r in rows
+        ])
+    # CSV
+    output = io.StringIO()
+    w = csv.writer(output)
+    w.writerow(["订单号", "产品", "金额(元)", "客户名称", "联系方式", "科室", "状态", "收款时间", "创建时间", "备注"])
+    for r in rows:
+        w.writerow([r.order_no, r.product, r.amount, r.customer_name,
+                    r.customer_contact, r.department_id, r.status,
+                    r.paid_at.isoformat() if r.paid_at else "",
+                    r.created_at.isoformat() if r.created_at else "", r.notes or ""])
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=orders_{datetime.now().strftime('%Y%m%d')}.csv"})
+
+
+# ── 反馈提交 API（2026-09-12 商业化）──────────────────────────────────
+@app.post("/api/v1/user-feedback")
+def submit_feedback(req: Dict[str, Any], emp: str = Depends(require_emp_local)):
+    """用户提交反馈/建议（写入本地日志，供开发者查看）。"""
+    message = (req.get("message") or "").strip()
+    category = (req.get("category") or "general").strip()
+    contact = (req.get("contact") or "").strip()
+    if not message:
+        raise HTTPException(400, "反馈内容不能为空")
+    # 写入本地反馈日志
+    try:
+        import error_reporter as _er
+        _er.report_info(
+            f"[反馈] {category}: {message[:200]}",
+            where="feedback.submit",
+            emp_id=emp, category=category, contact=contact,
+            message_full=message[:1000])
+    except Exception:
+        pass
+    return _envelope(True, "OK", {"received": True}, "反馈已收到，谢谢！")
+
+
+# ── 版本变更日志 API（2026-09-12 商业化）──────────────────────────────────
+@app.get("/api/v1/changelog")
+def changelog_get(emp: str = Depends(require_emp_local)):
+    """获取当前版本的变更日志。"""
+    from pathlib import Path
+    _base = Path(__file__).resolve().parent.parent
+    cl_path = _base / "CHANGELOG.md"
+    if not cl_path.exists():
+        return _envelope(True, "OK", {"version": APP_VERSION, "entries": []})
+    text = cl_path.read_text(encoding="utf-8")
+    # 找到当前版本的条目
+    current = APP_VERSION
+    entries = []
+    in_current = False
+    for line in text.splitlines():
+        if line.strip().startswith(f"## v{current}"):
+            in_current = True
+            entries.append(line.strip())
+            continue
+        if in_current:
+            if line.strip().startswith("## ") and not line.strip().startswith(f"## v{current}"):
+                break
+            if line.strip():
+                entries.append(line.strip())
+    return _envelope(True, "OK", {"version": current, "entries": entries})
+
+
+# ── 错误报告管理 API（2026-09-12 商业化）──────────────────────────────────
+@app.get("/api/v1/admin/errors")
+def errors_list(limit: int = Query(50, ge=1, le=200),
+                admin: str = Depends(require_admin)):
+    """查看最近的错误报告。"""
+    import error_reporter as _er
+    return _envelope(True, "OK", {"reports": _er.get_recent_reports(limit), "stats": _er.get_stats()})
+
+
+@app.get("/api/v1/admin/errors/export")
+def errors_export(admin: str = Depends(require_admin)):
+    """导出错误报告为 JSON。"""
+    import error_reporter as _er
+    return _envelope(True, "OK", _er.get_recent_reports(limit=500))
+
+
+# ── 数据导出 API（2026-09-12 商业化：数据可移植性）──────────────────────────
+@app.get("/api/v1/export/data")
+def data_export(emp: str = Depends(require_emp_local)):
+    """导出全量数据（样本 + 队列 + 设置），供用户迁移或备份。"""
+    from fastapi.responses import Response
+    from server.models import Sample, QueueItem, Setting
+    db_s = db.get_session()
+    try:
+        samples = db_s.query(Sample).all()
+        queues = db_s.query(QueueItem).all()
+        settings = db_s.query(Setting).all()
+    finally:
+        db_s.close()
+    payload = {
+        "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "version": APP_VERSION,
+        "samples": [
+            {"ts": s.ts, "patient": s.patient, "gender": s.gender, "age": s.age,
+             "modality": s.modality, "applied_site": s.applied_site,
+             "laterality": s.laterality, "user_id": s.user_id, "dept_id": s.dept_id,
+             "report_text": s.report_text, "findings_json": s.findings_json,
+             "scores_json": s.scores_json,
+             "created_at": s.created_at.isoformat() if s.created_at else None}
+            for s in samples
+        ],
+        "queue": [
+            {"report_text": q.report_text, "meta_json": q.meta_json,
+             "status": q.status, "user_id": q.user_id,
+             "created_at": q.created_at.isoformat() if q.created_at else None}
+            for q in queues
+        ],
+        "settings": [
+            {"key": s.key, "value_json": s.value_json, "user_id": s.user_id}
+            for s in settings
+        ],
+    }
+    return Response(
+        content=_json.dumps(payload, ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition":
+                 f"attachment; filename=data_export_{datetime.datetime.now().strftime('%Y%m%d')}.json"})
+
+
+# ── 备份管理 API（P0 改造，2026-09-12）──────────────────────────────────
+@app.get("/api/v1/admin/backup/status")
+def backup_status(admin: str = Depends(require_admin)):
+    """查看备份状态：最近备份时间、保留策略、备份文件列表。"""
+    import backup as _bk
+    return _envelope(True, "OK", _bk.get_backup_status())
+
+
+@app.post("/api/v1/admin/backup/run")
+def backup_run_now(admin: str = Depends(require_admin)):
+    """手动触发一次备份。"""
+    import backup as _bk
+    result = _bk.run_backup()
+    return _envelope(True, "OK", result, "备份完成")
+
+
+@app.post("/api/v1/admin/backup/restore")
+def backup_restore(req: Dict[str, Any], admin: str = Depends(require_admin)):
+    """从指定备份文件恢复数据。"""
+    import backup as _bk
+    name = (req.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "缺少备份文件名")
+    result = _bk.restore_backup(name)
+    if not result.get("ok"):
+        raise HTTPException(500, f"恢复失败: {'; '.join(result.get('errors', []))}")
+    return _envelope(True, "OK", result, "恢复完成")
+
+
 if _os.path.isdir(_STATIC_DIR):
     app.mount("/static", _NoCacheStaticFiles(directory=_STATIC_DIR), name="static")
 
@@ -2196,5 +2543,6 @@ if __name__ == "__main__":
     _p.add_argument("--host", default=os.environ.get("QC_HOST", "127.0.0.1"))
     _p.add_argument("--port", type=int, default=int(os.environ.get("QC_PORT", "8000")))
     _args = _p.parse_args()
+    _require_secret_for_network_host(_args.host)
     _log("info", f"星衍放射质控服务启动 v{APP_VERSION} @ http://{_args.host}:{_args.port}")
     uvicorn.run(app, host=_args.host, port=_args.port)

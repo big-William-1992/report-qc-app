@@ -5,23 +5,84 @@
 
 ---
 
-## v4.3.3 (2026-09-09)
+## v4.3.6 (2026-09-12)
 
-#
+### 新增 (Added)
+- **订单管理** (`server/models.py` + `server/main.py`)：Order SQLAlchemy 模型，支持订单创建/确认/取消/退款，CSV/JSON 导出
+- **授权生命周期**：授权取消（`/admin/license/deactivate`）、试用延期（`/admin/license/extend`）、试用告警（7/3/1 天阈值）
+- **错误报告系统** (`src/error_reporter.py`)：匿名本地 JSONL 日志，数据脱敏（去除患者标识），管理端查看/导出
+- **用户反馈** (`/api/v1/user-feedback`)：应用内反馈提交（问题/建议/咨询），写入本地日志
+- **全量数据导出** (`/api/v1/export/data`)：样本+队列+设置 JSON 导出，供数据迁移
+- **版本信息 API** (`/api/v1/version`)：返回当前版本号和软件名称
+- **变更日志 API** (`/api/v1/changelog`)：服务端解析 CHANGELOG.md，按版本返回条目
+- **前端反馈模态**：顶部栏 💬 按钮，反馈类型选择 + 详细描述 + 联系方式
+- **前端版本/变更日志展示**：设置页版本信息区域，动态加载当前版本变更日志
+- **授权续费提示**：设置页授权区域新增续费联系方式和试用告警显示
+- **法律文书**：隐私政策、服务条款、数据安全白皮书、用户指南、版本生命周期策略
+
+### 变更 (Changed)
+- **授权状态 API**：`/api/v1/license/status` 合并扩展信息（试用告警、到期日期、授权类型、座位数）
+- **版本号**：`4.3.5` → `4.3.6`
+- **侧边栏版本显示**：静态 v1.0 → 动态加载当前版本号
+
+### 环境变量新增
+- `QC_ERROR_REPORT_ENABLED`：是否启用错误报告（默认 true）
+- `QC_ERROR_REPORT_URL`：错误报告上传地址（空则仅本地存储）
+
+### 测试 (Test)
+- 全项目 389 测试通过，ruff 致命规则全绿
+
+---
+
+## v4.3.5 (2026-09-12)
+
+### 新增 (Added)
+- **结构化日志模块** (`src/logger.py`)：替代全项目 log_quiet 静默模式，以 WARNING 级别输出结构化 JSON 上下文，70+ 调用点自动升级
+- **数据库自动备份** (`src/backup.py`)：SQLite VACUUM INTO 在线备份 + 7/30/90 天轮转 + 后台调度器 + API 端点（status/run/restore）
+- **离线更新通道**：`QC_UPDATE_LOCAL_DIR` 环境变量支持从共享盘/U盘读取更新包，跳过 GitHub 下载
+- **浮动授权模型** (`src/license_utils.py`)：科室多机部署，按座位数计费，心跳共享目录控制并发
+- **运维手册** (`DEPLOYMENT.md`)：多机部署、浮动授权、离线更新、备份恢复、集中审计、健康监控全流程指南
+- **审计日志批量导出**：`/api/v1/admin/audit-logs/export` 支持 JSON/CSV 格式，多机合并归档
+- **授权状态 API**：`/api/v1/admin/license/status` 查询单机/浮动授权、座位数使用详情
+
+### 变更 (Changed)
+- **健康检查增强**：`/api/v1/health` 新增 DB 连通性、磁盘空间、会话数、授权状态、初始化告警
+- **log_quiet 静默升级**：DEBUG → WARNING 级别，结构化 JSON 上下文（where/ts/platform/python/frozen）
+- **激活码验证**：浮动模式下签名对象从机器指纹改为部门标识
+
+### 环境变量新增
+- `QC_BACKUP_ENABLED` / `QC_BACKUP_INTERVAL_DAYS` / `QC_BACKUP_KEEP_DAYS` / `QC_BACKUP_DIR`
+- `QC_UPDATE_LOCAL_DIR`
+- `QC_FLOATING_LICENSE` / `QC_FLOATING_SEATS` / `QC_FLOATING_DEPT_ID` / `QC_FLOATING_HEARTBEAT_DIR`
+
+### 测试 (Test)
+- 全项目 389 测试通过，ruff 致命规则全绿
+
+---
+
 ## v4.3.4 (2026-09-10)
 
 ### 修复 (Fixed)
 - **前端加载修复**：ES 模块 → 经典脚本 bundle（app.bundle.js），消除 file:// 模式下 CORS 拦截导致闸门函数无法加载的问题
 - **file:// 双协议兼容**：index.html 资源路径改为相对路径（css/style.css、js/app.bundle.js），
   直接双击 HTML 或经 HTTP 服务器访问均正常；server/main.py SPA 兜底路由增加根级静态文件解析（防路径穿越）
+- **非本机监听安全强化**：`0.0.0.0` 等非本机地址未设 `QC_API_SECRET` 时阻止启动（`SystemExit`），本机回环保持桌面端零配置兼容
 
 ### 变更 (Changed)
+- **鉴权模块抽离**：`server/security.py` 独立模块（`_load_or_create_secret` / `make_token` / `verify_token` / `require_emp` / `_require_secret_for_network_host` 等），`server/main.py` 精简 152 行
+- **全项目无用导入清理**（ruff F401 / F821 全绿）：`main.py` / `deps.py` / `engine.py` / `llm_engine.py` / `static_spa.py` / `test_ocr_fix.py` / 全部 `route_*` 统一瘦身
 - **密码策略强化**：最少 8 位 + 字母数字组合 + 弱密码黑名单（zxcvbn 校验）
 - **登录锁定机制**：IP 维度 → 工号维度锁定，失败次数过多返回明确错误信息
 - **审计日志页**：新增管理员可见的操作审计页面，支持按操作类型/工号/时间筛选
 - **患者信息栏**：所有框统一大小排成一行（CSS grid repeat(6, 1fr)）
+- **README 环境变量说明更新**：明确非本机部署必须显式配置 `QC_API_SECRET`
 
-## 修复 (Fixed)
+### 测试 (Test)
+- **新增 `TestNetworkHostSecretPolicy`**：3 用例覆盖本机允许 / 非本机拒绝 / 非本机允许
+
+## v4.3.3 (2026-09-09)
+
+### 修复 (Fixed)
 - **前端模块化拆分**：3410 行单文件 app.js → 10 个 ES 模块 + 入口，消除重复定义，解决跨模块状态共享（ACTIVE_QUEUE_ID / LICENSE_STATUS / APP_SETTINGS）
 - **安全增强**：登录限流（IP 维度 5 次/5 分钟 → 15 分钟锁定）、审计日志（21 个敏感端点全覆盖，SQLite 持久化）、CORS 白名单（禁通配）、推送 API Key 恒定时间比较
 - **引擎拆分**：单文件 2784 行 → 5 Mixin + 4 基础设施模块（types/helpers/NER/config），对外 API 完全兼容

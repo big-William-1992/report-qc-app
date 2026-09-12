@@ -188,10 +188,13 @@ function comboEquals(sc, evt) {
   return k === evt.key;
 }
 
+export { apiFetch, toast, confirmAction, confirmModalResolve, escapeHtml, setVal, fmtShortcut, comboFromEvent, comboEquals, animateNumber, easeOutCubic, toggleTheme, APP_SETTINGS, AUTH, PAGE_TITLES };
 
 Object.assign(window, { confirmModalResolve, toggleTheme, APP_SETTINGS, AUTH });
 
 // ====== module: shell.js ======
+
+import { toast, confirmAction, escapeHtml, APP_SETTINGS, AUTH, PAGE_TITLES } from "./core.js";
 
 // 严重度元数据：图标 + 文字（色盲可用）
 const SEV_META = {
@@ -400,10 +403,14 @@ function gotoPage(pageName) {
   switchPage(pageName, document.querySelector(`.nav-cell[data-page="${pageName}"]`));
 }
 
+export { SEV_META, switchPage, gotoPage, loadUsers, loadAudit };
 
 Object.assign(window, { switchPage, closeSidebar, toggleSidebar, loadUsers, changeUserRole, changeUserDept, resetUserPwd, addDepartment, loadAudit, gotoPage });
 
 // ====== module: qc.js ======
+
+import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH, setVal, fmtShortcut, comboFromEvent, comboEquals } from "./core.js";
+import { SEV_META } from "./shell.js";
 
 // ==================== 字数统计 ====================
 document.getElementById('findingsText').addEventListener('input', function() {
@@ -720,6 +727,15 @@ function _renderFindingList() {
     } else if (hasSug) {
       fixBtns = `<span class="sug-text" title="建议修正文本">建议：${escapeHtml(f.suggestion)}</span>`;
     }
+    const explainItems = Array.isArray(f.explain) ? f.explain.map(x => String(x || '')).filter(Boolean) : [];
+    const explainText = explainItems.join('\n');
+    const explainLine = explainItems.length ? `<div class="finding-explain" title="${escapeHtml(explainText)}">
+      <div class="finding-explain-preview">🔍 ${escapeHtml(explainItems[0])}</div>
+      ${explainItems.length > 1 ? `<details class="finding-explain-more">
+        <summary>+${explainItems.length - 1} 条依据</summary>
+        <div class="finding-explain-detail">${escapeHtml(explainItems.slice(1).join('\n'))}</div>
+      </details>` : ''}
+    </div>` : '';
     return `
     <li class="finding-item">
       <span class="severity-dot ${f.severity}"></span>
@@ -727,6 +743,7 @@ function _renderFindingList() {
       <div>
         <div class="finding-text ${m.cls}">${escapeHtml(f.message)}</div>
         <div class="finding-meta">${f.rule_id} · ${escapeHtml(f.category || '')}${fixBtns}</div>
+        ${explainLine}
       </div>
     </li>`;
   }).join('');
@@ -956,10 +973,14 @@ function syncClipWatchUI() {
   } catch (e) { /* 忽略 */ }
 }
 
+export { effectiveLaterality, splitReportSections, runQC, saveToLibrary, _qcAllFindings };
 
 Object.assign(window, { runQC, clearInput, pasteAndSplit, saveToLibrary, showQcTab, setSevFilter, toggleClipWatch, syncClipWatchUI, onClipboardCopy });
 
 // ====== module: rules.js ======
+
+import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH } from "./core.js";
+import { _qcAllFindings } from "./qc.js";
 
 // ==================== 规则词表维护（R8 错别字 / R9 矛盾对 / 忽略词 / R10 模板） ====================
 
@@ -1425,10 +1446,16 @@ async function loadRules() {
   } catch(e) { console.error(e); }
 }
 
+export { currentQcMeta, applyFindingFix, applyAllFixes };
 
 Object.assign(window, { applyAllFixes, applyFindingFix, learnTypoFromFinding, loadRules, loadRulesConfig, updateCfgStats, revertRulesConfig, saveRulesConfig, resetRulesConfig, renderTypoTable, openTypoAddModal, closeTypoAddModal, addTypoItem, toggleTypoItem, deleteTypoItem, openTypoImportModal, closeTypoImportModal, importTypoItems, scanReportsForTypos, adoptScanCandidate });
 
 // ====== module: data.js ======
+
+import { toast, apiFetch, confirmAction, escapeHtml, APP_SETTINGS, AUTH, animateNumber, setVal } from "./core.js";
+import { SEV_META, gotoPage } from "./shell.js";
+import { effectiveLaterality, splitReportSections, _qcAllFindings } from "./qc.js";
+import { currentQcMeta } from "./rules.js";
 
 // ==================== 待质控队列 ====================
 let QUEUE_ITEMS = [];
@@ -1909,11 +1936,20 @@ async function viewSample(sid) {
       <div style="font-size:12px;font-weight:700;margin:14px 0 6px;">质控发现（${findings.length} 条）</div>
       ${findings.length ? `<ul class="finding-list" style="display:block">${findings.map(f => {
         const m = SEV_META[f.severity] || SEV_META.low;
+        const explainItems = Array.isArray(f.explain) ? f.explain.map(x => String(x || '')).filter(Boolean) : [];
+        const explainText = explainItems.join('\n');
+        const explainLine = explainItems.length ? `<div class="finding-explain" title="${escapeHtml(explainText)}">
+          <div class="finding-explain-preview">🔍 ${escapeHtml(explainItems[0])}</div>
+          ${explainItems.length > 1 ? `<details class="finding-explain-more">
+            <summary>+${explainItems.length - 1} 条依据</summary>
+            <div class="finding-explain-detail">${escapeHtml(explainItems.slice(1).join('\n'))}</div>
+          </details>` : ''}
+        </div>` : '';
         return `<li class="finding-item">
           <span class="severity-dot ${f.severity}"></span>
           <span class="sev-badge ${m.cls}">${m.icon} ${m.label}</span>
           <div><div class="finding-text ${m.cls}">${escapeHtml(f.message)}</div>
-          <div class="finding-meta">${escapeHtml(f.rule_id || '')} · ${escapeHtml(f.error_type || '')}</div></div>
+          <div class="finding-meta">${escapeHtml(f.rule_id || '')} · ${escapeHtml(f.error_type || '')}</div>${explainLine}</div>
         </li>`; }).join('')}</ul>`
         : '<div style="font-size:13px;color:var(--text-muted);">无发现，报告质量良好</div>'}
     `;
@@ -2121,10 +2157,14 @@ async function importSamples() {
   inp.click();
 }
 
+export { loadQueue, enqueueCurrent, enqueueText };
 
 Object.assign(window, { loadQueue, queueRunAll, queueClear, queueLoad, queueRemove, enqueueCurrent, loadSamples, loadStatsReport, viewSample, closeSampleModal, deleteSample, exportSamples, importSamples, closeExportFmtModal, pickExportFmt, exportQcReport, loadDashboard, exportSampleReport, downloadExportedFile, loadErrorTypes, loadTrend, loadSampleToWorkspace, renderStatsReport, renderModalityChart, renderRecentTable });
 
 // ====== module: ocr.js ======
+
+import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH, setVal } from "./core.js";
+import { splitReportSections } from "./qc.js";
 
 // ==================== 框选 OCR（三段识别） ====================
 // 三区对应 PACS：basic=病人基础信息 / findings=影像描述 / impression=影像诊断
@@ -2655,10 +2695,13 @@ function ocrHotkey() {
   else ocrOneClick();
 }
 
+export { ocrOneClick, ocrPipeline };
 
 Object.assign(window, { openOcrModal, closeOcrModal, ocrLoadFile, ocrGrabScreen, ocrSaveRegions, ocrRecognize, ocrResetBoxes, ocrPipeline, ocrOneClick, ocrHotkey });
 
 // ====== module: settings.js ======
+
+import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH, fmtShortcut, comboFromEvent, comboEquals } from "./core.js";
 
 // ==================== 系统设置（真实持久化） ====================
 async function loadSettings(applyUI = true) {
@@ -2704,6 +2747,8 @@ function openSettings() {
   syncClipWatchUI();           // 同步桌面壳「监听剪贴板」开关状态
   renderShortcuts();
   populateLicenseSettings();   // 填授权状态 + 机器码
+  if (typeof refreshLicenseInfo === 'function') refreshLicenseInfo();
+  if (typeof loadChangelog === 'function') loadChangelog();
   document.getElementById('settingsModal').style.display = 'flex';
 }
 
@@ -2852,6 +2897,11 @@ function _renderShortcutRow(action) {
 Object.assign(window, { openSettings, closeSettings, saveSettings, resetShortcuts, _startCapture, loadSettings, renderShortcuts, updateShortcutHints });
 
 // ====== module: ris.js ======
+
+import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH, setVal } from "./core.js";
+import { gotoPage } from "./shell.js";
+import { splitReportSections, runQC } from "./qc.js";
+import { enqueueCurrent } from "./data.js";
 
 // ==================== 数据接入 ====================
 // 数据接入页加载：显示推送配置信息（轮询已移除，改用 PACS 推送模式）
@@ -3031,10 +3081,13 @@ async function risEnqueueAll() {
   toast(`已将 ${n} 份报告加入待质控队列`, n ? 'success' : 'info');
 }
 
+export { loadRisPage };
 
 Object.assign(window, { testRisConnection, fetchRisReports, cancelRis, risEnqueueAll, sendToQC, batchQC, loadRisPage });
 
 // ====== module: feedback.js ======
+
+import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH } from "./core.js";
 
 // ===================== 反馈审核（R19 闭环） =====================
 function escHtml(s) {
@@ -3045,7 +3098,7 @@ function escHtml(s) {
 async function loadFeedback() {
   const body = document.getElementById('feedbackBody');
   const applyBtn = document.getElementById('fbApplyBtn');
-  body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px;">加载中...</td></tr>';
+  body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:32px;">加载中...</td></tr>';
   try {
     const st = await (await apiFetch('/api/v1/feedback/stats')).json();
     const stats = (st && st.data) || {};
@@ -3058,15 +3111,27 @@ async function loadFeedback() {
     const res = await (await apiFetch('/api/v1/feedback/pending?limit=0')).json();
     const items = (res && res.data) || [];
     if (!items.length) {
-      body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px;">🎉 暂无待审核反馈</td></tr>';
+      body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:32px;">🎉 暂无待审核反馈</td></tr>';
       return;
     }
     body.innerHTML = items.map(it => {
       const ctx = escHtml((it.report_snippet || '').slice(0, 60));
+      const explainItems = Array.isArray(it.explain) ? it.explain.map(x => String(x || '')).filter(Boolean) : [];
+      const explainText = explainItems.join('\n');
+      const explainCell = explainItems.length
+        ? `<div class="fb-explain" title="${escHtml(explainText)}">
+            <div class="fb-explain-preview">${escHtml(explainItems[0])}</div>
+            ${explainItems.length > 1 ? `<details class="fb-explain-more">
+              <summary>+${explainItems.length - 1} 条依据</summary>
+              <div class="fb-explain-detail">${escHtml(explainItems.slice(1).join('\n'))}</div>
+            </details>` : ''}
+          </div>`
+        : '<span style="color:var(--text-muted)">—</span>';
       return `<tr>
         <td style="white-space:nowrap">${escHtml(it.rule_id)}</td>
         <td><b>「${escHtml(it.seg)}」</b></td>
         <td>${it.suggestion ? escHtml(it.suggestion) : '<span style="color:var(--text-muted)">—</span>'}</td>
+        <td style="font-size:12px;color:var(--text-secondary);max-width:260px;">${explainCell}</td>
         <td style="font-size:12px;color:var(--text-muted);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${ctx}">${ctx}</td>
         <td style="white-space:nowrap;font-size:12px;color:var(--text-muted)">${escHtml((it.timestamp || '').slice(5, 16))}</td>
         <td style="white-space:nowrap">
@@ -3077,7 +3142,7 @@ async function loadFeedback() {
       </tr>`;
     }).join('');
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#c0392b;padding:24px;">加载失败：${escHtml(e.message)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#c0392b;padding:24px;">加载失败：${escHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -3123,6 +3188,9 @@ async function refreshFeedbackBadge() {
 Object.assign(window, { loadFeedback, applyFeedbackDelta, reviewFeedback });
 
 // ====== module: auth.js ======
+
+import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH } from "./core.js";
+import { switchPage, loadUsers } from "./shell.js";
 
 // ==================== 账号 / 授权（启动闸门） ====================
 function showGate(v) {
@@ -3298,6 +3366,8 @@ function enterApp(status) {
   refreshUserUI();
   updateTrialBanner(window.LICENSE_STATUS);
   refreshFeedbackBadge();  // 登录后立即刷新反馈待审徽章
+  // 动态填充版本号到侧边栏
+  if (typeof loadChangelog === 'function') loadChangelog();
 }
 
 function updateTrialBanner(status) {
@@ -3496,5 +3566,117 @@ function copyMachineId() {
   }
 }
 
+// ==================== 意见反馈（2026-09-12 商业化） ====================
+function openFeedback() {
+  document.getElementById('fbMessage').value = '';
+  document.getElementById('fbContact').value = '';
+  document.getElementById('fbErr').textContent = '';
+  document.getElementById('feedbackModal').style.display = 'flex';
+}
 
-Object.assign(window, { gateAccept, gateReject, gateCreate, gateToLogin, gateToRegister, gateToPwd, gateChangePwd, gateLogin, gateActivate, toggleUserMenu, logout, copyMachineId, openActivateFromSettings, openOnboardingFromSettings, showGate, gateShow, refreshUserUI, updateTrialBanner, populateLicenseSettings, bootstrapGate, maybeShowOnboarding, showOnboarding, closeOnboarding });
+function closeFeedback() {
+  document.getElementById('feedbackModal').style.display = 'none';
+}
+
+async function submitFeedback() {
+  const msg = document.getElementById('fbMessage').value.trim();
+  if (!msg) { document.getElementById('fbErr').textContent = '请填写反馈内容'; return; }
+  const payload = {
+    message: msg,
+    category: document.getElementById('fbCategory').value,
+    contact: document.getElementById('fbContact').value.trim(),
+  };
+  try {
+    const res = await apiFetch('/api/v1/user-feedback', {
+      method: 'POST', body: JSON.stringify(payload)
+    });
+    const d = await res.json();
+    if (!d.ok) throw new Error(d.message || '提交失败');
+    closeFeedback();
+    toast('反馈已提交，感谢您的建议！', 'success');
+  } catch (e) { document.getElementById('fbErr').textContent = e.message; }
+}
+
+// ==================== 检查更新（2026-09-12 商业化） ====================
+async function checkForUpdate() {
+  const btn = document.getElementById('updateCheckBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiFetch('/api/v1/version');
+    const d = await res.json();
+    if (d.ok) {
+      toast('当前版本 v' + d.data.version + '（已是最新版）', 'success');
+    } else {
+      toast('当前版本 v' + (d.data.version || '未知'), 'info');
+    }
+  } catch (e) {
+    toast('检查更新失败：' + e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ==================== 授权信息刷新（扩展版） ====================
+function refreshLicenseInfo() {
+  apiFetch('/api/v1/license/status').then(r => r.json()).then(d => {
+    window.LICENSE_STATUS = d.data;
+    const st = d.data;
+    if (!st) return;
+    // 更新授权状态文本
+    const el = document.getElementById('setLicenseStatus');
+    if (el) {
+      if (st.activated) el.textContent = '✅ 已激活（永久）';
+      else if (st.trial_state === 'trial') el.textContent = '🕒 试用期 · 剩余 ' + st.trial_days_left + ' 天';
+      else el.textContent = '⚠ 试用期已结束，需激活';
+    }
+    // 更新试用告警
+    const warn = document.getElementById('setLicenseWarning');
+    if (warn) {
+      if (st.trial_warning) {
+        warn.textContent = st.trial_warning;
+        warn.style.color = '#e67e22';
+        warn.style.display = 'block';
+      } else {
+        warn.style.display = 'none';
+      }
+    }
+    refreshUserUI();
+    updateTrialBanner(st);
+  }).catch(() => {});
+}
+
+// ==================== 版本号 + 变更日志 ====================
+async function loadChangelog() {
+  try {
+    const verRes = await apiFetch('/api/v1/version');
+    const verData = await verRes.json();
+    if (verData.ok) {
+      const v = verData.data.version;
+      const sl = document.getElementById('setVersionLabel');
+      if (sl) sl.textContent = 'v' + v;
+      const sv = document.getElementById('sidebarVer');
+      if (sv) sv.textContent = 'v' + v;
+    }
+    const clRes = await apiFetch('/api/v1/changelog');
+    const clData = await clRes.json();
+    const el = document.getElementById('setChangelog');
+    if (!el) return;
+    if (clData.ok && clData.data.entries.length > 0) {
+      el.innerHTML = clData.data.entries.map(line => {
+        const t = line.replace(/^#+\s*/, '');
+        if (t.startsWith('## ')) return '<strong>' + escapeHtml(t.replace(/## /g, '')) + '</strong>';
+        return '• ' + escapeHtml(t.replace(/^[-*]\s*/, ''));
+      }).join('<br>');
+    } else {
+      el.textContent = '暂无变更日志';
+    }
+  } catch (e) {
+    const el = document.getElementById('setChangelog');
+    if (el) el.textContent = '加载失败';
+  }
+}
+
+export { bootstrapGate };
+
+Object.assign(window, { gateAccept, gateReject, gateCreate, gateToLogin, gateToRegister, gateToPwd, gateChangePwd, gateLogin, gateActivate, toggleUserMenu, logout, copyMachineId, openActivateFromSettings, openOnboardingFromSettings, showGate, gateShow, refreshUserUI, updateTrialBanner, populateLicenseSettings, bootstrapGate, maybeShowOnboarding, showOnboarding, closeOnboarding, openFeedback, closeFeedback, submitFeedback, checkForUpdate, refreshLicenseInfo, loadChangelog });
+

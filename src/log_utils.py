@@ -84,12 +84,12 @@ def setup_logging(level=logging.INFO):
 
 
 def log_quiet(where: str) -> None:
-    """静默降级点统一观测口 (2026-08-25 审计新增)。
+    """降级点统一观测口 (2026-08-25 审计新增, 2026-09-12 P0 改造)。
 
-    设计意图: 项目中大量 `except Exception: pass` 属于**有意的可选能力降级**
-    (如 pypinyin 未安装则 R19 关闭), 行为正确但不可见——现场排障时无从知晓
-    「哪条路走过了」。本函数不改变任何控制流, 仅以 DEBUG 级别留痕,
-    诊断包导出后即可还原完整决策链。
+    v2: 原先 DEBUG 级别静默 → 现升级为 WARNING 级别 + 结构化 JSON 上下文。
+    委托给 logger.py 的 log_quiet，原有 70+ 处调用无需修改即获得可见日志。
+
+    新代码建议直接 import logger 并使用 warn_degraded() / log_error()。
 
     用法(函数内局部导入, 零模块级依赖):
         except Exception:
@@ -100,11 +100,16 @@ def log_quiet(where: str) -> None:
             log_quiet(__name__)
     """
     try:
-        lg = get_logger()
-        if lg is not None:
-            lg.debug("silenced-exception at %s", where, exc_info=True)
-    except Exception:  # 观测本身绝不能引入新故障
-        pass
+        import logger as _logger_mod
+        _logger_mod.log_quiet(where)
+    except Exception:
+        # 降级到原始 logger（logger 模块不可用时）
+        try:
+            lg = get_logger()
+            if lg is not None:
+                lg.warning("silenced-exception at %s", where, exc_info=True)
+        except Exception:
+            pass
 
 
 def get_logger():

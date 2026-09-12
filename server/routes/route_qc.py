@@ -3,11 +3,10 @@ route_qc.py — 星衍放射质控 API 路由
 
 """
 
-from fastapi import APIRouter, Header, HTTPException, UploadFile, File, Depends, Query, Request
-from fastapi.responses import JSONResponse
-from typing import Optional, Dict, Any, List
-from server.schemas import CheckReq, BatchReq, BatchItem, QcReportExportReq, LearnTypoReq, TypoItemReq, TypoBatchImportReq
-from server.deps import SECRET, _envelope, _run_qc, require_emp_local, require_emp, log_audit
+from fastapi import APIRouter, HTTPException, Depends, Request
+from typing import Dict, Any
+from server.schemas import CheckReq, BatchReq, QcReportExportReq, LearnTypoReq, TypoItemReq, TypoBatchImportReq
+from server.deps import _envelope, _run_qc, require_emp_local, log_audit
 import engine, samplelib
 
 

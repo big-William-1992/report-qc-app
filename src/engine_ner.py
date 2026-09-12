@@ -15,10 +15,6 @@ from engine_types import Entity
 # 中文放射同义词归一 + 中文临床 NER（项目自建，离线可用；详见 dataset_catalog ZH 资源）
 # 以 try/except 降级：极端打包缺失时不影响既有规则。
 try:
-    from zh_radiology_synonyms import (
-        normalize_text as _zh_norm_text,
-        extract_followup as _zh_extract_followup,
-    )
     from zh_ner import extract_entities as _zh_ner_entities
     _ZH_NLP_OK = True
 except Exception:  # pragma: no cover - 仅防御性降级

@@ -4,11 +4,10 @@ route_account.py — 星衍放射质控 API 路由
 """
 
 from fastapi import APIRouter, Header, HTTPException, Depends, Request
-from fastapi.responses import JSONResponse
 from typing import Optional
 from server.schemas import (AccountCreate, RegisterReq, ChangePwdReq, LoginReq,
                             RoleReq, PwdReq, DeptReq, DeptCreateReq)
-from server.deps import (SECRET, _envelope, _emp_from_auth, make_token,
+from server.deps import (_envelope, _emp_from_auth, make_token,
                           require_emp, require_admin, log_audit,
                           _login_locked, _record_login_failure, _clear_login_failures)
 import accounts

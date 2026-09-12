@@ -8,14 +8,12 @@ PACS/RIS 系统主动推送报告到本端点，替代传统轮询模式。
 import os
 import json
 import xml.etree.ElementTree as ET
-from typing import Optional, Dict, Any, List
-from io import StringIO
+from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Depends, Request
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from server.deps import _envelope, _run_qc, require_emp_local, _queue_add_text
+from server.deps import _envelope, _run_qc, _queue_add_text
 import samplelib
 import engine
 

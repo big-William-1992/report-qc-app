@@ -171,15 +171,35 @@ def _trial_verify(date_str: str, sig: str) -> bool:
 
 
 def _activated_valid(lic: dict) -> bool:
-    """激活状态真实性校验（2026-08-18 防绕过）：
-    ① 激活时绑定的机器指纹必须与当前机器一致（防复制 license.dat 一码多机）；
-    ② activation_code 必须仍能通过 Ed25519 验签（防手改 {activated:true} 伪造）。"""
+    """激活状态真实性校验。
+    单机模式（2026-08-18 防绕过）：
+      ① machine_id 必须与当前机器一致（防复制 license.dat 一码多机）
+      ② activation_code 必须通过 Ed25519 验签
+    浮动模式（2026-09-12 新增）：
+      ① department_id 必须与当前配置一致
+      ② activation_code 必须通过 Ed25519 验签
+      ③ 座位数未满（通过共享目录心跳计数）
+    """
     if not lic.get("activated"):
         return False
-    if lic.get("machine_id") != _machine_id():
-        return False
     code = (lic.get("activation_code") or "").strip()
-    return bool(code) and validate_activation_code(code)
+    if not code:
+        return False
+    if not validate_activation_code(code):
+        return False
+    # 机器绑定检查（浮动模式跳过）
+    if not lic.get("floating_license"):
+        if lic.get("machine_id") != _machine_id():
+            return False
+    # 浮动模式座位检查
+    if _QC_FLOATING_LICENSE:
+        if not lic.get("floating_license"):
+            # license 不是浮动模式写入的，但环境启用了浮动 → 不匹配
+            return False
+        ok, _ = _check_floating_license()
+        if not ok:
+            return False
+    return True
 
 
 def check_trial():
@@ -188,9 +208,15 @@ def check_trial():
           ("trial", 剩余天数) - 试用中
           ("expired", "") - 已过期
           ("activated", "") - 已激活
+    浮动模式（2026-09-12）：
+      - 每次检查时写心跳，保持座位活跃
+      - 超过座位数时降级为 expired
     """
     lic = _read_license()
     if _activated_valid(lic):
+        # 浮动模式：刷新心跳（保持座位活跃）
+        if _QC_FLOATING_LICENSE and lic.get("floating_license"):
+            _write_heartbeat(_machine_id())
         return ("activated", "")
 
     first_run_raw = lic.get("first_run")
@@ -236,13 +262,270 @@ def check_trial():
 
 # ---------- 激活码 ----------
 
+# ---------- 浮动授权模式（P1 改造，2026-09-12）──────────────────────────
+# 科室多机部署场景：一个激活码覆盖整个科室，通过共享目录计数控制并发座位数。
+#
+# 配置方式（环境变量）：
+#   QC_FLOATING_LICENSE=true       — 启用浮动授权
+#   QC_FLOATING_SEATS=5            — 最大并发座位数（默认 5）
+#   QC_FLOATING_HEARTBEAT_DIR=...  — 共享目录路径（NFS/SMB/共享盘）
+#
+# 工作原理：
+#   1. 验证激活码时，签名的验证对象从机器指纹改为部门标识（QC_FLOATING_DEPT_ID）
+#   2. 每台机器在共享目录写心跳文件，超过座位数时拒绝激活
+#   3. 心跳 30 分钟过期，机器离线自动释放座位
+#   4. 无共享目录时退化为信任模式（仅验证签名，不检查座位）
+
+_QC_FLOATING_LICENSE = os.environ.get("QC_FLOATING_LICENSE", "false").lower() in (
+    "1", "true", "yes", "on")
+
+
+def _floating_seats() -> int:
+    try:
+        return max(1, int(os.environ.get("QC_FLOATING_SEATS", "5")))
+    except (ValueError, TypeError):
+        return 5
+
+
+def _floating_dept_id() -> str:
+    """部门标识：优先用环境变量，否则从 license.dat 读取。"""
+    d = os.environ.get("QC_FLOATING_DEPT_ID", "").strip()
+    if d:
+        return d
+    lic = _read_license()
+    return lic.get("department_id", "")
+
+
+def _floating_heartbeat_dir() -> str:
+    """共享目录路径（用于座位计数）。"""
+    d = os.environ.get("QC_FLOATING_HEARTBEAT_DIR", "").strip()
+    return d
+
+
+def _hb_path(machine_token: str) -> str:
+    """单台机器的心跳文件路径。"""
+    return os.path.join(_floating_heartbeat_dir(), f"seat_{machine_token}.json")
+
+
+def _write_heartbeat(machine_token: str) -> None:
+    """写心跳文件（幂等），供座位计数使用。"""
+    d = _floating_heartbeat_dir()
+    if not d:
+        return
+    os.makedirs(d, exist_ok=True)
+    hb = {
+        "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+        "pid": os.getpid(),
+    }
+    p = _hb_path(machine_token)
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(hb, f)
+    except Exception:
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
+
+
+def _count_active_seats() -> int:
+    """统计共享目录中的活跃心跳文件数（30 分钟过期）。"""
+    d = _floating_heartbeat_dir()
+    if not d:
+        return 0
+    count = 0
+    try:
+        for fname in os.listdir(d):
+            if not fname.startswith("seat_") or not fname.endswith(".json"):
+                continue
+            fp = os.path.join(d, fname)
+            try:
+                age = datetime.datetime.now() - datetime.datetime.fromtimestamp(
+                    os.path.getmtime(fp))
+                if age.days * 1440 + age.seconds / 60 < 30:  # 30 分钟内
+                    count += 1
+            except OSError:
+                pass
+    except Exception:
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
+    return count
+
+
+def _check_floating_license() -> tuple[bool, str]:
+    """检查浮动授权状态。返回 (ok, reason)。"""
+    if not _QC_FLOATING_LICENSE:
+        return (False, "")
+
+    d = _floating_heartbeat_dir()
+    if not d:
+        return (True, "floating-trust-no-heartbeat")  # 无共享目录：信任模式
+
+    seats = _count_active_seats()
+    max_seats = _floating_seats()
+    if seats < max_seats:
+        return (True, f"floating:{seats}/{max_seats}")
+    return (False, f"floating-exceeded:{seats}/{max_seats}")
+
+
+def _floating_license_status() -> dict:
+    """浮动授权状态摘要（供健康检查和 API 返回）。"""
+    return {
+        "floating_enabled": _QC_FLOATING_LICENSE,
+        "max_seats": _floating_seats(),
+        "active_seats": _count_active_seats() if _floating_heartbeat_dir() else 0,
+        "heartbeat_dir": _floating_heartbeat_dir(),
+        "department_id": _floating_dept_id(),
+    }
+
+
+def floating_license_active() -> bool:
+    """是否启用了浮动授权模式（供其他模块判断）。"""
+    return _QC_FLOATING_LICENSE
+
+
+# ---------- 授权管理（2026-09-12 商业化）─────────────────────────────
+
+def trial_days_remaining() -> int:
+    """试用期剩余天数。已激活返回 -1，首次运行返回 TRIAL_DAYS。"""
+    lic = _read_license()
+    if _activated_valid(lic):
+        return -1
+    first_run_raw = lic.get("first_run")
+    if not first_run_raw:
+        return TRIAL_DAYS
+    if isinstance(first_run_raw, dict):
+        first_run = first_run_raw.get("date", "")
+    else:
+        first_run = first_run_raw
+    try:
+        first = datetime.date.fromisoformat(first_run)
+    except Exception:
+        return 0
+    used = (datetime.date.today() - first).days
+    return max(0, TRIAL_DAYS - used)
+
+
+def trial_warning() -> str:
+    """试用期到期提醒。返回空字符串表示无警告。"""
+    days = trial_days_remaining()
+    if days == -1:
+        return ""
+    if days == 0:
+        return "试用期已结束，请输入激活码续费"
+    if days <= 7:
+        return f"试用期剩余 {days} 天，请尽快续费"
+    if days <= 1:
+        return f"试用期明天到期，仅剩 {days} 天"
+    return ""
+
+
+def deactivate(machine_id_str: str = "") -> dict:
+    """吊销授权（管理员操作）。
+    单机模式：删除 license.dat 中的激活信息。
+    浮动模式：删除指定机器的心跳文件。
+    machine_id_str: 空则吊销本机；非空则吊销指定机器（浮动模式）。
+    """
+    lic = _read_license()
+    if not lic.get("activated"):
+        return {"ok": True, "message": "当前未激活"}
+
+    if _QC_FLOATING_LICENSE:
+        # 浮动模式：删除指定机器的心跳
+        if machine_id_str:
+            d = _floating_heartbeat_dir()
+            if d:
+                p = _hb_path(machine_id_str)
+                if os.path.isfile(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+                return {"ok": True, "message": f"已移除机器 {machine_id_str} 的心跳"}
+            return {"ok": False, "message": "浮动模式未配置心跳目录"}
+
+    # 单机模式：清除激活
+    lic.pop("activated", None)
+    lic.pop("activation_code", None)
+    lic.pop("activated_at", None)
+    lic.pop("machine_id", None)
+    _write_license(lic)
+    return {"ok": True, "message": "本机授权已吊销"}
+
+
+def extend_license(days: int, reason: str = "") -> dict:
+    """延长试用/授权天数（管理员操作）。
+    days: 延长天数（正数）
+    reason: 延长原因（备注用）
+    """
+    if days <= 0:
+        return {"ok": False, "message": "天数必须大于 0"}
+    lic = _read_license()
+    # 将 first_run 前推 days 天，等于延长试用
+    first_run_raw = lic.get("first_run")
+    today = datetime.date.today()
+    if not first_run_raw:
+        new_date = (today - datetime.timedelta(days=days)).isoformat()
+        lic["first_run"] = {"date": new_date, "sig": _trial_sign(new_date)}
+    elif isinstance(first_run_raw, dict):
+        first = first_run_raw.get("date", "")
+        try:
+            d = datetime.date.fromisoformat(first)
+            new_date = (d - datetime.timedelta(days=days)).isoformat()
+            lic["first_run"] = {"date": new_date, "sig": _trial_sign(new_date)}
+        except Exception:
+            new_date = (today - datetime.timedelta(days=days)).isoformat()
+            lic["first_run"] = {"date": new_date, "sig": _trial_sign(new_date)}
+    else:
+        try:
+            d = datetime.date.fromisoformat(first_run_raw)
+            new_date = (d - datetime.timedelta(days=days)).isoformat()
+        except Exception:
+            new_date = (today - datetime.timedelta(days=days)).isoformat()
+        lic["first_run"] = {"date": new_date, "sig": _trial_sign(new_date)}
+    lic["extended_at"] = today.isoformat()
+    lic["extended_days"] = lic.get("extended_days", 0) + days
+    lic["extend_reason"] = reason
+    _write_license(lic)
+    return {"ok": True, "message": f"已延长 {days} 天"}
+
+
+def get_license_info() -> dict:
+    """完整授权信息摘要（供 API 返回）。"""
+    lic = _read_license()
+    status, data = check_trial()
+    return {
+        "status": status,
+        "data": str(data) if data else "",
+        "activated": bool(lic.get("activated")),
+        "activated_at": lic.get("activated_at", ""),
+        "machine_id": _machine_id(),
+        "trial_days": TRIAL_DAYS,
+        "trial_days_remaining": trial_days_remaining(),
+        "trial_warning": trial_warning(),
+        "floating": floating_license_active(),
+        "floating_status": _floating_license_status(),
+        "disclaimer_accepted": bool(lic.get("disclaimer_accepted")),
+        "extended_days": lic.get("extended_days", 0),
+        "extend_reason": lic.get("extend_reason", ""),
+        "extended_at": lic.get("extended_at", ""),
+    }
+
+
 # ---------- 激活码（Ed25519 非对称，离线验证） ----------
 # 机制：开发者用私钥对硬件标识签名生成激活码；客户端用内置公钥验签。
 # 客户端仅持有公钥，没有私钥即无法伪造激活码。
+# 浮动模式：签名对象改为部门标识，一个激活码覆盖整个科室。
 _PUBLIC_KEY_PEM = b"""-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAwDFmQmjTcrHbayI4kjiirpuj+1DtpAAh3H33Gvc5VoQ=
 -----END PUBLIC KEY-----
 """
+
+
 def _stable_hw_id():
     """稳定的硬件标识（激活码绑定对象）。重装系统/换网卡尽量不变。
 
@@ -280,12 +563,20 @@ def _machine_id():
     return hashlib.md5(_stable_hw_id().encode("utf-8")).hexdigest()[:12]
 
 
-def validate_activation_code(code):
-    """用内置公钥验证激活码（须为『本机机器识别码 machine_id』的有效 Ed25519 签名）。
+def _activation_target() -> bytes:
+    """激活码验签目标：浮动模式用部门标识，单机模式用机器指纹。"""
+    if _QC_FLOATING_LICENSE:
+        dept = _floating_dept_id()
+        if dept:
+            return dept.encode("utf-8")
+    return _machine_id().encode("utf-8")
 
-    验签对象必须与发卡工具（gen_activation_code.py）及 Web 版（server/license_web.py）
-    保持一致，否则同一台机器两版激活码互不通用（历史 bug：此文件此前绑定完整硬件标识
-    _stable_hw_id，而发卡/Web 版绑定 12 位短码 machine_id）。
+
+def validate_activation_code(code):
+    """用内置公钥验证激活码。
+
+    单机模式：验签对象为本机 machine_id（12 位短码）。
+    浮动模式（QC_FLOATING_LICENSE=true）：验签对象为部门标识。
     """
     if not code:
         return False
@@ -302,7 +593,7 @@ def validate_activation_code(code):
     except Exception:
         return False
     try:
-        public_key.verify(sig, _machine_id().encode("utf-8"))
+        public_key.verify(sig, _activation_target())
         return True
     except Exception:
         return False
@@ -310,15 +601,31 @@ def validate_activation_code(code):
 
 def activate(code):
     """尝试用输入的激活码激活软件。
+    浮动模式：检查座位数上限，写心跳。单机模式：绑定机器指纹。
     返回 True/False。
     """
     if validate_activation_code(code):
+        # 浮动模式：检查座位数
+        if _QC_FLOATING_LICENSE:
+            ok, reason = _check_floating_license()
+            if not ok:
+                return False  # 座位已满
+
         lic = _read_license()
         lic["activated"] = True
         lic["activation_code"] = code
-        lic["machine_id"] = _machine_id()   # 绑定机器指纹：防复制已激活文件一码多机（2026-08-18）
         lic["activated_at"] = datetime.date.today().isoformat()
+        if _QC_FLOATING_LICENSE:
+            # 浮动模式：存部门标识，不绑定单台机器
+            lic["department_id"] = _floating_dept_id()
+            lic["floating_license"] = True
+        else:
+            lic["machine_id"] = _machine_id()  # 绑定机器指纹：防复制已激活文件一码多机
         _write_license(lic)
+
+        # 浮动模式：写心跳
+        if _QC_FLOATING_LICENSE:
+            _write_heartbeat(_machine_id())
         return True
     return False
 

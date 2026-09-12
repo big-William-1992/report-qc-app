@@ -8,6 +8,7 @@
 本测试固化：阈值降到 0.55 仍保住真实字段；新 key 即生效（无需第二轮一致）。
 """
 import os, sys
+import pytest
 import unittest
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np

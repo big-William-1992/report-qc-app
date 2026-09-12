@@ -175,6 +175,8 @@ function enterApp(status) {
   refreshUserUI();
   updateTrialBanner(window.LICENSE_STATUS);
   refreshFeedbackBadge();  // 登录后立即刷新反馈待审徽章
+  // 动态填充版本号到侧边栏
+  if (typeof loadChangelog === 'function') loadChangelog();
 }
 
 function updateTrialBanner(status) {
@@ -373,6 +375,116 @@ function copyMachineId() {
   }
 }
 
+// ==================== 意见反馈（2026-09-12 商业化） ====================
+function openFeedback() {
+  document.getElementById('fbMessage').value = '';
+  document.getElementById('fbContact').value = '';
+  document.getElementById('fbErr').textContent = '';
+  document.getElementById('feedbackModal').style.display = 'flex';
+}
+
+function closeFeedback() {
+  document.getElementById('feedbackModal').style.display = 'none';
+}
+
+async function submitFeedback() {
+  const msg = document.getElementById('fbMessage').value.trim();
+  if (!msg) { document.getElementById('fbErr').textContent = '请填写反馈内容'; return; }
+  const payload = {
+    message: msg,
+    category: document.getElementById('fbCategory').value,
+    contact: document.getElementById('fbContact').value.trim(),
+  };
+  try {
+    const res = await apiFetch('/api/v1/user-feedback', {
+      method: 'POST', body: JSON.stringify(payload)
+    });
+    const d = await res.json();
+    if (!d.ok) throw new Error(d.message || '提交失败');
+    closeFeedback();
+    toast('反馈已提交，感谢您的建议！', 'success');
+  } catch (e) { document.getElementById('fbErr').textContent = e.message; }
+}
+
+// ==================== 检查更新（2026-09-12 商业化） ====================
+async function checkForUpdate() {
+  const btn = document.getElementById('updateCheckBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiFetch('/api/v1/version');
+    const d = await res.json();
+    if (d.ok) {
+      toast('当前版本 v' + d.data.version + '（已是最新版）', 'success');
+    } else {
+      toast('当前版本 v' + (d.data.version || '未知'), 'info');
+    }
+  } catch (e) {
+    toast('检查更新失败：' + e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ==================== 授权信息刷新（扩展版） ====================
+function refreshLicenseInfo() {
+  apiFetch('/api/v1/license/status').then(r => r.json()).then(d => {
+    window.LICENSE_STATUS = d.data;
+    const st = d.data;
+    if (!st) return;
+    // 更新授权状态文本
+    const el = document.getElementById('setLicenseStatus');
+    if (el) {
+      if (st.activated) el.textContent = '✅ 已激活（永久）';
+      else if (st.trial_state === 'trial') el.textContent = '🕒 试用期 · 剩余 ' + st.trial_days_left + ' 天';
+      else el.textContent = '⚠ 试用期已结束，需激活';
+    }
+    // 更新试用告警
+    const warn = document.getElementById('setLicenseWarning');
+    if (warn) {
+      if (st.trial_warning) {
+        warn.textContent = st.trial_warning;
+        warn.style.color = '#e67e22';
+        warn.style.display = 'block';
+      } else {
+        warn.style.display = 'none';
+      }
+    }
+    refreshUserUI();
+    updateTrialBanner(st);
+  }).catch(() => {});
+}
+
+// ==================== 版本号 + 变更日志 ====================
+async function loadChangelog() {
+  try {
+    const verRes = await apiFetch('/api/v1/version');
+    const verData = await verRes.json();
+    if (verData.ok) {
+      const v = verData.data.version;
+      const sl = document.getElementById('setVersionLabel');
+      if (sl) sl.textContent = 'v' + v;
+      const sv = document.getElementById('sidebarVer');
+      if (sv) sv.textContent = 'v' + v;
+    }
+    const clRes = await apiFetch('/api/v1/changelog');
+    const clData = await clRes.json();
+    const el = document.getElementById('setChangelog');
+    if (!el) return;
+    if (clData.ok && clData.data.entries.length > 0) {
+      el.innerHTML = clData.data.entries.map(line => {
+        const t = line.replace(/^#+\s*/, '');
+        if (t.startsWith('## ')) return '<strong>' + escapeHtml(t.replace(/## /g, '')) + '</strong>';
+        return '• ' + escapeHtml(t.replace(/^[-*]\s*/, ''));
+      }).join('<br>');
+    } else {
+      el.textContent = '暂无变更日志';
+    }
+  } catch (e) {
+    const el = document.getElementById('setChangelog');
+    if (el) el.textContent = '加载失败';
+  }
+}
+
 export { bootstrapGate };
 
-Object.assign(window, { gateAccept, gateReject, gateCreate, gateToLogin, gateToRegister, gateToPwd, gateChangePwd, gateLogin, gateActivate, toggleUserMenu, logout, copyMachineId, openActivateFromSettings, openOnboardingFromSettings, showGate, gateShow, refreshUserUI, updateTrialBanner, populateLicenseSettings, bootstrapGate, maybeShowOnboarding, showOnboarding, closeOnboarding });
+Object.assign(window, { gateAccept, gateReject, gateCreate, gateToLogin, gateToRegister, gateToPwd, gateChangePwd, gateLogin, gateActivate, toggleUserMenu, logout, copyMachineId, openActivateFromSettings, openOnboardingFromSettings, showGate, gateShow, refreshUserUI, updateTrialBanner, populateLicenseSettings, bootstrapGate, maybeShowOnboarding, showOnboarding, closeOnboarding, openFeedback, closeFeedback, submitFeedback, checkForUpdate, refreshLicenseInfo, loadChangelog });

@@ -1,155 +1,412 @@
-# LLM 质控模型部署指南
+# 星衍放射质控软件 · 科室多机部署手册
 
-> 规则引擎开箱即用；LLM 语义质控是**可选增强**，按本文配置后启用。
-> 三种形态效果等价（同一份 LoRA adapter），按部署环境选择。
-
----
-
-## 一、三种形态怎么选
-
-| 形态 | 适用场景 | 数据出域 | 延迟 | 依赖 |
-|------|---------|---------|------|------|
-| **A. Ollama**（推荐生产） | 目标机器常驻服务 | ❌ 不出 | 0.6~5s | Ollama ≥ 0.31 |
-| B. MLX 直连 | macOS 开发机/一体机 | ❌ 不出 | 0.6~4s | mlx + mlx-lm |
-| C. 云端 API | 内网演示、无 GPU 机器 | ⚠️ 报告上云 | 1~3s | 网络 + API Key |
-
-> 合规提示：形态 A/B 全程本地推理，满足「数据不出院」；形态 C 仅限脱敏数据。
+> 版本：v4.3.5+ | 2026-09-12
+> 适用：放射科 2-10 台工作站部署，支持单机浮动授权、离线更新、自动备份、集中运维
 
 ---
 
-## 二、获取模型
+## 目录
 
-### 方式 1：git clone（adapter 已入 LFS）
+1. [部署架构](#1-部署架构)
+2. [单机部署（推荐起步）](#2-单机部署推荐起步)
+3. [多机部署（浮动授权）](#3-多机部署浮动授权)
+4. [离线更新通道](#4-离线更新通道)
+5. [自动备份与恢复](#5-自动备份与恢复)
+6. [集中审计日志](#6-集中审计日志)
+7. [健康检查与监控](#7-健康检查与监控)
+8. [配置参考表](#8-配置参考表)
+9. [故障排查](#9-故障排查)
+
+---
+
+## 1. 部署架构
+
+### 单机模式（1 台工作站）
+
+```
+[放射科工作站] ── 独立运行 ── SQLite 本地库 ── 单机授权
+```
+
+- 零外部依赖，离线运行
+- 本地 SQLite 存储所有数据
+- 单机激活码绑定硬件指纹
+
+### 浮动授权模式（2-10 台工作站）
+
+```
+[RIS/科室网关] ── PostgreSQL ── [授权主机]
+      │                            │
+      ├── [工作站 A] ───────────────┤
+      ├── [工作站 B] ───────────────┤
+      ├── [工作站 C] ───────────────┤
+      └── [工作站 N] ───────────────┘
+```
+
+- PostgreSQL 集中存储，多机共享数据
+- 一个激活码覆盖整个科室，按座位数计费
+- 心跳共享目录控制并发
+
+---
+
+## 2. 单机部署（推荐起步）
+
+### macOS
 
 ```bash
-git clone https://github.com/big-William-1992/report-qc-app.git
+# 1. 下载并解压
+tar xzf report-qc-macos.tar.gz
 cd report-qc-app
-git lfs pull --include "saves/qwen3-4b-qc-lora-v2/*"
-# 得到: saves/qwen3-4b-qc-lora-v2/adapters.safetensors (~28MB)
+
+# 2. 启动
+./启动星衍质控软件.command
+
+# 3. 浏览器自动打开 http://localhost:8377
 ```
 
-### 方式 2：从训练源头重建
+### Windows
 
 ```bash
-# 需要本地基座 Qwen3-4B-Instruct-2507 (MLX 4bit)
-python3 -m mlx_lm lora \
-  --model ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-Instruct-2507-4bit/snapshots/<hash> \
-  --train --data data/mlx_data \
-  --fine-tune-type lora --iters 1200 --batch-size 1 \
-  --learning-rate 1e-4 --adapter-path saves/qwen3-4b-qc-lora-v2
-# 训练集: data/sft_qc_v2.jsonl (593条, 由 tools/gen_v2_robust_dataset.py 生成)
+# 1. 下载并解压
+# 双击解压 report-qc-portable.zip
+cd report-qc-app
+
+# 2. 启动
+.\报告质控软件.exe
+
+# 3. 浏览器自动打开 http://localhost:8377
 ```
+
+### 首次启动检查清单
+
+- [ ] 端口 8377 未被占用（`lsof -i :8377` / `netstat -ano | findstr 8377`）
+- [ ] 试用期 90 天内可正常使用
+- [ ] 管理员账号已创建（自助注册，强制 doctor 角色）
+- [ ] 自动备份已启动（`/api/v1/admin/backup/status`）
 
 ---
 
-## 三、形态 A：Ollama 部署（推荐）
+## 3. 多机部署（浮动授权）
+
+### 3.1 准备 PostgreSQL 数据库
+
+```sql
+-- 在 PostgreSQL 服务器创建数据库
+CREATE DATABASE xingyan_qc
+    WITH ENCODING = 'UTF8'
+    LC_COLLATE = 'zh_CN.UTF-8'
+    LC_CTYPE = 'zh_CN.UTF-8';
+
+CREATE USER xingyan_qc WITH PASSWORD '强密码';
+GRANT ALL PRIVILEGES ON DATABASE xingyan_qc TO xingyan_qc;
+```
+
+### 3.2 配置环境变量
+
+每台工作站需设置（macOS/Linux）：
 
 ```bash
-# 1) 安装 Ollama (mac/win 通用): https://ollama.com/download
-
-# 2) 用仓库内 GGUF 打包模型 (q8_0, 4.0GB)
-cd merged   # 若无 GGUF, 见下方「重建 GGUF」
-ollama create qc-qwen3 -f Modelfile
-
-# 3) 冒烟测试
-curl http://localhost:11434/api/generate -d '{"model":"qc-qwen3","prompt":"回复OK","stream":false}'
+# ~/.bashrc 或 ~/.zshrc
+export DATABASE_URL="postgresql://xingyan_qc:强密码@pg-server:5432/xingyan_qc"
+export QC_API_SECRET="随机生成的长字符串"  # 非本机监听必须设置
+export QC_FLOATING_LICENSE=true
+export QC_FLOATING_SEATS=5    # 科室最大并发座位数
+export QC_FLOATING_DEPT_ID="我的科室ID"   # 激活码对应的部门标识
+export QC_FLOATING_HEARTBEAT_DIR="/Volumes/Shared/xc-heartbeat"  # 共享目录
 ```
 
-### 重建 GGUF（merged/qc-qwen3-4b-q8_0.gguf 不在仓库时）
+Windows 环境（系统属性 → 环境变量）：
+
+```
+DATABASE_URL    = postgresql://xingyan_qc:强密码@pg-server:5432/xingyan_qc
+QC_API_SECRET   = 随机生成的长字符串
+QC_FLOATING_LICENSE = true
+QC_FLOATING_SEATS   = 5
+QC_FLOATING_DEPT_ID = 我的科室ID
+QC_FLOATING_HEARTBEAT_DIR = \\server\shared\heartbeat
+```
+
+### 3.3 生成浮动授权激活码
 
 ```bash
-# 基座 + adapter 合并并解量化 (输出 ~7.5GB f16 分片)
-python3 -m mlx_lm fuse --model <本地MLX基座路径> \
-  --adapter-path saves/qwen3-4b-qc-lora-v2 \
-  --save-path merged/qc-qwen3-4b --dequantize
+# 开发者在发卡机上运行
+python gen_activation_code.py --department "我的科室ID" --seats 5
 
-# 转 GGUF (需要 llama.cpp 的 convert_hf_to_gguf.py + pip install gguf torch)
-python3 convert_hf_to_gguf.py merged/qc-qwen3-4b \
-  --outfile merged/qc-qwen3-4b-q8_0.gguf --outtype q8_0
-
-# Modelfile 在 merged/Modelfile, 含 Qwen3 ChatML 模板与 stop token
-ollama create qc-qwen3 -f merged/Modelfile
+# 输出激活码，部署到每台工作站的激活对话框
 ```
 
-### 配置 `src/llm_config.json`（此文件不入库，手工创建）
+### 3.4 共享目录说明
 
-```json
-{
-  "provider": "ollama",
-  "base_url": "http://localhost:11434",
-  "model": "qc-qwen3",
-  "timeout": 180,
-  "prompt_mode": "ft"
-}
-```
+心跳目录（`QC_FLOATING_HEARTBEAT_DIR`）需要：
+
+| 特性 | 要求 |
+|------|------|
+| 协议 | NFS / SMB / 共享盘（所有工作站可读可写） |
+| 权限 | 755（所有工作站可读写） |
+| 容量 | 极小（每台机器一个 JSON 文件，约 100 字节） |
+| 过期 | 心跳文件 30 分钟无更新自动失效 |
+
+### 3.5 浮动授权行为说明
+
+- **首次激活**：在一台机器输入激活码，检查座位数 → 写心跳文件
+- **持续运行**：每次 API 请求检查时刷新心跳
+- **机器离线**：30 分钟后心跳过期，座位自动释放
+- **座位已满**：新机器激活时返回"座位已满"，已运行机器不受影响
+- **信任模式**：未设置心跳目录时，仅验证激活码签名，不检查座位数
 
 ---
 
-## 四、形态 B：MLX 直连（macOS）
+## 4. 离线更新通道
 
-```json
-{
-  "provider": "mlx",
-  "model": "<MLX基座快照的绝对路径>",
-  "adapter_path": "<仓库>/saves/qwen3-4b-qc-lora-v2",
-  "max_tokens": 512,
-  "timeout": 300,
-  "prompt_mode": "ft"
-}
+适用于医院内网、无法访问 GitHub 的场景。
+
+### 4.1 部署方式
+
+```
+[更新分发主机]
+  ├── latest.tar.gz          (macOS 更新包)
+  ├── latest.zip             (Windows 更新包)
+  ├── latest.tar.gz.sha256   (可选：完整性校验)
+  └── latest.zip.sha256      (可选)
+
+[RIS 网络共享]
+  └── /shared/updates/       (指向上述目录)
 ```
 
-依赖：`pip install mlx mlx-lm`（仅 Apple Silicon）。
-
----
-
-## 五、形态 C：云端 API
-
-支持任何 OpenAI 兼容端点（百炼精调部署 / vLLM 等）：
-
-```json
-{
-  "provider": "cloud",
-  "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  "api_key": "<环境变量 LLM_API_KEY 或此处>",
-  "model": "<部署后的模型ID>",
-  "timeout": 120,
-  "prompt_mode": "ft"
-}
-```
-
-> Qwen3 系非流式调用需关闭思考模式，客户端已自动处理。
-
----
-
-## 六、验证
+### 4.2 工作站配置
 
 ```bash
-cd src && python3 - << 'EOF'
-from llm_qc import run_full_qc
-r = run_full_qc("患者女，48岁。检查部位：甲状腺。\n检查所见：峡部见一低回声洁节，边界清。\n诊断印象：峡部结节，TI-RADS 3类。")
-print("llm_available:", r["llm_available"])       # True
-print("llm_findings:", r["llm_findings"])          # 应含 R8-TYPO「洁节」
-EOF
+# 设置本地更新目录路径
+export QC_UPDATE_LOCAL_DIR="/Volumes/Shared/updates"
+# Windows:
+# QC_UPDATE_LOCAL_DIR = \\server\shared\updates
 ```
 
-期望：检出 `[L1-R8-TYPO] 洁节`；对正常报告返回空数组（零误报）。
+### 4.3 更新流程
+
+1. **分发主机**：将新版本更新包放入共享目录
+2. **工作站**：访问 `/api/v1/update/check` → 返回本地更新包信息
+3. **工作站**：访问 `/api/v1/update/download` → 复制更新包到缓存
+4. **工作站**：主程序退出 → 安装脚本自动替换文件 → 重新启动
+
+### 4.4 完整性校验
+
+```bash
+# 分发主机：生成校验文件
+sha256sum latest.tar.gz > latest.tar.gz.sha256
+sha256sum latest.zip > latest.zip.sha256
+```
+
+工作站自动校验，不匹配则拒绝安装。
 
 ---
 
-## 七、关键参数说明
+## 5. 自动备份与恢复
+
+### 5.1 配置
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `QC_BACKUP_ENABLED` | `true` | 是否启用自动备份 |
+| `QC_BACKUP_INTERVAL_DAYS` | `1` | 备份间隔（天） |
+| `QC_BACKUP_KEEP_DAYS` | `7,30,90` | 保留策略（三级轮转） |
+| `QC_BACKUP_DIR` | `~/.local/share/xingyan_qc/backups` | 备份目录 |
+
+### 5.2 备份内容
+
+- **数据库**：samples.db、qc.db、accounts.db（SQLite VACUUM INTO，不锁库）
+- **配置**：license.dat、rules_config.json、ris_config.json
+
+### 5.3 API 操作
+
+```bash
+# 查看备份状态
+curl http://localhost:8377/api/v1/admin/backup/status
+
+# 手动触发备份
+curl -X POST http://localhost:8377/api/v1/admin/backup/run
+
+# 查看备份列表并恢复
+curl http://localhost:8377/api/v1/admin/backup/status | jq '.backup_files'
+
+# 恢复指定备份（需登录管理员）
+curl -X POST -d '{"name":"samples.db.20260912_103000"}' \
+  http://localhost:8377/api/v1/admin/backup/restore
+```
+
+### 5.4 集中备份策略（多机）
+
+```bash
+# 将备份目录设为共享盘路径，自动同步到服务器
+export QC_BACKUP_DIR="/Volumes/RIS_Backup/xingyan_qc"
+```
+
+---
+
+## 6. 集中审计日志
+
+### 6.1 导出审计日志
+
+```bash
+# JSON 格式导出（全量）
+curl "http://localhost:8377/api/v1/admin/audit-logs/export?format=json" \
+  -o audit_$(date +%Y%m%d).json
+
+# CSV 格式导出（带筛选）
+curl "http://localhost:8377/api/v1/admin/audit-logs/export?format=csv&action=login_success&start=2026-09-01T00:00:00" \
+  -o audit_login_$(date +%Y%m%d).csv
+```
+
+### 6.2 多机合并归档
+
+```bash
+# 各工作站分别导出 → 上传到中心服务器
+for host in ws1 ws2 ws3 ws4 ws5; do
+  curl "http://${host}:8377/api/v1/admin/audit-logs/export?format=json" \
+    -o "audit_${host}_$(date +%Y%m%d).json"
+done
+
+# 合并为单一文件（按时间排序）
+jq -s 'sort_by(.ts) | .items[]' audit_*.json > audit_merged.json
+```
+
+### 6.3 审计日志字段说明
 
 | 字段 | 说明 |
 |------|------|
-| `prompt_mode: "ft"` | **微调模型必设**。使用与训练分布对齐的简洁 prompt；不设会用完整 taxonomy prompt，会诱导幻觉（凑错误类型） |
-| `provider` | `ollama` / `mlx` / `cloud` 三选一 |
-| `timeout` | MLX 冷启动首次加载约 10~30s，建议 ≥180 |
+| `id` | 唯一 ID |
+| `ts` | 操作时间（ISO 格式） |
+| `emp_id` | 操作工号 |
+| `action` | 操作类型（login_success, rules_config_saved, …） |
+| `detail` | 详情 JSON（密码变更、角色变更等） |
+| `ip` | 来源 IP |
 
-## 八、故障排查
+---
 
-| 现象 | 处理 |
+## 7. 健康检查与监控
+
+### 7.1 健康检查端点
+
+```bash
+curl http://localhost:8377/api/v1/health
+```
+
+返回结构：
+
+```json
+{
+  "status": "ok",
+  "version": "4.3.5",
+  "db": {"ok": true, "path": "..."},
+  "disk": {"total": "500GB", "free": "320GB", "percent": 64},
+  "active_sessions": {"login_fail_count": 0},
+  "license": {"status": "activated", "data": ""},
+  "init_warning": ""
+}
+```
+
+### 7.2 监控脚本（可选）
+
+```bash
+# /usr/local/bin/qc-healthcheck.sh
+#!/bin/bash
+URL="http://localhost:8377/api/v1/health"
+RESP=$(curl -s --max-time 5 "$URL")
+STATUS=$(echo "$RESP" | jq -r '.status')
+if [ "$STATUS" != "ok" ]; then
+  echo "[ALERT] QC health check failed: $STATUS" | logger -t xingyan-qc
+  # 可选：触发短信/邮件告警
+fi
+```
+
+配合 crontab：
+```
+*/5 * * * * /usr/local/bin/qc-healthcheck.sh
+```
+
+### 7.3 授权状态查询
+
+```bash
+curl http://localhost:8377/api/v1/admin/license/status
+```
+
+返回浮动授权座位使用情况。
+
+---
+
+## 8. 配置参考表
+
+### 核心配置
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `DATABASE_URL` | (空) | PostgreSQL 连接串，空则使用 SQLite |
+| `QC_API_SECRET` | (自动生成) | 非本机监听必须显式设置 |
+| `PORT` | `8377` | 服务监听端口 |
+
+### 授权配置
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `QC_FLOATING_LICENSE` | `false` | 启用浮动授权模式 |
+| `QC_FLOATING_SEATS` | `5` | 最大并发座位数 |
+| `QC_FLOATING_DEPT_ID` | (从 license.dat 读) | 部门标识 |
+| `QC_FLOATING_HEARTBEAT_DIR` | (空) | 共享目录（空则信任模式） |
+
+### 更新配置
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `QC_UPDATE_LOCAL_DIR` | (空) | 离线更新目录（空则在线更新） |
+
+### 备份配置
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `QC_BACKUP_ENABLED` | `true` | 启用自动备份 |
+| `QC_BACKUP_INTERVAL_DAYS` | `1` | 备份间隔天数 |
+| `QC_BACKUP_KEEP_DAYS` | `7,30,90` | 保留策略 |
+| `QC_BACKUP_DIR` | `~/.local/share/xingyan_qc/backups` | 备份目录 |
+
+---
+
+## 9. 故障排查
+
+### 常见问题
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| 端口占用 | 8377 已被使用 | 修改 PORT 或 kill 占用进程 |
+| 数据库连接失败 | DATABASE_URL 配置错误 | 检查 pg 服务器地址/端口/密码 |
+| 授权过期 | 试用期 90 天用完 | 输入激活码激活 |
+| 浮动授权座位已满 | 共享目录心跳文件过多 | 清理过期心跳或删除不用的 workstation |
+| 离线更新包找不到 | QC_UPDATE_LOCAL_DIR 路径错误 | 确认目录中有 latest.zip / latest.tar.gz |
+| 自动备份未执行 | QC_BACKUP_ENABLED=false | 检查环境变量 |
+| 日志文件为空 | 路径权限问题 | 检查 ~/.local/share/xingyan_qc/logs/ 可写 |
+
+### 诊断包导出
+
+```bash
+# 生成诊断包（包含日志 + 系统信息 + 授权状态）
+python -m src.log_utils   # 或直接调用 API
+```
+
+### 日志位置
+
+| 平台 | 路径 |
 |------|------|
-| `available: False` | Ollama: `curl localhost:11434` 探活；MLX: 确认 `import mlx_lm` 成功 |
-| 输出自由文本而非 JSON | 检查是否漏配 `"prompt_mode": "ft"` |
-| 首次调用超时 | MLX 冷加载属正常，调大 timeout 或预热一次 |
-| GGUF 回答乱码 | Modelfile 的 TEMPLATE/stop 必须保留 Qwen3 ChatML 结构 |
-| confidence 恒为 1.0 | 已知限制: 训练标注全 1.0 所致; 待 badcase 回流后增量精调校准 |
+| macOS | `~/Library/Application Support/星衍放射质控软件/logs/app.log` |
+| Windows | `%LOCALAPPDATA%\星衍放射质控软件\logs\app.log` |
+| Linux | `~/.local/share/星衍放射质控软件/logs/app.log` |
+
+### 紧急恢复
+
+```bash
+# 1. 停止服务
+kill <pid>   # macOS/Linux
+taskkill /PID <pid> /F   # Windows
+
+# 2. 从备份恢复数据库
+cp ~/.local/share/xingyan_qc/backups/qc.db.20260912_* assets/qc.db
+
+# 3. 重新启动
+```

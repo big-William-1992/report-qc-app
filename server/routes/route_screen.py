@@ -3,12 +3,12 @@ route_screen.py — 星衍放射质控 API 路由
 
 """
 
-from fastapi import APIRouter, Header, HTTPException, Depends
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from typing import Dict, Any, Optional
-from server.schemas import ScreenRegion, ScreenOCRReq
+from typing import Dict, Any
+from server.schemas import ScreenOCRReq
 from server.deps import _OCR_LOCK, _OCR_CACHE, _OCR_CACHE_MAX, _SHOT, _SHOT_MAX_W, _envelope, require_emp_local, _grab_fullscreen, _ocr_config_path, _split_dynamic
-import io, base64, time, json, os, engine
+import io, base64, time, json, engine
 
 router = APIRouter(tags=['screen'])
 

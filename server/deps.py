@@ -1,8 +1,6 @@
 """server/deps.py — 共享依赖（从 server/main.py 抽离，勿手动编辑）。"""
 
 import os
-import sys
-import io
 import time
 import hmac
 import hashlib
@@ -10,16 +8,13 @@ import base64
 import json
 import threading
 import uuid as _uuid
-from pathlib import Path
-from typing import Optional, List, Dict, Any
-from fastapi import Header, HTTPException, Depends, Request
-from fastapi.responses import JSONResponse
+from typing import Optional, Dict, Any
+from fastapi import Header, HTTPException, Request
 
 import engine
 import ris
 import accounts
 import samplelib
-from server import db
 
 # LLM 引擎模式（环境变量控制）
 QC_ENGINE = os.environ.get("QC_ENGINE", "rule")  # rule | api | local

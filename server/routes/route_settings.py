@@ -3,8 +3,7 @@ route_settings.py — 星衍放射质控 API 路由
 
 """
 
-from fastapi import APIRouter, Header, HTTPException, Depends
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends
 from typing import Dict, Any
 from server.deps import _DEFAULT_SETTINGS, _envelope, require_emp_local, _settings_path
 import json

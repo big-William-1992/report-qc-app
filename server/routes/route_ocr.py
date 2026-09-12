@@ -3,12 +3,11 @@ route_ocr.py — 星衍放射质控 API 路由
 
 """
 
-from fastapi import APIRouter, UploadFile, File, Depends, Header, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from typing import Optional
 from server.schemas import OCRB64, OCRMetaReq
 from server.deps import _OCR_MAX_BYTES, _envelope, require_emp_local
-import io, base64 as _b64, engine
+import io, engine
 
 router = APIRouter(tags=['ocr'])
 
