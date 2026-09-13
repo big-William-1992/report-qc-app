@@ -2374,9 +2374,9 @@ def orders_export(format: str = "csv", admin: str = Depends(require_admin)):
         headers={"Content-Disposition": f"attachment; filename=orders_{datetime.now().strftime('%Y%m%d')}.csv"})
 
 
-# ── 反馈提交 API（2026-09-12 商业化）──────────────────────────────────
+# ── 用户反馈提交 API（2026-09-12 商业化）──────────────────────────────
 @app.post("/api/v1/user-feedback")
-def submit_feedback(req: Dict[str, Any], emp: str = Depends(require_emp_local)):
+def submit_user_feedback(req: Dict[str, Any], emp: str = Depends(require_emp_local)):
     """用户提交反馈/建议（写入本地日志，供开发者查看）。"""
     message = (req.get("message") or "").strip()
     category = (req.get("category") or "general").strip()

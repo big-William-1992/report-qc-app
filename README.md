@@ -1,19 +1,42 @@
-# 星衍医学影像报告质控系统 v4.3
+# 星衍放射质控软件
 
-> 面向放射科医生的报告智能质控助手：粘贴即查、复制即控、后台快捷键一键质控、离线 OCR 自动回填、按错误严重度红/橙/蓝高亮、样本沉淀、科室报表、责任到人。
+> 面向放射科医生的影像报告智能质控助手：粘贴即查、复制即控、后台快捷键一键质控、离线 OCR 自动回填、按错误严重度红/橙/蓝高亮、样本沉淀、科室报表、责任到人。
 
 > ⚠️ **合规与免责**：本软件为报告质量**辅助核查**工具，**不替代医师诊断**。涉及二类医疗器械与等保三级相关合规要求，请在正式临床使用前完成相应注册与测评。所有报告数据**仅存本机 / 院内内网，不出域**。
 
 ---
 
+## 文档导航
+
+| 文档 | 说明 |
+|------|------|
+| [PRD.md](PRD.md) | 产品需求文档——功能规格、用户故事、验收标准 |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 系统架构设计——组件设计、API 设计、部署架构 |
+| [DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md) | 开发指南——环境搭建、编码规范、Git 工作流 |
+| [TESTING_STRATEGY.md](TESTING_STRATEGY.md) | 测试策略——测试分层、CI 门禁、覆盖范围 |
+| [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) | 发布清单——发布流程、验证步骤、回滚方案 |
+| [USER_GUIDE.md](USER_GUIDE.md) | 用户指南——面向放射科医生的操作手册 |
+| [CHANGELOG.md](CHANGELOG.md) | 变更日志——版本历史 |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | 部署指南——多机部署、浮动授权、离线更新 |
+| [DATA_SECURITY.md](DATA_SECURITY.md) | 数据安全白皮书——架构安全、加密、备份 |
+| [PRIVACY_POLICY.md](PRIVACY_POLICY.md) | 隐私政策——PIPL 合规 |
+| [TERMS_OF_SERVICE.md](TERMS_OF_SERVICE.md) | 服务条款——¥59/年定价、退款政策 |
+| [VERSION_LIFECYCLE.md](VERSION_LIFECYCLE.md) | 版本生命周期——支持策略 |
+| [docs/接口文档_HTTP_REST.md](docs/接口文档_HTTP_REST.md) | HTTP REST 接口规范 |
+| [docs/接口文档_程序化API.md](docs/接口文档_程序化API.md) | 程序化 API 调用规范 |
+| [docs/INSTALL.md](docs/INSTALL.md) | 安装与权限配置 |
+| [docs/ACTIVATION.md](docs/ACTIVATION.md) | 授权、试用期与激活码流程 |
+
+---
+
 ## 一、系统简介
 
-本系统基于 **中文放射报告 NER（命名实体识别）+ 解剖部位知识图谱 + 规则引擎**，对影像报告正文做自动化质量控制，覆盖 **性别矛盾、左右混淆、评分缺失、单位错误、描述-结论矛盾、部位不符、内部矛盾、同音错别字、自定义互斥冲突、模板合规，以及信息框-正文矛盾、前后文/上下文逻辑错误、逐部位精确比对（描述↔结论同部位正常/异常矛盾）** 等（规则族 R1–R12、R14、R15、R17；R13 预留，R16 随访时限为可选项）。
+本系统基于 **中文放射报告 NER（命名实体识别）+ 解剖部位知识图谱 + 规则引擎**，对影像报告正文做自动化质量控制，覆盖 **性别矛盾、左右混淆、评分缺失、单位错误、描述-结论矛盾、部位不符、内部矛盾、同音错别字、自定义互斥冲突、模板合规，以及信息框-正文矛盾、前后文/上下文逻辑错误、逐部位精确比对（描述↔结论同部位正常/异常矛盾）** 等（规则族 R1–R23）。
 
 核心能力：
 
 - **三步即用**：粘贴报告 → 一键质控 → 红/橙/蓝高亮定位问题
-- **后台全局快捷键一键质控**：焦点在 PACS / 其他窗口时，按快捷键即可触发质控（macOS / Linux 经 pynput 全局监听，Windows 经系统级热键）
+- **后台全局快捷键一键质控**：焦点在 PACS / 其他窗口时，按快捷键即可触发质控
 - **离线 OCR 屏幕区域监控**：对 PACS 患者信息栏 / 报告区域截图，本地 RapidOCR 识别并回填，全程**不联网**
 - **按严重度高亮**：红 = 严重、橙 = 警告、蓝 = 提示，结果列表按严重度排序并附图例
 - **剪贴板实时监听**：复制即质控，命中问题弹窗提醒，听写误写及时拦截
@@ -29,22 +52,11 @@
 ## 二、快速开始
 
 > 📦 完整安装与权限配置见 [docs/INSTALL.md](docs/INSTALL.md)；授权、试用期与激活码流程见 [docs/ACTIVATION.md](docs/ACTIVATION.md)。
-> 🤖 LLM 语义质控（可选增强）：本地微调模型的三种部署形态（Ollama / MLX / 云端）见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
 ### 运行环境
 
-- Python 3.10+（macOS 建议 3.11+ 以获得稳定 Tk）
+- Python 3.10+（macOS 建议 3.11+）
 - 桌面操作系统：macOS / Windows 11
-
-### 依赖说明
-
-- **核心引擎零第三方依赖**（纯标准库 re / json / sqlite3 / difflib / tkinter）。
-- **OCR 屏幕监控**需 `rapidocr-onnxruntime` 等依赖，见 `requirements.txt`（模型权重已内置在 `assets/ocr_models`，无需联网下载）。
-- **后台快捷键（macOS / Linux）**可选依赖 `pynput`：
-
-```bash
-pip install pynput
-```
 
 ### 安装与启动
 
@@ -52,28 +64,19 @@ pip install pynput
 ```bash
 cd report_qc_app
 pip install -r requirements.txt
-python3 desktop_app.py          # 或直接双击「启动星衍质控软件.command」
+python3 desktop_app.py
 ```
 
-**Windows（推荐双击启动器，自动建环境）**
-1. 安装 Python 3.10+，安装时务必勾选 “Add python.exe to PATH”：https://www.python.org/downloads/windows/
-2. **双击仓库里的 `启动星衍质控.bat`** —— 首次运行会自动创建 `.venv` 并安装依赖，之后直接拉起原生桌面窗口。
-3. 若窗口打不开、反而自动跳到浏览器，多半是缺少 **Edge WebView2 运行时**，去
-   https://developer.microsoft.com/zh-cn/microsoft-edge/webview2/ 装一下即可（装完重开）。
+**Windows（推荐双击启动器）**
+1. 安装 Python 3.10+，勾选 "Add python.exe to PATH"
+2. 双击 `启动星衍质控.bat` —— 自动创建 `.venv` 并安装依赖
+3. 若窗口打不开，安装 Edge WebView2 运行时
 
-> 也可手动在命令行：`cd report_qc_app` → `py -3 -m venv .venv` →
-> `.venv\Scripts\python.exe -m pip install -r requirements.txt` →
-> `.venv\Scripts\python.exe desktop_app.py`
+**Windows 打包成 exe**
+- 详见 `build/` 目录：双击 `build_windows.bat`
+- 或通过 GitHub Actions 自动构建（`.github/workflows/build-windows.yml`）
 
-> **Windows / macOS / Linux** 采集方式一致：屏幕区域 OCR + 剪贴板粘贴，无需额外驱动 / 管理员提权。
-
-**Windows 打包成 exe（便于分发）**
-
-详见 `build/` 目录：在 Windows 上双击 `build_windows.bat`（内部调用 `build_windows.py`），
-自动建 `.venv`、装依赖、跑引擎自检、PyInstaller 打单目录 exe（及可选 Inno Setup 安装包）；
-安装后在「开始菜单」启动。资源与配置位于 `%APPDATA%/MedicalReportQC/`。
-
-> ⚠️ **macOS 权限**：首次使用「监听剪贴板」或「后台快捷键」时，若系统弹出「Terminal / Python 请求访问剪贴板 / 辅助功能」，请允许。否则监听读不到复制内容、后台快捷键无法在 PACS 聚焦时触发。权限可在「系统设置 → 隐私与安全性 → 辅助功能 / 自动化」中补开。
+> **macOS 权限**：首次使用剪贴板监听或后台快捷键时，请在「系统设置 → 隐私与安全性 → 辅助功能 / 自动化」中授权。
 
 ---
 
@@ -83,126 +86,73 @@ python3 desktop_app.py          # 或直接双击「启动星衍质控软件.com
 
 ### 3.1 报告质控页
 
-#### 主操作区
+| 区域 | 说明 |
+|------|------|
+| 报告文本区 | 粘贴或导入报告 |
+| 元信息栏 | 性别 / 年龄 / 检查部位 / 申请部位 / 侧别 |
+| 质控结果区 | 按严重度排序，正文红/橙/蓝高亮 |
+| 评分依据区 | 逐项扣分明细 |
+| 监听捕获记录 | 审计面板 |
 
-| 区域     | 说明                                                     |
-| ------ | ------------------------------------------------------ |
-| 报告文本区  | 粘贴或导入报告；建议用「患者信息 / 检查所见 / 诊断印象」分段，便于规则精准定位             |
-| 元信息栏   | 性别 / 年龄 / 检查部位 / 申请部位 / 侧别。可手动填，也可点「🔍 自动识别元信息」从正文抽取回填 |
-| 质控结果区  | 列出每条问题（规则号 + 类型 + 严重度 + 描述 + 原文片段），**按严重→警告→提示排序**；正文中用红/橙/蓝高亮，顶部附图例 |
-| 评分依据区  | 逐维度分数与**逐项扣分明细**（如「准确性 −15〔R8-TYPO〕同音错别字」），黑盒变透明       |
-| 监听捕获记录 | 审计面板：每次监听捕获的时间 / 字数 / 命中数 / 是否入库，事后可核对每份报告都跑过质控        |
+**核心操作**：
+- **▶ 运行质控**：对当前文本跑完整规则
+- **📋 监听剪贴板**：开启后每 1 秒轮询，复制 ≥15 字自动质控
+- **⌨️ 后台快捷键**：焦点在 PACS 时也能触发（需 pynput + 系统权限）
+- **🖥 OCR 屏幕监控**：框选 PACS 区域，本地 RapidOCR 识别回填
+- **✏️ 自动修正**：同音错别字预览确认后再回填
+- **💾 存入样本库**：将报告与质控结果存档（可选脱敏）
 
-#### 顶部与底部按钮
+### 3.2 质控驾驶舱页
 
-- **⚙ 规则维护**：打开规则配置弹窗（错别字词典 / 互斥冲突 / 模板 / 忽略名单）
-- **▶ 运行质控**：对当前文本跑一次完整规则
-- **📂 导入文件**：从 `.txt` 文件载入报告
-- **🗑 清空**：清空文本区
-- **💾 存入样本库**：将当前报告与质控结果存档（可选脱敏）
-- **🔍 自动识别元信息**：从正文抽取元信息回填输入框
-- **✏️ 自动修正并复制**：弹出修正预览，确认后回填并复制到剪贴板
-- **📋 监听剪贴板（复制即质控）**：开启后每 1 秒轮询系统剪贴板，复制 ≥15 字报告即自动质控
-- **⌨️ 后台全局快捷键（一键质控）**：在「设置」配置快捷键（如 `Ctrl+Alt+F9`）；配置后**即使焦点在 PACS 等其它窗口**，按下快捷键也能触发一键质控
-- **🔔 发现问题即弹窗提醒**：监听命中问题时弹出醒目提醒窗（带左侧严重度色条，红/橙/蓝）
-- **命中即自动入库**：监听命中时自动写入样本库（可关，建议配合脱敏使用）
-- **🖥 屏幕区域 OCR 监控**：框选 PACS 患者信息栏 / 报告区域，本地 RapidOCR 识别并回填，自动触发质控
+- 错误类型分布饼图 + 每日趋势折线图
+- 样本库列表：双击查看完整报告与质控结果
+- 导出质控报表：CSV（UTF-8-BOM，Excel 中文不乱码）
+- 入库时脱敏（去除患者姓名）
 
-#### 后台全局快捷键（重点）
+### 3.3 RIS 直连页
 
-配置路径：「设置 → 一键质控快捷键」。实际行为（降级版口径，2026-08-23 统一）：
+- 配置数据库连接（SQL Server / Oracle / MySQL / PostgreSQL）
+- 填写拉取 SQL（须返回 `report_text` 列）
+- 批量拉取报告质控入库
+- 配置保存在本机 `assets/ris_config.json`
 
-- 已安装 **pynput** 时：注册 pynput 全局键盘监听——即使焦点在 PACS/RIS 等其它窗口也能触发。
-- 未安装 pynput 或缺系统权限时：自动降级为仅 SPA 内快捷键（焦点在本软件窗口内可用），不影响其他功能。
+### 3.4 账号系统
 
-> macOS 使用 pynput 需在「系统设置 → 隐私与安全性 → 辅助功能」给终端 / Python 授权；Windows 安装器已默认包含 pynput。快捷键内置 **0.5 秒时间戳防抖 + 执行中标记**，避免多次触发重复质控。
-
-#### 剪贴板监听机制（重点）
-
-- 每 **1 秒**轮询系统剪贴板（macOS 走 `pbpaste`，Windows 走 `powershell Get-Clipboard`，绕过 Tk 缺陷）
-- 监听循环**自愈合**：任何单次异常都会重新调度，不会静默死亡
-- **内容去重**：同一份或相似度 >90% 的报告重复复制，只弹一次窗、不重复入库
-- **命中弹窗**：每条问题带「忽略」按钮（本次会话不再提示）；弹窗底部「写入永久忽略规则」可把忽略名单固化到配置文件，重启后仍生效
-- **开启即处理**：勾选监听后，会立即处理你当前已复制的内容，无需再复制一遍
-
-#### 离线 OCR 屏幕区域监控（重点）
-
-- 基于 **RapidOCR**（本地离线中文 OCR，**不联网、数据不出域**），模型权重内置 `assets/ocr_models`。
-- 框选区域 → 截图 → 灰度 + CLAHE 预处理（小字区域放大）→ OCR → 回填元信息 / 正文 → 触发质控。
-- 内置**变化检测**：区域内容未变则跳过，省 CPU。
-- 依赖：`rapidocr-onnxruntime` 等（见 `requirements.txt`）。
-
-### 3.2 自动修正预览
-
-点「✏️ 自动修正并复制」后弹出：
-
-- 逐条列出同音错别字改动，如 `『姐姐』→『结节』`，附上下文片段
-- 每条可**单独勾选 / 全选 / 全不选**
-- 确认后才回填文本并复制到剪贴板
-
-> 安全边界：仅 **R8 错别字**可自动修正；性别矛盾、左右混淆、描述-结论矛盾等**矛盾类问题无法确定正确值，绝不自动改写**，仅提示人工确认。这避免了同音误判（如「简易→建议」用对时）污染正式报告。
-
-### 3.3 质控驾驶舱页
-
-- **错误类型分布饼图** + **每日趋势折线图**（含平均准确性）
-- **样本库列表**：双击查看完整报告与质控结果；可「查看 / 删除」
-- **📥 导出质控报表**：导出 CSV（UTF-8-BOM，Excel 中文不乱码），含三段：
-  1. 样本明细（患者 / 性别 / 年龄 / 检查部位 / 申请部位 / 侧别 / 命中数 / 报告字数）
-  2. 错误类型分布（类型 / 数量 / 占比）
-  3. 每日趋势（日期 / 报告数 / 平均准确性）
-- **入库时脱敏（去除患者姓名）**：勾选后样本库只存「已脱敏」，不保留患者姓名
-- **⚠ 隐私声明**：样本仅存于本机 SQLite，不会上传网络
-
-### 3.4 RIS 直连页（院内内网）
-
-- 配置数据库连接（数据库类型 / 主机 / 端口 / 库名 / 用户 / 密码）
-- 填写由院内 IT 提供的**拉取 SQL**（须返回 `report_text` 列，可选 `patient/gender/age/modality/applied_site/ts`）
-- **保存配置 / 测试连接 / 拉取报告 / 全部质控并入库**
-- 拉取结果列表双击可送入「报告质控」页复核
-- 配置保存在本机 `assets/ris_config.json`，**仅在院内内网机器使用**
-
-### 3.5 账号系统（责任到人）
-
-- 首次启动自动引导创建管理员（**工号 + 密码**）；后续登录后方可使用。
-- 质控操作与入库记录关联到当前账号，状态栏显示当前用户。
-- 账号库为本地 SQLite（`assets/accounts.db`），不上云。
+- 工号 + 密码登录（PBKDF2 600k 迭代）
+- 首次启动引导创建管理员
+- 密码策略：最少 8 位 + 字母数字组合 + 弱密码黑名单
+- 登录锁定：失败 5 次锁定 15 分钟
+- 审计日志：21 个敏感端点全覆盖
 
 ---
 
-## 四、规则引擎详解（R1–R12、R14、R15、R17、R18；R13 预留，R16 为可选项）
+## 四、规则引擎详解
 
-| 规则      | 名称          | 严重度      | 判定逻辑                                          |
-| ------- | ----------- | -------- | --------------------------------------------- |
-| **R1**  | 性别矛盾        | 高        | 报告性别（头信息或正文推断）与文中男女专属器官（前列腺/子宫等）冲突（含原 R11 性别维度，已并入） |
-| **R2**  | 左右侧混淆       | 高        | 同一解剖部位族在「检查所见」与「诊断印象」段方位（左/右）互斥（含**肺跨段**，已修复漏报） |
-| **R3**  | 评分标准缺失      | 中        | 乳腺→要求 BI-RADS、前列腺/盆腔→要求 PI-RADS，报告未检出对应评分       |
-| **R4**  | 计量单位错误      | 低        | 检出非常规单位（非 cm/mm/HU/ml/° 等）                      |
-| **R5**  | 描述-结论矛盾     | 中        | 描述段某器官提示阳性征，但印象段未就该器官给出对应结论                   |
-| **R6**  | 登记部位不符      | 高        | 申请部位（归一化）与报告正文涉及的解剖部位族不一致                     |
-| **R7**  | 描述内部矛盾（历史） | —      | 已合并：男女专属器官混用已并入 R12-SENTENCE（句内 high / 跨句整段 medium）；R7-INTERNAL 不再单独产出 |
-| **R8**  | 同音错别字       | 中        | 语音录入常见错写（如「姐姐→结节」「占为→占位」），**可自动修正**           |
-| **R9**  | 自定义互斥冲突     | 中（可配）    | 用户在规则库配置的「词 A 与词 B 不应共存」冲突                      |
-| **R10** | 模板合规        | 低（可配）    | 缺「检查所见」段 / 缺「诊断印象/结论」段 / 未给随访建议                 |
-| **R12** | 句子前后文       | 中        | 单句内前后逻辑冲突（如先否定后肯定）                            |
-| **R14** | 前后文（跨段）     | 中        | 检查所见与诊断印象之间计数/性质矛盾（R14-COUNT / R14-NATURE）；左右矛盾已并入 R2-LATERALITY |
-| **R15** | 上下文（段内）     | 中        | 同段内正常表述/存在性逻辑冲突（R15-NORMAL / R15-PRESENCE）；R15-SIDE（段内左右矛盾）2026-08-18 删除——与 R2-LATERALITY 重复，左右矛盾统一由 R2（跨段）/ R17（逐部位）负责 |
-| **R17** | 逐部位精确比对     | 高        | 按 `(器官, 侧别)` 精确到同一部位比对「检查所见」与「诊断印象」的正常/异常声明：**描述某部位正常、结论却写该部位病灶（或反之）即报矛盾**；左小脑正常 + 右小脑软化灶（不同侧）不误报，左小脑正常 + 左小脑软化灶（同侧）报矛盾 |
-| **R18** | 检查完整性（区域器官 + 必查要素） | 中 | 登记部位声明某区域（支持「胸部、上腹部」多区域拆分）但描述段未描述该区域任一器官→报漏写（整段「未见异常」整体声明不误报）；并能推断检查类型时进一步校验「必查要素」缺项（原 R20-TEMPLATE 已并入，正常报告亦应点名结构）；R20 不再单独产出 |
+| 规则 | 名称 | 严重度 | 严重度权重 |
+|------|------|--------|-----------|
+| **R1** | 性别矛盾 | 高 | −30 |
+| **R2** | 左右侧混淆 | 高 | −30 |
+| **R3** | 评分标准缺失 | 中 | −15 |
+| **R4** | 计量单位错误 | 低 | −5 |
+| **R5** | 描述-结论矛盾 | 中 | −15 |
+| **R6** | 登记部位不符 | 高 | −30 |
+| **R8** | 同音错别字 | 中 | −15 |
+| **R9** | 自定义互斥冲突 | 中 | −15 |
+| **R10** | 模板合规 | 低 | −5 |
+| **R12** | 句子前后文 | 中 | −15 |
+| **R14** | 前后文（跨段） | 中 | −15 |
+| **R15** | 上下文（段内） | 中 | −15 |
+| **R17** | 逐部位精确比对 | 高 | −30 |
+| **R18** | 检查完整性 | 中 | −15 |
+| **R19** | 形近字/读音候选 | 中/高 | −15/−30 |
+| **R22** | 术语与测量一致性 | 中 | −15 |
+| **R23** | 繁体字检测 | 低 | −5 |
 
-> **逻辑错误增强（v4.1–v4.2）**：R14 由「段级」加固为「整段无阳性才算正常 / 整段无正常才算异常」，避免「右肺上叶见结节、余两肺未见异常」这类**部分正常标准报告**被误判；R17 在上述基础上进一步做**逐部位精确比对**，可区分左右侧、精准定位矛盾部位。阳性征词典（`POSITIVE_STRONG`，在 `engine.py`）已扩充至覆盖 `结节/占位/肿块/软化灶/梗塞灶/萎缩/脱髓鞘/变性/缺如/低密度高密度灶影/积液/积血/积脓/炎症/炎性/增生/肿胀/瘘/畸形/囊变/闭塞/信号异常/占位效应…` 等常见病灶词，使「描述左乳正常、结论左乳增生」「甲状腺炎症、结论甲状腺正常」等矛盾均可被捕获。
->
-> **否定语境防误报**：阳性征匹配对「未见 / 未见明显 / 无 / 不伴…」等否定前缀后的词不计入异常（如「未见明显炎症」「无增生」不会被误判为阳性），由 `_NEG_PREFIXES`（`engine.py`）统一控制。
->
-> **检查部位器官漏写（v4.3，R18）**：在 R6（登记部位错配）之外新增「区域 → 器官组」覆盖校验。登记部位声明了某区域（如「胸部、上腹部」，自动按顿号/逗号拆分为多区域），引擎逐区域检查影像描述段是否至少命中该区域一个器官词（胸部→肺/胸膜/纵隔…；上腹部→肝/胆/胰/脾/肾/肾上腺/胃…；盆腔→膀胱/前列腺/子宫…；头颅→脑实质/小脑/脑干…）；全未命中即告警「检查部位器官漏写」。防误报：① 整段「未见异常」整体声明（不点名器官）不算漏，避免「上腹部 CT 未见异常」被误报；② 只查描述段；③ 多区域分别校验互不牵连；④ 仅校验「区域至少描述一器官」，不逐器官核对（临床报告通常只写异常器官，避免「写了胰脾肾但漏肝」误报）。
+> 详细规则逻辑见 [PRD.md](PRD.md) §5 规则引擎规格。
 
-> 除上表外，规则引擎还持续扩充放射科错别字 / 上下文 / 前后文逻辑错误词典。R12、R14–R15、R17、R18 聚焦「上下文/逐部位/区域覆盖一致性」，可有效拦截语音录入与模板套用产生的隐蔽逻辑错误。
-> **否定式判定升级（v4.3.1，2026-08-18）**：阳性/阴性判定升级为「否定前缀 + 允许间隔修饰词（实质性/明显等）+ 不跨标点」正则（`_NEG_BEFORE_POS_RE`），并新增 `_is_negative_claim` 识别「未见实质性病变」「未见占位性病变」等阴性声明——纯正常报告不再误报 `R17-PERREGION`，同时「描述整段阴性声明 + 结论阳性诊断」的跨段矛盾不再漏检。
+**严重度权重**：高 = −30，中 = −15，低 = −5。UI 配色：红 = 严重 / 橙 = 警告 / 蓝 = 提示。
 
-**严重度权重**：高 = −30，中 = −15，低 = −5（用于评分扣分）。UI 配色：**红 = 严重（high）/ 橙 = 警告（medium）/ 蓝 = 提示（low）**。
-
-### 元信息自动抽取
-
-监听、OCR 或导入场景会自动从正文抽取 `{性别, 年龄, 检查部位, 申请部位, 侧别}`，回填输入框供人工校正。抽取仅作提示，不强制覆盖手动输入。
+**否定语境防误报**：阳性征匹配对「未见 / 未见明显 / 无 / 不伴…」等否定前缀后的词不计入异常。
 
 ---
 
@@ -215,242 +165,153 @@ python3 desktop_app.py          # 或直接双击「启动星衍质控软件.com
 - **规范性**：存在问题 → 90，否则 100
 - **及时性**：固定 100（预留维度）
 
-结果区「评分依据」展示**每项扣分的规则号与原因**，便于临床采纳与复核。
+---
+
+## 六、配置文件
+
+| 文件 | 说明 |
+|------|------|
+| `assets/rules_config.json` | 用户可维护规则（错别字/互斥/忽略/模板） |
+| `assets/ris_config.json` | RIS 连接配置 |
+| `assets/accounts.db` | 账号库（工号 + 密码哈希） |
+| `assets/ocr_models/` | RapidOCR 模型权重 |
+| `assets/lexicons/` | 词表 JSON（5 个外部化词表） |
 
 ---
 
-## 六、规则维护（⚙ 规则维护）
+## 七、数据安全与隐私
 
-弹窗含两个页签：
-
-1. **📝 错别字词典**：增/删同音错别字（错词 → 正确词）。修改即时生效，并持久化到 `assets/rules_config.json`
-2. **⚠ 互斥冲突**：增/删「词 A 与词 B 不应共存」规则，可设范围（正文 / 描述段）与严重度
-
-此外：
-
-- **忽略名单**：弹窗中「忽略」的误报会固化到 `rules_config.json` 的 `ignores` 字段，质控时自动跳过
-- **模板规范**：R10 的必填段、随访建议要求可在 `template` 字段调整
-
-> 修改后引擎即时 `reload_rules()`，无需重启。
-
----
-
-## 七、配置文件
-
-### `assets/rules_config.json`
-
-```json
-{
-  "typos": { "姐姐": "结节", "占为": "占位", "...": "..." },
-  "conflicts": [
-    { "a": "良性", "b": "恶性", "scope": "正文", "severity": "medium", "note": "" }
-  ],
-  "ignores": [ "R8-TYPO|姐姐", "..." ],
-  "template": {
-    "required_sections": ["findings", "impression"],
-    "require_followup": true,
-    "severity": "low"
-  }
-}
-```
-
-### `assets/ris_config.json`（RIS 直连）
-
-保存数据库连接参数与拉取 SQL，结构由 `ris.load_config()` 管理，UI 中「保存配置」生成。
-
-### `assets/accounts.db`（账号系统）
-
-本地账号库（工号 + 密码哈希），由 `accounts.py` 管理。
-
-### `assets/ocr_models/`（OCR）
-
-RapidOCR 模型权重，离线推理使用，不联网下载。
-
----
-
-## 八、数据安全与隐私
-
-- 所有报告、样本、配置、账号**仅存于本机**（开发态 `assets/`，打包态 `%APPDATA%/MedicalReportQC/` 或 macOS 用户目录），**不发起任何网络上传**
-- 「入库时脱敏」可去除患者姓名后再入库，降低隐私合规风险
-- RIS 直连仅连接院内内网数据库，凭据存本机，不上云
+- 所有报告、样本、配置、账号**仅存于本机**，**不发起任何网络上传**
+- 「入库时脱敏」可去除患者姓名后再入库
+- RIS 直连仅连接院内内网数据库，凭据存本机
 - OCR 为本地推理，**截图不出本机**
-- 建议：在共享/公用工作站上启用脱敏，并定期清理样本库
+- 错误报告自动脱敏（去除患者标识）
+- 审计日志记录 21 个敏感端点操作
+
+详见 [DATA_SECURITY.md](DATA_SECURITY.md) 和 [PRIVACY_POLICY.md](PRIVACY_POLICY.md)。
 
 ---
 
-## 九、接口文档（集成与二次开发）
+## 八、接口文档
 
-仓库 `docs/` 提供两类接口规范，便于院内系统对接或二次开发：
+仓库 `docs/` 提供两类接口规范：
 
-- **`docs/接口文档_程序化API.md`**：核心模块程序化调用（`RuleEngine.run(report, meta)` 等），可在自有 Python 服务中直接调用引擎。
-- **`docs/接口文档_HTTP_REST.md`**：HTTP / REST 接口规范（鉴权、请求/响应、错误码），供院内按规范自建服务端或对接 RIS/HIS。
+- **[docs/接口文档_程序化API.md](docs/接口文档_程序化API.md)**：核心模块程序化调用
+- **[docs/接口文档_HTTP_REST.md](docs/接口文档_HTTP_REST.md)**：HTTP / REST 接口规范
 
-> 说明：本仓库提供上述**接口规范文档**；是否部署运行时 REST 服务由使用方按院内架构决定。
+完整 API 设计见 [ARCHITECTURE.md](ARCHITECTURE.md) §3。
 
 ---
 
-## 十、常见问题（FAQ）
+## 九、常见问题
 
 **Q1：监听功能好像没启动？**
-
-- 检查状态栏是否显示「● 监听中（每1秒轮询）…」
+- 检查状态栏是否显示「● 监听中」
 - macOS 需在系统设置允许终端/Python 访问剪贴板
-- 确保复制内容 ≥15 字（过短不触发）
-- 监听循环已做自愈合，单次异常不会终止；若仍无反应，看状态栏文案并告知开发者
+- 确保复制内容 ≥15 字
 
 **Q2：后台快捷键在 PACS 里按了没反应？**
+- Windows：已用系统级热键，焦点在 PACS 也能触发
+- macOS/Linux：需 `pip install pynput` + 系统辅助功能授权
+- 检查「设置 → 一键质控快捷键」是否已配置
 
-- Windows：已用系统级热键，焦点在 PACS 也能触发。
-- macOS / Linux：需先 `pip install pynput`，并在「系统设置 → 隐私与安全性 → 辅助功能」给终端 / Python 授权；未授权则只能在软件聚焦内触发。
-- 检查「设置 → 一键质控快捷键」是否已配置且未被其它软件占用。
-
-**Q3：OCR 屏幕监控识别不准 / 没反应？**
-
-- 确认已 `pip install -r requirements.txt`；RapidOCR 为本地离线推理，不联网。
-- 框选区域需包含清晰文字，过小或模糊会降低识别率。
-- 内置变化检测：区域内容未变会跳过，属于正常省 CPU 行为。
+**Q3：OCR 屏幕监控识别不准？**
+- 确认已 `pip install -r requirements.txt`
+- 框选区域需包含清晰文字
+- 内置变化检测：区域内容未变会跳过
 
 **Q4：自动修正把对的词改错了？**
+- 自动修正只改 R8 同音错别字，且**先预览确认**
+- 矛盾类绝不自动改
+- 点弹窗「忽略」或「写入永久忽略规则」固化
 
-- 自动修正只改 R8 同音错别字，且**先预览确认**；矛盾类绝不自动改
-- 若某条是同音误判，点弹窗「忽略」或取消勾选，再「写入永久忽略规则」固化
+**Q5：导出的报表中文乱码？**
+- 报表为 UTF-8-BOM 编码，用 Excel 直接打开正常
 
-**Q5：R10 提示缺随访建议，但我们科不要求？**
-
-- 在「⚙ 规则维护」将 `template.require_followup` 改为 `false` 即可
-
-**Q6：导出的报表中文乱码？**
-
-- 报表为 UTF-8-BOM 编码，用 Excel 直接打开正常；若用普通文本编辑器打开可能显示 BOM 头，属正常
-
-**Q7：能批量处理已有报告吗？**
-
-- 用「🔗 RIS 直连」页从院内数据库批量拉取并质控入库；或用「🖥 屏幕区域 OCR 监控」抓 PACS 报告；或逐份粘贴/导入
-
-**Q8：忘记账号密码？**
-
-- 账号为本地库。忘记管理员密码可重置本地 `assets/accounts.db`（详见 `accounts.py` 模块说明），重置后首次启动重新创建管理员。
+**Q6：忘记账号密码？**
+- 重置本地 `assets/accounts.db`，首次启动重新创建管理员
 
 ---
 
-## 十一、技术架构
+## 十、技术架构
+
+> 完整架构设计见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ```
-src/
-├── engine.py        # 规则引擎：NER + 知识图谱 + R1–R22 + 评分 + 元信息抽取
-├── _lexicons.py     # 阳性/阴性/否定/部位词表（引擎词典层）
-├── highfreq_lexicon.py  # 高频标准词组库（R19 形近字/读音候选）
-├── anatomy_lexicon.py  # 解剖部位知识图谱（器官族 + 侧别 + 中英文映射）
-├── dataset_catalog.py  # 公开数据集目录（回归评测用）
-├── accounts.py      # 账号系统（SQLAlchemy users 表：role/dept_id）
-├── ocr_provider.py  # 离线 RapidOCR 屏幕区域监控（截图 → OCR → 回填）
-├── samplelib.py     # 样本库：SQLite 存储、脱敏、统计（类型分布 / 每日趋势）
-├── ris.py           # RIS 直连：数据库拉取（可选）
-├── version.py       # 版本信息（APP_VERSION，单一事实来源）
-├── auto_updater.py  # 自动更新检查
-├── license_utils.py # 许可校验（Ed25519）
-├── log_utils.py     # 滚动日志 + 诊断包（server 端已接入）
-└── update_check.py  # 更新检测
-server/
-├── main.py          # FastAPI 后端：/api/v1/* 全部路由 + 静态托管（单服务同源）
-├── db.py            # SQLAlchemy 连接（DATABASE_URL 可切 PG；SQLite busy_timeout 30s）
-├── models.py        # Department/User/Sample/QueueItem/Setting 模型
-└── license_web.py   # Web 授权
-web/static/          # SPA（index.html + css/style.css + js/app.js）
-desktop_app.py       # pywebview 桌面壳（后台起 uvicorn + 系统原生 WebView）
-assets/
-├── rules_config.json   # 用户可维护规则（错别字/互斥/忽略/模板）
-├── ris_config.json     # RIS 连接配置
-├── qc.db               # 统一数据层（users/departments/queue/settings，SQLAlchemy）
-├── samples.db          # 样本库（独立，待迁入 qc.db —— task 229）
-└── ocr_models/         # RapidOCR 模型权重（离线）
-build/
-├── report_qc.spec      # PyInstaller 打包规格
-├── build_windows.bat   # Windows 打包脚本
-└── setup.iss           # Inno Setup 安装包脚本
-docs/
-├── 接口文档_程序化API.md   # 程序化调用规范
-├── 接口文档_HTTP_REST.md   # HTTP / REST 接口规范
-├── DISCLAIMER.md          # 合规与免责声明
-└── RELEASE_TEMPLATE.md    # Release 说明模板
+┌─────────────────────────────────────────────────────────┐
+│  SPA 前端 (web/static/)                                 │
+│  index.html + app.bundle.js + style.css                  │
+├─────────────────────────────────────────────────────────┤
+│  FastAPI 后端 (server/main.py)                           │
+│  /api/v1/* REST 接口 + 静态文件托管                       │
+├─────────────────────────────────────────────────────────┤
+│  核心引擎 (src/)                                         │
+│  NER + 知识图谱 + 规则引擎 + 评分                          │
+├─────────────────────────────────────────────────────────┤
+│  数据层 (SQLAlchemy + SQLite)                            │
+│  users / departments / samples / queue / settings / order│
+└─────────────────────────────────────────────────────────┘
+         ↕ pywebview 桌面壳 (desktop_app.py)
 ```
 
-- **核心零第三方依赖**：规则引擎主体纯 Python 标准库（re / json / sqlite3）
-- **OCR 依赖**：`rapidocr-onnxruntime` 等（见 `requirements.txt` / `requirements.lock` 锁定基线），离线推理
-- **跨平台资源路径**：`frozen` 态自动切换至用户可写目录，避免安装到只读目录后配置失效
-
-### 环境变量（部署配置，2026-08-18 集中文档化）
+### 环境变量
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `QC_API_SECRET` | 本机模式自动生成（告警） | HMAC token 签名密钥；**非本机监听（如 `0.0.0.0`）必须设置强随机值** |
-| `QC_API_TTL` | 86400 | Bearer token 有效期（秒） |
-| `QC_PORT` | 8000 | 服务端口（CORS 白名单随之收窄） |
-| `QC_HOST` | 127.0.0.1 | 监听地址；本机/桌面端保持默认，内网部署改 `0.0.0.0` 时必须同时设置 `QC_API_SECRET` |
-| `QC_CORS_ORIGINS` | 空 | 追加允许的跨域源（逗号分隔） |
-| `QC_APPDATA` | 平台默认 | 数据目录覆盖（用户可写目录） |
-| `QC_OCR_MAX_BYTES` | 20MB | OCR base64 上传上限 |
-| `DATABASE_URL` | sqlite://assets/qc.db | SQLAlchemy 连接串（可切 PostgreSQL） |
-| `QC_DB_OVERRIDE` | 空 | E2E 测试隔离：指向临时 sqlite |
-| `AU_NO_LAUNCH` | 空 | 自动更新器禁止启动新实例（CI 用） |
+| `QC_API_SECRET` | 本机自动生成 | HMAC 密钥；非本机监听必须设置 |
+| `QC_PORT` | 8000 | 服务端口 |
+| `QC_HOST` | 127.0.0.1 | 监听地址 |
+| `QC_APPDATA` | 平台默认 | 数据目录覆盖 |
+| `DATABASE_URL` | sqlite://assets/qc.db | SQLAlchemy 连接串 |
+| `QC_BACKUP_ENABLED` | true | 自动备份 |
+| `QC_UPDATE_LOCAL_DIR` | 空 | 离线更新目录 |
+| `QC_FLOATING_LICENSE` | false | 浮动授权模式 |
+| `QC_ERROR_REPORT_ENABLED` | true | 错误报告 |
+
+完整列表见 [ARCHITECTURE.md](ARCHITECTURE.md) §4.3。
 
 ---
 
-## 十二、版本与更新
+## 十一、版本与更新
 
-- **v4.3.3**（当前，2026-08-18 第三轮审查修复）：
-  - **数据安全（P0）**：① 冻结打包路径统一——`server/db.py` 不再落 `sys._MEIPASS`（临时目录/升级覆盖/只读 Program Files 均会导致账号库丢失），账号表与样本表同落用户可写数据目录 `MedicalReportQC/qc.db`（与 samplelib 同口径）；② R8 危险错字映射移除「有肺→右肺/直接→直径/简易→建议/结界→结节/肋膜→胸膜」+ `learn_typo` 高频白名单校验 + `auto_fix` 对常用词 wrong 只提示不替换（**实证「有肺气肿」不再被篡改为「右肺气肿」**）。
-  - **检出率（P0）**：NER 与 `_split_for_r5` 段落标题抽共享常量并补「影像所见/超声所见/CT所见/MRI所见/MR所见」——「影像所见」开头的报告 R5/R2/R12 不再静默漏检（**实证 0→1 条，与「检查所见」一致**）。
-  - **安全（P1）**：QC_API_SECRET 缺失时不再回退硬编码默认密钥（首启随机生成并持久化到用户数据目录，多进程共享）；`qc/check`/`qc/batch` 加 `require_emp_local` + 内存限流（默认 60 次/分/IP，`QC_RATE_PER_MIN` 可调）；全站响应加 CSP/nosniff/X-Frame-Options 安全头；RIS 查询强制只读校验（仅 SELECT/WITH、禁分号与 DDL/DML，防任意 SQL 执行/拖库）；RIS 配置落用户目录 + 0600；发卡工具 spec 不再打包私钥（只带公钥）+ 清理 dist 内已泄露私钥。
-  - **更新链路（P1）**：下载校验 `done==total` + 800MB 大小上限；发布物附 `.sig`（归档 SHA-256 的 Ed25519 签名）时强制验签（公钥内嵌，私钥存开发机 `~/.medical_report_qc/update_signing_key.pem`，不入库）；macOS 安装器解包总大小上限 + 完整备份旧树 + 失败回滚 + 备份恢复 `ris_config.json`。
-  - **数据层/前端（P2）**：samples 启用 WAL + busy_timeout 30s + 导入进程内锁（消并发 duplicate / database is locked）；规则 PUT `/qc/rules` 与 `/qc/rules/config` 改读-合并-写回（typos 增量合并，不再丢 enable_r19 等键）+ `save_rules_config` 原子写；`runQC` 请求代次保护（先发慢响应不再覆盖后发新结果）+ keydown 过滤 `e.repeat`；`splitReportSections` 支持诊断在前的反向切分；进程级引擎单例（批量 50 条不再 50 次配置加载）；PBKDF2 100k→600k（版本化哈希+登录自动升级）；session.json 迁用户目录；Setting 唯一约束改 `(key, user_id)`；`first_run` 试用期 HMAC 防篡改（改日期/损坏即 expired，不再白送试用期）；样本表 ts 补转义。
-  - 测试：全量 **251 passed + 7 skipped + 9 subtests** + Playwright E2E 2 passed。
+- **当前版本**：v4.3.6（2026-09-13）
+- **变更日志**：详见 [CHANGELOG.md](CHANGELOG.md)
+- **版本支持**：详见 [VERSION_LIFECYCLE.md](VERSION_LIFECYCLE.md)
 
-- **v4.3.2**：2026-08-18 系统性代码审查修复——
-  - **安全**：QC_API_SECRET 启动强制校验（缺失时告警）；远程访问仅接受 Bearer token（X-Emp-Id 头仅限本机，杜绝伪造冒充）；CORS 收窄到实际服务端口；样本导出/导入路径限定（防任意文件读写）；规则库写接口升级 require_admin；登录失败限速（5 次锁 5 分钟）+ 恒定时间密码比较。
-  - **引擎准确性**：R17 部位断言窗口加入逗号截断；R15 对侧阴性对照不再误报；R5 识别「两肺/双肾」双侧措辞 + 阳性标记否定过滤；R14 多部位计数保守不报；R6 单字部位键按语境识别（「未见脑转移」不再误判）；R8 移除「已见→未见」误报映射；盆腔不再误配 PI-RADS；R10 结论段按行首标题判定。
-  - **工程**：修复 R19 形近字 medium 档误报（改 `== "high"`，2 用例转绿）；解决 test/ tests/ 双目录同名模块冲突（默认 pytest 全绿 228 passed）；CI 新增 pytest 测试闸；JSON 持久化加锁+原子写；SQLite busy_timeout 提至 30s；RIS 轮询按 interval_min 调度（消除 30 倍无谓查询）+ 新增 RIS 配置持久化接口（SPA 可用）；qc/rules 清单对齐合并后 rule_id；前端 escapeHtml 补单引号（修存储型 XSS）、趋势图契约修复、apiFetch 超时+401 全局处理；自动更新 tar 解包路径穿越防护。
-  - **第四轮（2026-08-18 晚）**：
-    - **数据一致性**：修复 **R19 自动修正 span 错位**（span 基于去空格 norm_text，auto_fix 直接切原文会损坏含空格报告——新增 `_r19_norm_text` + `_map_norm_span_to_orig` 双指针坐标还原）；RIS 轮询与手动触发加互斥锁（防并发重复入库）；队列入队改 **DB 层唯一索引原子去重**（QueueItem 新增 report_hash 列 + `_queue_orm_add_dedup`，`ux_queue_hash` 唯一索引兜底并发竞态）。
-    - **多用户隔离（GTM 终局前置）**：样本读取/导出/统计/看板按 `_scope_user_id` 归属过滤（doctor 仅见自己数据）；队列删除/清空归属校验（非 admin 只能移出本人或 ris-poll 公共复核项）；账号创建 X-Emp-Id 头仅限本机（远程强制 Bearer + admin）；登录锁定到期自动清零（不再超时封锁）。
-    - **健壮性**：模块级建表+存量迁移（import 即就绪，TestClient/桌面壳不再无表）；**QC_DB_OVERRIDE 隔离修复**（main 显式 `set_database_override`，不再依赖 import 顺序，杜绝测试污染真实库）；CSV 导入必填列/空行校验；OCR 推理统一 `_OCR_LOCK` 串行（防并发推理内存叠加 OOM）；导出文件下载后自动删除 + ris_fetch_reports 统一错误封装；samples 写入补 dept_id。
-    - **前端重做（core.js 提取时 git checkout 曾回滚前三轮前端修复，本轮全部重做并 Playwright 验证 0 错误）**：apiFetch 20s 超时+401 全局回登录闸门+FormData 兼容；47 处裸 fetch 全改 apiFetch；escapeHtml 补单引号；趋势图 `e[1].n` 契约修复；renderRecentTable/loadSamples/renderModalityChart/fetchRisReports XSS 转义；规则页 severity 按 SEV_META（high/medium/low）；新增 RIS 配置保存/回填（saveRisConfig/loadRisConfig）；fetchRisReports 移除 body limit；矛盾对保存保留 severity/note；OCR 模态透传 dynamic；setVal 空串清残留（医疗数据防串）；Esc 在输入框内不清空；粘贴监听挂 document；parsePatientInfo 排除人称词+支持中文数字年龄；`_pickReportFormat` 去重。
-    - **测试**：新增 `test/test_api_guard.py`（6 用例：队列去重/归属隔离/RIS 配置持久化/登录锁定到期）+ R19 span 回归用例；全量 **228 passed + 7 skipped + 9 subtests**（连续两次稳定）。
-  - **第五轮（2026-08-18 下午）——授权/更新链路专项**：
-    - **授权防绕过（P0，license_utils.py + license_web.py 同步）**：`check_trial` 此前只读本地明文 JSON 的 `activated` 布尔——手改 `{"activated":true}` 即永久绕过 Ed25519 验签、复制他机已激活文件即一码多机。现激活时落盘绑定 `machine_id` + `activated_at`，每次启动回验「本机指纹一致 + activation_code 仍可通过公钥验签」（`_activated_valid`）；license 文件改 0600 权限（内含激活码，防科室主机其他账号读取）。
-    - **前端授权门顺序修复（P0）**：`bootstrapGate` 此前「已有 token 直接放行」在试用过期检查之前，导致试用过期的登录用户永久绕过激活门（只剩横幅）。现将免责/试用过期/激活检查移到登录态快捷路径之前。
-    - **更新链路加固（P1）**：Windows zip 解包增加成员路径校验（拒绝绝对路径/`..` 逃逸，与 macOS tar 分支对齐）；**更新链路口径：自动安装未接线，仅检查更新+引导网页下载**——设置页「🔄 检查更新」只做版本比对并跳转 Release 页；`auto_updater.download`→解包→重启的自动安装链路未接入任何 UI/服务端编排，属预留代码，接入前必须补齐 sha256 校验与退出编排。
-    - **测试**：新增 `test/test_license.py`（3 用例：伪造 activated 拦截/异机激活拦截/真实激活链路不受影响）；全量 **229 passed + 7 skipped + 9 subtests**。
-    - **OCR/导出链路（专项代理审查，3 P1 + 5 P2 修复）**：
-      - **下载接口可删样本库（P1 数据丢失）**：`/files/download` 此前仅按 basename 限定目录，构造 `?file=qc.db` 即可下载并删除整个样本库 → 新增导出产物前缀白名单（`samples_export_*`/`质控报告_*`），其余一律 404。
-      - **导出报告单崩溃（P1）**：CSV 导入样本 `scores_json="[]"` 时 `scores.items()` 抛 AttributeError → 新增 `_scores_of()` 统一校验 dict。
-      - **OCR 部位/侧别丢失（P1 全链路断点）**：`ocrFill` 此前丢弃后端 meta 的 `applied_site/laterality` → R6 无法基于 OCR 触发 → 已回填 `mSite/mLaterality`。
-      - **P2**：DOCX `_xml_escape` 剥离 XML 1.0 非法控制字符（防 Word 文档损坏）；`/screen/regions` PUT 坐标校验（越界/非数字 400，防 OCR 500）；导出支持 `anonymize` 脱敏（剥离患者姓名/性别/年龄）；`downloadExportedFile` 改 apiFetch+blob（远程部署不再 401）；`ocrOneClick` 异常兜底恢复窗口；启动清理超 3 天导出残留。
-      - **性能负面结论（无需修复）**：RuleEngine 构造 ≈0ms、单条 run ≈2ms、50 条 batch 实测 9ms；OCR 缓存不持有 PIL 图像、无内存泄漏。
-      - **测试**：`test_api_guard.py` 新增 5 用例（下载白名单/坐标校验）；全量 **234 passed + 7 skipped + 9 subtests**。
-    - **遗留项全部落地（2026-08-18 收尾）**：
-      - **服务端 license 强制**：新增 `require_license_active` 依赖并应用到 15 个写接口（qc/check、samples 写、导出、导入、队列写、OCR 等）——试用过期且未激活时写操作 403，读接口放行（登录用户仍可查历史）；开发/内测试用期放行。
-      - **更新链路接入（此前为悬挂代码）**：新增 `GET /api/v1/update/check`（调 `update_check.check_update_sync`，比对 GitHub Release）；设置页新增「🔄 检查更新」按钮（status/版本提示 + 跳转下载）；`auto_updater.download` 下载后强制校验发布物附带的 `.sha256`（不匹配抛错并删除，防被替换的更新包执行任意代码）。
-      - **桌面单实例锁（跨平台）**：`desktop_app` 启动时获取 `tempfile` 锁文件 + PID 存活检查，已有实例运行则提示退出（修复 Windows 双开并发写 SQLite 风险）；退出自动清理。
-      - **性能优化**：`sample_list` 归属过滤提前到 SQL 层（`list_samples_full(user_id=…)`，避免全表载入长文本）；`stats_report` 只 SELECT ts/user_id/findings_json/scores_json（不再载入 report_text 全文）。
-  - **第六轮（2026-08-18 晚）——NER/词典层专项（2 P0 + 3 P1 + 1 P2 修复）**：
-    - **P0「左侧X」措辞侧别漏检**：`_organ_sides_in_text` 正则「左+器官」遇"侧"字即阻断——**『左侧肾上腺见占位/右侧肾上腺见占位』这类放射科最常见写法的跨段左右矛盾整体漏检**（实测零告警）。修复：正则容忍 `(?:侧)?`。
-    - **P0 NER 复合词误切**：短别名（右肺/左肾）在复合词内被误命中——「右肺门→右肺」驱动 R5 误报、「左肾上腺→左肾」使 R2 把肾上腺误归肾族。修复：`ANATOMY_SYNONYMS` 补「左/右肺门、左/右肾上腺、左/右肾盂/肾盏、无侧别肺门/肾上腺」词条（最长匹配优先）。
-    - **P1**：`_ORGAN_COMPOUND` 补肺门/肺野/肺尖/肺实质/肺底/肺间质（"右肺门"不再被当"肺"侧别误报 R2）；NER `SECTION_MAP` 与 `_split_for_r5` 段标题集合对齐（补「影像诊断/诊断结论/影像结论/diagnosis」——此前 NER 把结论段整段标为 findings，R2 分支1 跨段比对失效）；`anatomy_lexicon` 修 Fallopian 前导空格、「肺门」从 lung 族移除（双族消歧）。
-    - **测试**：新增 `TestSidePhrasingNER` 4 用例；全量 **238 passed + 7 skipped + 9 subtests**。
-    - **标注建议（已全部处理）**：R19 档位语义修正（候选加 kind 标记 exact/near/shape，按类型过滤——medium=同音+3字以上近音、2字保守防『双肺→上肺』误报、high=含形近；R19 滑窗 exact 优先，修复『膜玻璃样→磨玻璃影』错改）；`R2_COVERED` 移除死条目「股骨头」（SIDE_CHECK_ORGANS 用短名「股骨」，原排除永不触发）；**新增繁体字检测**（R23-TRADITIONAL：检出确凿繁体独有字形时提示转简体，避免简体词典对繁体输入静默误判）；RIS SQL Server 连接驱动 18→17/13 自动回退（医院 ODBC 版本不一）；`dataset_catalog.py` 更正"单一事实来源"声明（实际词表在 _lexicons/anatomy_lexicon/highfreq_lexicon）；zh_ner 部位实体/normalize_text 明确为有意不接入（标注架构决策：全量 ANATOMY 词表含征象别名会放大误报、归一文本 span 与规则坐标冲突）。
-  - **第七轮（2026-08-18 晚）——规则边界 + schema 一致性专项**：
-    - **规则边界（1 P0 + 4 P1 + 5 P2 修复）**：R4 CT 值「HU」必误报（大小写不匹配）+ 血压「120/80mmHg」吞 / 前缀 → 白名单小写化、单位首字符禁 /；R14「不除外恶性」不再被当否定（临床强阳性措辞，漏检修复）；R22 术语与测量间容忍修饰语（『结节较前增大，现约3.5cm』）；R3 modality 回退 applied_site + 间隔词容忍（『BI-RADS分级4a』）+ 阴性报告豁免；R6 多区域申请拆分比对（『胸部、上腹部』不再误报）；R21 男性乳腺仅钼靶判女性专属（乳腺超声=合理临床）；R1 乳腺检查豁免；R12 同侧『见结节+未见异常』；R14 多发/单发计数。
-    - **schema 一致性（1 P0 数据滞留 + 6 项）**：**P0 修复**——旧 ORM 表 created_at 列使 user_id 重建迁移 INSERT 失败，历史样本滞留 samples_conv_old 孤儿表（真实库取证：李四行 + user_id 截断 559）→ 新增 `rescue_samples_conv()`（列交集拷贝 + user_id 按 users.emp_id 补零校正 + 幂等），启动自动抢救，真实库已迁回；init_db 迁移改列交集防再失败；`samples` 建 `ix_samples_user_ts` 索引；`models.Sample.dept_id` Integer FK → String(64)（与 samplelib TEXT 一致）；`queue` 迁移条目补 `_emp=ris-poll`（否则非 admin 不可见）；`report_hash` 双唯一索引去重（新库由 models unique 生成，旧库才手工建）；启动去重清理仅在补列迁移时执行。
-    - **前端（3 项）**：ocrFill 的 mSite/mLaterality 改无条件 setVal（空串清残留，防连续处理串扰）；queueRunAll 入库成功后出队失败单独提示（不再误计失败且防重复入库）；saveRulesConfig 保存后重建 `_typoCache` 并重渲染（右侧词库表不再显示旧数据）。
-    - **测试**：`test/test_radiology_errors.py` +9 用例（HU/血压/不除外/多发/R22 修饰/男性乳腺/R12 同侧/R3 豁免/R6 多区域）；`tests` R21 用例语义更新；全量 **251 passed + 7 skipped + 9 subtests**。
-- **v4.3.1**：修复 **R17 否定式误判**——`_has_positive`/`_word_effectively_present` 由「否定词紧贴阳性词」升级为「否定前缀 + 允许间隔修饰词 + 不跨标点」正则判定（`_NEG_BEFORE_POS_RE`），新增 `_is_negative_claim` 识别「未见实质性病变」「未见占位性病变」等阴性声明并贯通段级全局正常判定与 R17 段级兜底：纯正常报告不再误报 `R17-PERREGION`，「描述阴性声明 + 结论阳性诊断」跨段矛盾恢复检出；新增 `TestR17NegationFix` 3 用例（test/ 193 passed）
-- **v4.3**：新增 **R18 检查部位器官漏写**——登记部位声明某区域（含「胸部、上腹部」多区域自动拆分）但影像描述段未描述该区域任一器官即告警（如登记上腹部却只写肺），与 R6 互补（R6 抓部位错配、R18 抓器官漏写）；同时修复 R17 跨句否定前缀失效误报（「脑实质内未见异常信号，脑室系统大小正常」不再误判脑室为阳性）；代码内 APP_VERSION 对齐 4.3
-- **v4.2**：逻辑错误规则补全——阳性征词典补充软化灶/梗塞灶/萎缩/脱髓鞘/变性/缺如/低密度高密度灶影等，并新增「部位+正常」精准识别；新增 **R17 逐部位精确比对**（按器官+侧别比对描述↔结论正常/异常声明：左小脑正常+右小脑软化灶不同侧不误报、同侧矛盾能抓）；发现词表进一步扩充（炎症/炎性/增生/积血/积脓/肿胀/瘘/畸形/囊变等）并加否定前缀（未见/无/不伴…）防误报；SPA 桌面版集成注册/登录、90 天试用、激活码（Ed25519 验签）授权体系
-- **v4.1**：Tkinter 桌面端收尾——Windows 风格可配置快捷键完整落地（Ctrl+Enter 运行质控 / Ctrl+S 存样本 / Ctrl+T 切换主题，设置页可重绑并本地持久化）
-- **v4.0**：Web/SPA 桌面端快捷键可配置化（Windows 风格默认，设置页点击重绑）
-- **v3.0**：新增 RadLex 解剖部位知识图谱（器官族 RID + laterality）增强左右/侧别质控；引入 PadChest 104 解剖部位→UMLS 映射（src/anatomy_lexicon.py）；新增公开数据集目录（NIH/CheXpert/MIMIC-CXR/CheXnet/OpenI/ROCOv2/PadChest/IU-Xray/TCIA 共 9 个数据集 + RadLex/UMLS/SNOMED CT 本体）；新增 MIMIC/IU-Xray/PadChest 及 6 数据集合成回归集（pytest 117 passed）；保留 v2.5.0 全部能力（账号系统、OCR 屏幕监控、后台全局快捷键、严重度高亮、R1–R15、自动更新等）
-- **v2.5.0**：账号系统（工号+密码，责任到人）、离线 OCR 屏幕区域监控、后台全局快捷键一键质控（焦点在 PACS 也能触发）、按严重度高亮（红=严重/橙=警告/蓝=提示）、R1–R15 规则（含放射科错别字/上下文/前后文逻辑错误，修复肺跨段左右矛盾漏报）、评分透明、程序化 API 与 HTTP/REST 接口规范文档、自动更新、监听自愈合、捕获审计、报表导出、命中弹窗、误报闭环、监听去重、模板校验
-- **v2.1.0**：早期版本（剪贴板监听、基础规则与样本库）
+### 发布流程
 
-适用场景：放射科日常报告质控、语音录入误写拦截、科室月度 QA 报表、规培教学样本沉淀、院内批量报告质控。
+> 完整发布清单见 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。
+
+```
+准备 → 验证 → 打包 → 分发 → 验证 → 归档
+```
+
+---
+
+## 十二、开发
+
+> 完整开发指南见 [DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md)。
+
+### 快速开发
+
+```bash
+# 安装依赖
+pip install -r requirements.txt -c constraints.txt
+
+# 启动开发服务
+uvicorn server.main:app --port 8000 --reload
+
+# 运行测试
+python -m pytest -q
+
+# 代码检查
+ruff check --select E9,F63,F7,F821,F822,F811,F401,F702,B018 src/ server/
+```
+
+### 测试策略
+
+> 完整测试策略见 [TESTING_STRATEGY.md](TESTING_STRATEGY.md)。
+
+- 单元测试：399 收集 / 389 通过 / 10 跳过（pytest）
+- E2E 测试：Playwright
+- CI 门禁：pytest 全量 + ruff 致命规则
