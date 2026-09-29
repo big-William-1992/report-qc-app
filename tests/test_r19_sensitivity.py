@@ -30,10 +30,10 @@ def test_p0_context_no_false_positive():
 # ---------- P1 形近字（词表外，高灵敏度才报） ----------
 def test_p1_shape_similar_high():
     eng.rules_config["r19_sensitivity"] = "high"
-    # "王动脉" 不在白名单中 → R19 检出（WL 层标记更大 span "见王动脉"/"王动脉增"，
-    # HOMOPHONE 层形近检测精确匹配到 "王动脉"→"主动脉"）
+    # "王动脉" 不在白名单中 → R19 检出（活引擎只有 R19-HOMOPHONE 一条通道，
+    # 旧栈的 R19-WHITELIST 随死代码删除，断言收紧以避免"两条路都算过"掩盖缺陷）
     hits = [f for f in eng.run("影像描述：见王动脉增宽。\n影像诊断：王动脉增宽。", {})
-            if f.rule_id in ("R19-WHITELIST", "R19-HOMOPHONE")]
+            if f.rule_id == "R19-HOMOPHONE"]
     assert hits, "王动脉 不在白名单中，high 灵敏度下应被 R19 检出"
     assert any("王动脉" in f.snippet for f in hits), f"Expected 王动脉 in snippets: {[f.snippet for f in hits]}"
 
@@ -42,7 +42,7 @@ def test_p1_shape_similar_medium_silent():
     eng.rules_config["r19_sensitivity"] = "medium"
     # medium 灵敏度下，形近候选不纳入（仅同音/近音），"王动脉"→"主动脉" 不报
     hits = [f for f in eng.run("影像描述：见王动脉增宽。\n影像诊断：王动脉增宽。", {})
-            if f.rule_id in ("R19-WHITELIST", "R19-HOMOPHONE")]
+            if f.rule_id == "R19-HOMOPHONE"]
     assert not hits, f"medium 灵敏度下形近候选应静默: {[f.snippet for f in hits]}"
 
 
@@ -65,9 +65,9 @@ def test_p2_again_r8():
 # ---------- 真错字回归（增强不导致漏检） ----------
 def test_regression_homophone():
     # "磨玻离" 已按人工审核学入 R8 词典（反馈闭环 y→learn_typo），
-    # 由 R8 确定性检出；R19 不重复报。接受 R8/R19 任一检出路径。
+    # 由 R8 确定性检出；R19 不重复报。接受 R8/R19 两条真实通道。
     hits = [f for f in eng.run("影像描述：右肺上叶见磨玻离影。\n影像诊断：磨玻离结节。", {})
-            if f.rule_id in ("R19-WHITELIST", "R19-HOMOPHONE", "R8-TYPO")]
+            if f.rule_id in ("R19-HOMOPHONE", "R8-TYPO")]
     assert hits
     # 至少有一条告警的 snippet 提到"磨玻离"
     assert any("磨玻离" in (f.snippet or "") for f in hits), f"Expected 磨玻离 in snippets: {[f.snippet for f in hits]}"
@@ -81,9 +81,9 @@ def test_regression_r8():
 # ---------- 敏感度档位默认 medium ----------
 def test_sensitivity_default_medium():
     eng.rules_config["r19_sensitivity"] = "medium"
-    # 磨玻离已学入 R8（反馈闭环），R8/R19 任一检出均可
+    # 磨玻离已学入 R8（反馈闭环），R8/R19 两条真实通道任一检出均可
     hits = [f for f in eng.run("影像描述：右肺上叶见磨玻离影。\n影像诊断：磨玻离结节。", {})
-            if f.rule_id in ("R19-WHITELIST", "R19-HOMOPHONE", "R8-TYPO")]
+            if f.rule_id in ("R19-HOMOPHONE", "R8-TYPO")]
     assert hits
 
 

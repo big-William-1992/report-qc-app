@@ -116,14 +116,24 @@ class TypoRulesMixin:
         for w, _c in hf:
             for m in re.finditer(re.escape(w), norm_text):
                 covered.append((m.start(), m.end()))
+        # 反馈闭环学习词表（2026-09-30）：医生在反馈里标为「误报」的片段并入覆盖区间，
+        # 使任意长度（含 >4 字的整句碎片）的学习词都能抑制其内部滑窗的重复误报。
+        _user_wl = [w for w in (self.rules_config.get("r19_user_whitelist") or [])
+                    if isinstance(w, str) and len(w) >= 2]
+        for _w in _user_wl:
+            for m in re.finditer(re.escape(_w), norm_text):
+                covered.append((m.start(), m.end()))
         covered.sort()
         # P4 敏感度：设置页可调（low=仅同音 / medium=近音 / high=含形近）
         sensitivity = str(self.rules_config.get("r19_sensitivity", "medium")).lower()
         if sensitivity not in ("low", "medium", "high"):
             sensitivity = "medium"
-        # 安全词集合（内置 R19_SAFE_WORDS ∪ 用户配置 r19_safe_words），exact 同音命中时放行。
+        # 安全词集合（内置 R19_SAFE_WORDS ∪ 用户配置 r19_safe_words ∪ 反馈学习词表），
+        # exact 同音命中时放行。学习词（r19_user_whitelist）来自医生「误报」反馈，
+        # 是闭环在生产引擎上生效的关键一环（2026-09-30 修复，此前该通道为空转）。
         _r19_safe_words = set(R19_SAFE_WORDS)
         _r19_safe_words.update(self.rules_config.get("r19_safe_words") or [])
+        _r19_safe_words.update(_user_wl)
         def _in_covered(s, e):
             return any(ms <= s and e <= me for ms, me in covered)
         def _in_seen(s, e):

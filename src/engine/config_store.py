@@ -60,6 +60,38 @@ def _rules_config_path() -> str:
 RULES_CONFIG_PATH = _rules_config_path()
 
 
+def user_whitelist_path() -> str:
+    """反馈闭环学习词表路径（assets/lexicons/user_whitelist.json）。
+
+    与 src/paths.user_lexicon_path() 保持同一口径：源码态用仓库 assets/，
+    打包态用用户可写目录（安装到 Program Files 后 assets 为只读）。
+    """
+    try:
+        import paths as _paths
+        return _paths.user_lexicon_path()
+    except Exception:  # pragma: no cover - 仅防御性降级
+        return os.path.join(_assets_dir(), "lexicons", "user_whitelist.json")
+
+
+def load_user_whitelist(path: Optional[str] = None) -> List[str]:
+    """读取「医生标注为误报」的学习词表。
+
+    2026-09-30 修复：该文件过去只被已删除的 src/rules_typo.py（旧引擎栈）读取，
+    活引擎（src/engine/）完全不认，导致「误报 → 补白名单 → 不再报」的闭环
+    在生产引擎上空转。现在由 load_rules_config 统一并入 r19_user_whitelist 键，
+    供 R19 作为抑制集使用，使闭环端到端生效。
+    """
+    p = path or user_whitelist_path()
+    try:
+        with open(p, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return []   # 文件不存在/损坏属正常状态（首次运行无用户词条）
+    if not isinstance(data, list):
+        return []
+    return sorted({w for w in data if isinstance(w, str) and w.strip()})
+
+
 # 结构化报告模板默认规范（可在 rules_config.json 的 template 字段覆盖）
 DEFAULT_TEMPLATE = {
     "required_sections": ["findings", "impression"],  # 必须含「检查所见」与「诊断印象/结论」段
@@ -126,8 +158,12 @@ def load_rules_config(path: str = RULES_CONFIG_PATH) -> dict:
             cfg["typos"] = _merged
         else:
             cfg.setdefault("typos", dict(TYPO_MAP_DEFAULT))
+        # 反馈闭环学习词表并入 R19 抑制集（2026-09-30）——见 load_user_whitelist 注释。
+        # 该键为派生值，save_rules_config 落盘时会剔除，不污染用户配置文件。
+        cfg["r19_user_whitelist"] = load_user_whitelist()
         return cfg
     except Exception:
+        defaults["r19_user_whitelist"] = load_user_whitelist()
         return defaults
 
 
@@ -137,10 +173,13 @@ def save_rules_config(cfg: dict, path: str = RULES_CONFIG_PATH) -> None:
     # schema_version 缺省补齐：调用方传入旧结构（如前端回传历史配置）时也保证
     # 落盘文件带版本标记，下次加载可判断年代。
     cfg.setdefault("schema_version", RULES_CONFIG_SCHEMA_VERSION)
+    # 派生键不落盘（2026-09-30）：r19_user_whitelist 由 load_rules_config 从
+    # user_whitelist.json 现算，写进 rules_config.json 会形成第二份真相源。
+    payload = {k: v for k, v in cfg.items() if k != "r19_user_whitelist"}
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(cfg, fh, ensure_ascii=False, indent=2)
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
 
 
