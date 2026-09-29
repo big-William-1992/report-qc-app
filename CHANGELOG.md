@@ -5,6 +5,84 @@
 
 ---
 
+## v4.3.7 (2026-09-30)
+
+> 本轮为**审计后的缺陷修复**（以代码为准逐条核实），不新增功能。
+> 修复了 4 个此前会静默损坏数据/交付物的问题 + 1 类「两套实现」隐患。
+
+### 修复 (Fixed)
+- **Windows 安装包的 OCR 模型是 LFS 指针**（发布级）：`assets/ocr_models/*.onnx`
+  自 `8fd4e75` 起以 Git LFS 指针入库，而所有 workflow 都没开 `lfs:`，
+  `actions/checkout` 只取到 131~133 字节的指针文本 → PyInstaller 把指针当模型
+  打进 exe，装机后「屏幕区域 OCR」直接失效。修复：build job 显式
+  `git lfs pull --include="assets/ocr_models/*.onnx"`（只拉 13MB，不拉 319MB 的
+  adapters）；打包校验改为**按字节数**核对（`2432880 / 10690752 / 585532`），
+  并把该校验从「非阻断告警」改为**阻断**（坏包不许发 Release）。
+- **数据层源码态库位置分裂**：`server/db.py` 默认库算成 `<root>/qc.db`（漏了
+  `assets/` 段），而 `paths.qc_db_path()`/`samplelib.db_path()`/本文件注释都说应是
+  `<root>/assets/qc.db` → 源码运行时账号/科室一个库、样本另一个库，多用户归属
+  无法靠同库约束保证（打包态恰好同目录，故长期未暴露）。修复：默认库统一为
+  `assets/qc.db`，并新增一次性幂等迁移把误落在 `<root>/qc.db` 的表并回统一库
+  （目标表非空则跳过，旧文件保留不删；仅在未被覆盖的默认库上执行）。
+- **备份/恢复整条链路从未可用**：`src/backup.py` 一直
+  `from server.db import get_db_path`，而该函数**从未存在**，且该 import 未被
+  try 包住 → `run_backup()` 直接抛 ImportError：
+  `POST /api/v1/admin/backup/run` 返回 500、每日自动备份被调度器静默吞掉。
+  另：备份只扫 `<assets>/`、恢复也只写回 `<assets>/`，打包态真实位置在用户
+  可写目录 → 「恢复成功」却不生效。修复：补 `server.db.get_db_path()`；新增
+  `_resolve_known()` 作为备份与恢复**共用**的唯一路径解析入口；备份列表按绝对
+  路径去重（统一库后不再备份两份）。
+- **反馈闭环「误报→补白名单」在生产引擎上空转**：闭环写入的
+  `assets/lexicons/user_whitelist.json` 只有已删除的旧引擎栈会读，活引擎
+  `src/engine/` 的 R19 抑制集只认内置 `R19_SAFE_WORDS` 与 `r19_safe_words`。
+  修复：`load_rules_config` 并入 `r19_user_whitelist`（派生键，不落盘），
+  R19 按长度分别并入「安全词」与「覆盖区间」。同时收紧
+  `tests/test_r19_sensitivity.py` 的 `or` 联合断言（正是它掩盖了该缺陷）。
+- **跨机合并/导入丢失科室归属**：`_import_rows` 的 INSERT 漏了 `dept_id` 列。
+
+### 变更 (Changed)
+- **samplelib 并轨 ORM**：`src/samplelib.py` 不再自建裸 `sqlite3` 连接与手写
+  `CREATE TABLE/ALTER`，统一走 `server/db.SessionLocal` + `models.Sample` ——
+  schema 只剩一个真相源，连接池/`BEGIN IMMEDIATE`/`busy_timeout`/WAL 只有一处
+  配置；`path=` 显式指定临时库的能力保留（多机合并/导入/测试隔离）。
+  `db_path()` 改为直接取 ORM engine 的文件路径，与账号库**必然同库**。
+  （保留 sqlite3 的唯一场景：只读外部遗留库文件，如旧 `samples.db`。）
+- **删除两套「写了但从不生效」的并行实现**（共 23 个文件，约 3900 行，均可从
+  git 历史取回）：① 第二套引擎 `src/engine.py` 门面 + `engine_types/helpers/
+  config/ner/meta.py` + `src/rules_*.py`（被「包优先于同名模块」静默架空，
+  v4.3.6 却在同时改两份 `rules_typo.py`）；② `server/routes/` 下 10 个从未
+  `include_router` 的路由模块 + `server/static_spa.py`（实测 49 处「路径+方法」
+  重复注册，后注册者永不生效）。
+- **版本号**：`4.3.6` → `4.3.7`
+
+### 新增 (Added)
+- **回归守卫测试**（+25 用例，均为此前完全没有覆盖的路径）：
+  - `tests/test_single_implementation.py`：引擎必须命中包、旧模块不得复活、
+    `server/routes/` 每个模块必须真被注册、同一路径+方法不得注册两次。
+  - `tests/test_data_layer_unified.py`：样本库与 ORM 必须同库、schema 只有一个
+    声明、`path=` 往返、统计口径、导入保留 `dept_id`、备份→恢复往返与目标路径。
+  - `tests/test_feedback_whitelist_loop.py`：写入学习词后同一报告不再报；
+    派生键不落盘；词表缺失可容忍。
+  - `tests/test_llm_degrade.py`：LLM 不可用/报错时规则结果照常返回、
+    两个端点的契约键恒在（此前 `run_full_qc` 零测试覆盖，而「模型未部署」
+    正是默认状态）。
+- `benchmarks/README.md`：评测口径说明，并**明确标注 LLM 基线尚未记录**
+  （需在装有 MLX 或 Ollama+GGUF 的机器上跑 `tools/run_eval.py --llm --save`）。
+- `AGENTS.md` 新增 4 节：单一实现约定、数据层约定、Git LFS 约定、测试隔离。
+
+### 文档 (Docs)
+- `ARCHITECTURE.md`：修正引擎/服务端目录树（删掉已删模块）、数据层章节
+  （单一 `qc.db`、单一 schema 真相源）、模块职责表中的行数与表名（`audit_log`）。
+- `src/llm_config.example.json`：改为**微调产物**的推荐配置
+  （`provider=ollama, model=qc-qwen3, prompt_mode=ft`），原先示例指向未微调的
+  `qwen2.5:3b` 且缺 `prompt_mode`，照抄会诱导幻觉。
+
+### 测试 (Test)
+- 全量 **415 passed / 7 skipped**（新增 25 用例零回归）；ruff 致命规则全绿。
+  （受限沙箱下另有 2 项因被禁止写用户目录而失败，属环境限制非缺陷。）
+
+---
+
 ## v4.3.6 (2026-09-12)
 
 ### 新增 (Added)

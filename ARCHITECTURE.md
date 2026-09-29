@@ -39,8 +39,9 @@
 │                            ↕ SQLite                               │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  数据层 (SQLAlchemy + SQLite)                             │   │
-│  │  qc.db: users/departments/samples/queue/settings/order   │   │
-│  │  samples.db: 样本库（待迁入 qc.db）                        │   │
+│  │   单一 qc.db：users/departments/samples/queue/             │   │
+│  │              settings/orders/audit_log                     │   │
+│  │   （ORM 与 samplelib 共用同库同 schema，2026-09-30 收敛）   │   │
 │  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
                             ↕ 桌面壳
@@ -71,8 +72,7 @@
 
 ```
 src/
-├── engine.py               # 引擎入口：RuleEngine 类，协调 NER + 规则 + 评分
-├── engine/
+├── engine/                 # ★ 质控引擎的唯一实现（包形态；无同名 engine.py）
 │   ├── engine_core.py      # 引擎核心逻辑（Mixin 模式）
 │   ├── ner.py              # NER（命名实体识别）：从报告文本抽取实体
 │   ├── claims.py           # 断言提取：正常/异常声明
@@ -101,6 +101,12 @@ src/
 
 **设计模式**：Mixin 模式（engine_core.py + rules_*.py），每个规则模块独立可测。
 
+> ⚠️ **单一实现约定**：`src/engine/` 是引擎的**唯一**实现，对外经
+> `src/engine/__init__.py` 暴露 `RuleEngine / Entity / Finding / ...`。
+> 历史上曾并存一套 `src/engine.py` 门面 + `src/engine_types|helpers|config|ner|meta.py`
+> + `src/rules_*.py`，因 Python「常规包优先于同名模块」被静默架空却仍被并行修改，
+> 已于 2026-09-30 删除。`tests/test_single_implementation.py` 会拦住这类回归。
+
 **数据流**：
 ```
 报告文本 → 文本切分(textsplit) → NER(ner) → 断言提取(claims)
@@ -111,29 +117,30 @@ src/
 
 ```
 server/
-├── main.py                 # FastAPI 应用入口 + SPA 静态托管（2548 行）
-├── db.py                   # SQLAlchemy 连接管理
-├── models.py               # ORM 模型（User/Department/Sample/QueueItem/Setting/Order）
+├── main.py                 # FastAPI 应用入口 + SPA 静态托管 + 全部 /api/v1/* 端点
+├── db.py                   # SQLAlchemy 连接管理（唯一数据层：engine/SessionLocal/Base）
+├── models.py               # ★ 唯一 schema 真相源（User/Department/Sample/QueueItem/Setting/Order/AuditLog）
 ├── schemas.py              # Pydantic 请求/响应模型
 ├── deps.py                 # 依赖注入（require_emp / require_admin / require_license_active）
 ├── security.py             # 鉴权模块（HMAC token / 登录锁定 / CORS）
 ├── license_web.py          # Web 授权状态
 ├── core.py                 # 核心配置
-├── static_spa.py           # SPA 静态文件服务
-├── routes/                 # 路由模块（按领域拆分）
-│   ├── route_qc.py         # /api/v1/qc/* 质控
-│   ├── route_sample.py     # /api/v1/samples/* 样本库
-│   ├── route_queue.py      # /api/v1/queue/* 队列
-│   ├── route_account.py    # /api/v1/accounts/* 账号
-│   ├── route_license.py    # /api/v1/license/* 授权
-│   ├── route_ocr.py        # /api/v1/ocr/* OCR
-│   ├── route_ris.py        # /api/v1/ris/* RIS 直连
-│   ├── route_push.py       # /api/v1/push/* PACS 推送
-│   ├── route_screen.py     # /api/v1/screen/* 屏幕区域
-│   ├── route_settings.py   # /api/v1/settings/* 设置
-│   └── route_feedback.py   # /api/v1/feedback/* 反馈
+├── routes/                 # 路由模块
+│   └── route_push.py       # /api/v1/push/* PACS 推送（当前唯一真正注册的子路由）
 └── __init__.py
 ```
+
+> ⚠️ **单一实现约定**：`server/routes/` 下**每个**模块都必须被 `main.py`
+> `include_router`，否则就是死代码。历史上该目录曾有 10 个模块从未注册
+> （且内容比 main.py 陈旧，见 git 8f5b274），已于 2026-09-30 删除；
+> `tests/test_single_implementation.py` 同时守卫「模块必须注册」与
+> 「同一路径+方法不得注册两次」（当时实测 49 处重复注册）。
+> 若日后要继续拆分路由：一次拆完并删除 main.py 中的同名端点。
+
+**数据层（2026-09-30 收敛）**：`server/db.py` 的 ORM 与 `src/samplelib.py`
+（样本库）**共用同一个 SQLite 文件、同一个 schema 真相源（models.Sample）、
+同一套事务策略**。此前 `db.py` 少写一段 `assets/`，导致源码运行时账号库与
+样本库分裂成两个文件；`tests/test_data_layer_unified.py` 断言二者同库。
 
 ### 2.3 前端（web/static/）
 
@@ -173,41 +180,47 @@ window.token             // Bearer token
 
 #### 数据库表结构
 
-**qc.db**（SQLAlchemy ORM）：
+**单一 qc.db**（2026-09-30 起为唯一库；ORM 与 samplelib 同库同 schema）：
 
 | 表 | 模型 | 用途 |
 |----|------|------|
-| users | User | 用户账号（emp_id/password_hash/role/dept_id） |
+| users | User | 用户账号（emp_id/pwd_hash/role/dept_id） |
 | departments | Department | 科室 |
-| samples | Sample | 样本库（report_text/findings_json/scores_json） |
+| samples | Sample | 样本库（report_text/findings_json/scores_json），由 src/samplelib.py 经 ORM 读写 |
 | queue | QueueItem | 队列（待复核/待质控） |
 | settings | Setting | 设置（key/value/user_id） |
 | orders | Order | 订单管理（order_no/product/amount/status） |
-| audit_logs | AuditLog | 审计日志 |
+| audit_log | AuditLog | 审计日志 |
 
-**samples.db**（独立 SQLite，samplelib.py 管理）：
-- 待迁入 qc.db（task 229）
+- **schema 唯一真相源 = `server/models.py`**；`src/samplelib.py` 不再手写
+  CREATE TABLE/ALTER（旧库一次性升级除外），也不再自建 sqlite3 连接。
+- 落盘位置：源码态 `<root>/assets/qc.db`，打包态
+  `<APPDATA|~/Library/Application Support>/MedicalReportQC/qc.db`。
+  统一由 `server/db.py` 的 `_DEFAULT_DB_FILE` 与 `samplelib.db_path()` 共同指向
+  同一个文件（`tests/test_data_layer_unified.py` 断言）。
+- 历史上样本库曾在独立的 `samples.db`：启动时会自动迁入统一库并归档为
+  `samples.db.bak`（见 `samplelib.migrate_legacy_samples`）。
 
 ### 2.5 关键模块职责
 
-| 模块 | 文件 | 职责 | 行数 |
-|------|------|------|------|
-| 引擎入口 | src/engine.py | RuleEngine 类，协调 NER + 规则 + 评分 | — |
-| 引擎核心 | src/engine/engine_core.py | 核心逻辑（Mixin） | — |
-| 服务端入口 | server/main.py | FastAPI 应用 + 路由 + 静态托管 | 2548 |
-| 数据库 | server/db.py | SQLAlchemy 连接（WAL + busy_timeout 30s） | — |
-| 数据模型 | server/models.py | ORM 模型定义 | — |
-| 鉴权 | server/security.py | HMAC token / 登录锁定 / CORS | — |
-| 依赖注入 | server/deps.py | require_emp / require_admin / require_license | 463 |
-| 账号 | src/accounts.py | 账号管理（PBKDF2 600k） | 346 |
-| 授权 | src/license_utils.py | Ed25519 离线激活 / 浮动授权 | 705 |
-| 自动更新 | src/auto_updater.py | 更新检查 / 下载 / 安装 | 754 |
-| 样本库 | src/samplelib.py | SQLite 样本存储 / 脱敏 / 统计 | 602 |
-| OCR | src/ocr_provider.py | RapidOCR 屏幕区域监控 | 338 |
-| 备份 | src/backup.py | SQLite VACUUM INTO 在线备份 | 396 |
-| 日志 | src/logger.py | 结构化 JSON 日志 | — |
-| 错误报告 | src/error_reporter.py | 匿名错误上报 | — |
-| RIS | src/ris.py | RIS 数据库直连 | — |
+| 模块 | 文件 | 职责 |
+|------|------|------|
+| 引擎入口 | src/engine/（包） | RuleEngine 类，协调 NER + 规则 + 评分；对外经 `__init__.py` 兼容导出 |
+| 引擎核心 | src/engine/engine_core.py | 核心逻辑（Mixin） |
+| 服务端入口 | server/main.py | FastAPI 应用 + 全部 /api/v1 端点 + 静态托管 |
+| 数据库 | server/db.py | SQLAlchemy 连接（WAL + busy_timeout 30s + BEGIN IMMEDIATE）+ `get_db_path()` |
+| 数据模型 | server/models.py | ORM 模型定义（唯一 schema 真相源） |
+| 鉴权 | server/security.py | HMAC token / 登录锁定 / CORS |
+| 依赖注入 | server/deps.py | require_emp / require_admin / require_license |
+| 账号 | src/accounts.py | 账号管理（PBKDF2 600k） |
+| 授权 | src/license_utils.py | Ed25519 离线激活 / 浮动授权 |
+| 自动更新 | src/auto_updater.py | 更新检查 / 下载 / 安装 |
+| 样本库 | src/samplelib.py | 样本存取 / 脱敏 / 统计（走 ORM，与账号同库） |
+| OCR | src/ocr_provider.py | RapidOCR 屏幕区域监控 |
+| 备份 | src/backup.py | SQLite VACUUM INTO 在线备份 + 恢复（`_resolve_known` 统一路径解析） |
+| 日志 | src/logger.py | 结构化 JSON 日志 |
+| 错误报告 | src/error_reporter.py | 匿名错误上报 |
+| RIS | src/ris.py | RIS 数据库直连 |
 
 ---
 
@@ -315,7 +328,7 @@ Strict-Transport-Security: max-age=31536000; includeSubDomains
 │  │         ↕ SQLite               │  │
 │  │  ┌──────────────────────────┐  │  │
 │  │  │  %APPDATA%/MedicalReportQC/│  │  │
-│  │  │  qc.db / samples.db      │  │  │
+│  │  │  qc.db（单一库）           │  │  │
 │  │  └──────────────────────────┘  │  │
 │  └────────────────────────────────┘  │
 └──────────────────────────────────────┘

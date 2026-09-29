@@ -70,18 +70,19 @@ ruff check --select E9,F63,F7,F821,F822,F811,F401,F702,B018 src/ server/
 ```
 report-qc-app/
 ├── src/                     # 核心引擎（零第三方依赖为主）
-│   ├── engine.py            # 引擎入口
-│   ├── engine/              # 引擎子模块（Mixin 模式）
-│   ├── assets/              # 词表 JSON、OCR 模型
+│   ├── engine/              # ★ 质控引擎唯一实现（Mixin 模式，对外经 __init__.py 导出）
+│   ├── samplelib.py         # 样本库（走 server/db 的 ORM，与账号库同库）
+│   ├── backup.py            # 备份/恢复（_resolve_known 统一路径解析）
 │   ├── paths.py             # 资源路径解析（frozen 双模式）
 │   └── ...
 ├── server/                  # FastAPI 后端
-│   ├── main.py              # 应用入口 + 路由注册
-│   ├── models.py            # ORM 模型
+│   ├── main.py              # 应用入口 + 全部 /api/v1 端点 + 静态托管
+│   ├── db.py                # SQLAlchemy 数据层（唯一库位置定义）
+│   ├── models.py            # ★ ORM 模型（唯一 schema 真相源）
 │   ├── schemas.py           # Pydantic 模型
 │   ├── deps.py              # 依赖注入
 │   ├── security.py          # 鉴权
-│   └── routes/              # 路由模块（按领域拆分）
+│   └── routes/              # 路由模块（每个都必须被 main.py include_router）
 ├── web/static/              # SPA 前端
 │   ├── index.html           # SPA 入口
 │   ├── css/style.css        # 样式
