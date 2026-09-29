@@ -29,6 +29,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Fetch 离线 OCR 模型（Git LFS，仅 onnx）
+        # 2026-09-30 修复（发布级风险）：assets/ocr_models/*.onnx 自 8fd4e75 起
+        # 以 Git LFS 指针入库，而 actions/checkout 默认 lfs:false 只取到
+        # 131~133 字节的指针文本 —— PyInstaller 会把这些文本当模型打进 exe，
+        # 装完 OCR 直接失效（旧校验只数文件名，因此"看起来正常"）。
+        # 只拉 onnx（约 13MB），不拉 adapters/*.safetensors（约 319MB），
+        # 避免耗尽 GitHub LFS 免费配额（1GB/月）。
+        shell: bash
+        run: |
+          git lfs pull --include="assets/ocr_models/*.onnx"
+          echo "--- 拉取后实际大小（指针文件约 132B，真实模型 2.4M/10.7M/586K）---"
+          ls -l assets/ocr_models/
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
@@ -135,12 +148,13 @@ jobs:
           if-no-files-found: warn
 
       - name: Verify bundle (OCR 模型 + web 前端 + server 后端)
-        # 非阻断：确认关键资源真的打进了 dist（防止「假成功」）。
-        # 失败只告警，不影响已上传的 exe 产物与 Release 发布。
+        # 阻断式校验（2026-09-30 由「非阻断告警」改为阻断）：关键资源没打进 dist
+        # 就不许发 Release。历史教训：continue-on-error 让「下载即崩」的坏包流出。
+        # OCR 模型现在按**字节数**核对——只数文件名会放过 Git LFS 指针文件。
         shell: bash
         env:
           PYTHONUTF8: "1"
-        continue-on-error: true
+        continue-on-error: false
         run: |
           python - <<'PY'
           import os, sys
@@ -163,22 +177,48 @@ jobs:
               print("  opencv headless OK:", metadata.version("opencv-python-headless"))
           else:
               print("  FAIL: no opencv package found"); ok = False
-          # 2) 离线 OCR 模型：源(assets) 与 打包后(dist) 都要核对
+          # 2) 离线 OCR 模型：源(assets) 与 打包后(dist) 都按**字节数**核对。
+          #    只判断文件名存在是无效校验——Git LFS 指针文件（131~133B 文本）
+          #    也能通过，而它进 exe 后 OCR 直接失效（2026-09-30 修复的盲区）。
+          EXPECTED_ONNX = {
+              "ch_PP-OCRv3_det_infer.onnx": 2432880,
+              "ch_PP-OCRv3_rec_infer.onnx": 10690752,
+              "ch_ppocr_mobile_v2.0_cls_infer.onnx": 585532,
+          }
+          def check_ocr_models(label, d):
+              bad = []
+              for name, size in EXPECTED_ONNX.items():
+                  p = os.path.join(d, name)
+                  if not os.path.exists(p):
+                      print(f"  {label} MISSING: {name}"); bad.append(name); continue
+                  actual = os.path.getsize(p)
+                  if actual != size:
+                      hint = "（这是 Git LFS 指针文本，不是模型权重！）" if actual < 1024 else ""
+                      print(f"  {label} SIZE MISMATCH: {name} 期望 {size} 实际 {actual}{hint}")
+                      bad.append(name)
+              return bad
           src_dir = os.path.join("assets", "ocr_models")
-          src_files = sorted(os.listdir(src_dir)) if os.path.isdir(src_dir) else []
-          print("  SRC assets/ocr_models:", src_files)
-          if not src_files:
-              print("  SRC OCR models MISSING (checkout 未拉到 onnx?)"); ok = False
-          dist_onnx = []
+          if os.path.isdir(src_dir):
+              print("  SRC assets/ocr_models:", sorted(os.listdir(src_dir)))
+          else:
+              print("  SRC assets/ocr_models 目录不存在"); ok = False
+          src_bad = check_ocr_models("SRC", src_dir) if os.path.isdir(src_dir) else list(EXPECTED_ONNX)
+          if src_bad:
+              print("  SRC OCR 模型不可用（检查 checkout 是否拉到 LFS）"); ok = False
+          dist_dirs = []
           if os.path.isdir("dist"):
               for root, dirs, files in os.walk("dist"):
                   if os.path.basename(root) == "ocr_models":
-                      dist_onnx = sorted(f for f in files if f.endswith(".onnx"))
-          print("  DIST ocr_models onnx found:", dist_onnx)
-          if len(dist_onnx) < 3:
+                      dist_dirs.append(root)
+          if not dist_dirs:
               print("  DIST OCR models MISSING (PyInstaller 未打包 assets/ocr_models)"); ok = False
-          else:
-              print("  OCR models bundled OK")
+          dist_bad = []
+          for d in dist_dirs:
+              dist_bad += check_ocr_models(f"DIST[{d}]", d)
+          if dist_bad:
+              ok = False
+          if dist_dirs and not src_bad and not dist_bad:
+              print("  OCR models bundled OK (字节数已核对)")
           # 3) 前端 SPA 与后端必须打进 dist
           dist_index = []
           dist_server_main = []
