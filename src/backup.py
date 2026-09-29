@@ -67,51 +67,76 @@ def backup_dir() -> str:
 
 # ─── 备份核心 ──────────────────────────────────────────
 
-def _database_files() -> list[tuple[str, str]]:
-    """扫描需要备份的数据库文件。返回 (相对标签, 绝对路径) 列表。"""
-    from samplelib import db_path as _sample_db
-    from server.db import get_db_path as _qc_db
+def _resolve_known(fname: str) -> str:
+    """把一个已知文件名解析为它的**真实运行时位置**（备份与恢复的唯一解析入口）。
 
-    db_root = os.path.dirname(_sample_db())
-    pairs: list[tuple[str, str]] = []
-
-    # 样本库
-    sample_db = _sample_db()
-    if os.path.isfile(sample_db):
-        pairs.append(("samples.db", sample_db))
-
-    # 质控/账号库
+    2026-09-30 修复：此前备份只扫 <assets>/、恢复也只写回 <assets>/，但打包态下
+    qc.db / rules_config.json / ris_config.json / license.dat 的真实位置在用户
+    可写目录（见 src/paths.py），于是「恢复成功」但数据完全不生效。
+    备份与恢复共用本函数，保证两者永远指向同一个文件。
+    """
+    if fname in ("qc.db", "samples.db"):
+        from samplelib import db_path
+        return db_path()
+    if fname == "accounts.db":
+        from samplelib import db_path
+        return os.path.join(os.path.dirname(db_path()), "accounts.db")
     try:
-        qc_db = _qc_db()
-        if os.path.isfile(qc_db):
-            pairs.append(("qc.db", qc_db))
+        import paths as _p
+        fn = {"rules_config.json": _p.rules_config_path,
+              "ris_config.json": _p.ris_config_path,
+              "license.dat": _p.license_path}.get(fname)
+        if callable(fn):
+            return fn()
     except Exception:
-        # qc.db 可能不存在（未初始化时）
         pass
-
-    # 旧版账号库（兼容）
-    accounts_db = os.path.join(db_root, "accounts.db")
-    if os.path.isfile(accounts_db):
-        pairs.append(("accounts.db", accounts_db))
-
-    return pairs
-
-
-def _config_files() -> list[tuple[str, str]]:
-    """扫描需要备份的配置文件。"""
+    # 回退：<assets>/<name>
     try:
         import app_paths
         base = app_paths.frozen_resource_dir()
     except ImportError:
-        base = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    assets = os.path.join(base, "assets")
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "assets", fname)
 
-    files: list[tuple[str, str]] = []
-    for fname in ("license.dat", "rules_config.json", "ris_config.json"):
-        fp = os.path.join(assets, fname)
-        if os.path.isfile(fp):
-            files.append((fname, fp))
-    return files
+
+def _dedup_existing(cands: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """过滤不存在的文件，并按绝对路径去重（同一文件只备份一份）。"""
+    pairs: list[tuple[str, str]] = []
+    seen = set()
+    for label, p in cands:
+        if not p or not os.path.isfile(p):
+            continue
+        key = os.path.abspath(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append((label, p))
+    return pairs
+
+
+def _database_files() -> list[tuple[str, str]]:
+    """扫描需要备份的数据库文件。返回 (标签, 绝对路径) 列表。
+
+    2026-09-30：样本库与账号/科室库已统一为同一个 qc.db（见 server/db.py 与
+    src/samplelib.py 的路径修正），此前「样本库 + 质控库」会把同一文件备份两份。
+    """
+    sample_db = _resolve_known("samples.db")
+    qc_db = _resolve_known("qc.db")
+    cands: list[tuple[str, str]] = []
+    if qc_db and os.path.abspath(qc_db) == os.path.abspath(sample_db):
+        cands.append(("qc.db", qc_db))          # 已同库：只备一份
+    else:
+        cands.append(("samples.db", sample_db))
+        cands.append(("qc.db", qc_db))
+    cands.append(("accounts.db", _resolve_known("accounts.db")))   # 旧版账号库（兼容）
+    return _dedup_existing(cands)
+
+
+def _config_files() -> list[tuple[str, str]]:
+    """扫描需要备份的配置文件（按真实运行时位置解析，见 _resolve_known）。"""
+    return _dedup_existing(
+        [(fname, _resolve_known(fname))
+         for fname in ("license.dat", "rules_config.json", "ris_config.json")])
 
 
 def _vacuum_into(src_path: str, dest_path: str) -> bool:
@@ -280,52 +305,24 @@ def restore_backup(backup_name: str) -> dict[str, Any]:
 
     result: dict[str, Any] = {"ok": True, "restored": [], "errors": []}
 
-    # 判断文件类型
-    if ".db" in backup_name:
-        # 数据库文件
-        try:
-            import app_paths
-            base = app_paths.frozen_resource_dir()
-            assets = os.path.join(base, "assets")
-        except ImportError:
-            assets = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
-
-        # 根据文件名推断目标路径
-        dest = None
-        for known in ("samples.db", "qc.db", "accounts.db"):
-            if backup_name.startswith(known):
-                dest = os.path.join(assets, known)
-                break
-
-        if dest is None:
-            # 尝试从文件名提取
-            dest = os.path.join(assets, backup_name)
-
-        try:
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            # 数据库恢复：直接复制（VACUUM INTO 保证一致性）
-            shutil.copy2(src, dest)
-            result["restored"].append({"from": backup_name, "to": dest})
-        except Exception as e:
-            result["errors"].append(f"恢复失败: {e}")
-            result["ok"] = False
-    else:
-        # 配置文件
-        try:
-            import app_paths
-            base = app_paths.frozen_resource_dir()
-            assets = os.path.join(base, "assets")
-        except ImportError:
-            assets = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
-
-        dest = os.path.join(assets, backup_name)
-        try:
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            shutil.copy2(src, dest)
-            result["restored"].append({"from": backup_name, "to": dest})
-        except Exception as e:
-            result["errors"].append(f"恢复失败: {e}")
-            result["ok"] = False
+    # 目标路径解析（2026-09-30 修复）：必须与备份时的位置一致，否则打包态下
+    # 「恢复成功」但数据不生效（此前一律写回 <assets>/）。
+    dest = None
+    for known in ("samples.db", "qc.db", "accounts.db",
+                  "rules_config.json", "ris_config.json", "license.dat"):
+        if backup_name.startswith(known):
+            dest = _resolve_known(known)
+            break
+    if dest is None:
+        dest = _resolve_known(backup_name)
+    try:
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        # 数据库用 VACUUM INTO 产出，直接复制即可（内容一致且完整）
+        shutil.copy2(src, dest)
+        result["restored"].append({"from": backup_name, "to": dest})
+    except Exception as e:
+        result["errors"].append(f"恢复失败: {e}")
+        result["ok"] = False
 
     return result
 

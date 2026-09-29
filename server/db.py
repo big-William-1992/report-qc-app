@@ -9,6 +9,7 @@ server/db.py — SQLAlchemy 统一数据层
 import os
 import sys
 import hashlib
+from typing import Optional
 from urllib.parse import quote as _urlquote
 
 from sqlalchemy import create_engine, event
@@ -34,10 +35,15 @@ else:
     _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 2026-08-24：URL 编码空格/特殊字符（Windows 用户名含空格时
 # sqlite:///C:\Users\John Doe\... 会被 SQLAlchemy 误解析）
-_DEFAULT_DB = "sqlite:///" + _urlquote(
-    os.path.join(_PROJECT_ROOT, "qc.db").replace("\\", "/"),
-    safe="/:",
-)
+#
+# 2026-09-30 修正（源码态库位置分裂）：
+# 此处此前写的是 os.path.join(_PROJECT_ROOT, "qc.db")，漏了 "assets" 段——
+# 与本文件顶部的声明、src/paths.qc_db_path()、src/samplelib.db_path() 三处
+# 「应为 <root>/assets/qc.db」的口径全部不一致。后果：源码运行时账号/科室/
+# 队列/设置落 <root>/qc.db，样本落 <root>/assets/qc.db，多用户的数据归属
+# 无法靠同库约束保证（打包态两者恰好同目录，所以问题一直没暴露）。
+_DEFAULT_DB_FILE = os.path.abspath(os.path.join(_PROJECT_ROOT, "assets", "qc.db"))
+_DEFAULT_DB = "sqlite:///" + _urlquote(_DEFAULT_DB_FILE.replace("\\", "/"), safe="/:")
 
 DATABASE_URL = os.environ.get("DATABASE_URL", _DEFAULT_DB)
 
@@ -84,6 +90,89 @@ def set_database_override(url: str) -> None:
     SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
 
+def get_db_path() -> Optional[str]:
+    """当前数据库的 SQLite 文件绝对路径；非 SQLite 后端（如 PostgreSQL）返回 None。
+
+    2026-09-30 新增：src/backup.py 自 v4.3.6 起一直写
+    `from server.db import get_db_path`，但本函数从未存在——该 ImportError 在
+    _database_files() 里未被 try 包住（try 只包住了调用处），直接向上抛出，
+    于是 POST /api/v1/admin/backup/run 返回 500、每日自动备份被调度器
+    静默吞掉，备份功能整体失效且无任何告警。
+    """
+    if engine.url.get_backend_name() != "sqlite":
+        return None
+    db_file = engine.url.database
+    return os.path.abspath(str(db_file)) if db_file else None
+
+
+def _migrate_legacy_root_db(eng) -> None:
+    """把历史上误落在 <root>/qc.db 的数据一次性并回 assets/qc.db（幂等）。
+
+    2026-09-30：修正默认库路径前，源码运行把 users/departments/queue/settings/
+    orders/audit_log 写进了 <root>/qc.db。不改回会导致「账号/科室/历史队列消失」。
+    逐表按列交集 INSERT OR IGNORE；目标表已有数据则整表跳过；旧文件保留不删。
+
+    仅在**未被覆盖的默认库**上执行：测试/多实例通过 DATABASE_URL、
+    QC_APPDATA 或 set_database_override 指定临时库时绝不搬运开发库数据。
+    """
+    if eng.url.get_backend_name() != "sqlite":
+        return
+    target = eng.url.database
+    if not target or os.path.abspath(str(target)) != _DEFAULT_DB_FILE:
+        return
+    legacy = os.path.join(_PROJECT_ROOT, "qc.db")
+    if os.path.abspath(legacy) == os.path.abspath(str(target)):
+        return
+    if not os.path.isfile(legacy):
+        return
+    try:
+        from server import models  # noqa: F401  确保模型注册到 Base.metadata
+        tables = [t.name for t in Base.metadata.sorted_tables]
+        moved = []
+        with eng.begin() as conn:
+            conn.exec_driver_sql("ATTACH DATABASE ? AS legacy", (legacy,))
+            try:
+                for t in tables:
+                    try:
+                        n = conn.exec_driver_sql(
+                            f"SELECT COUNT(*) FROM main.{t}").scalar()
+                        if n:
+                            continue   # 目标已有数据，不覆盖
+                        # 安全说明：表名来自 models 声明、列名来自 PRAGMA，
+                        # 均为本进程内白名单，非外部输入；无值拼接。
+                        main_cols = [r[1] for r in conn.exec_driver_sql(
+                            f"PRAGMA main.table_info({t})")]
+                        leg_cols = [r[1] for r in conn.exec_driver_sql(
+                            f"PRAGMA legacy.table_info({t})")]
+                        common = [c for c in main_cols if c in leg_cols]
+                        if not common:
+                            continue
+                        cc = ",".join(common)
+                        conn.exec_driver_sql(
+                            f"INSERT OR IGNORE INTO main.{t} ({cc}) "
+                            f"SELECT {cc} FROM legacy.{t}")
+                        moved.append(t)
+                    except Exception:
+                        continue   # 单表失败不影响其他表
+            finally:
+                try:
+                    conn.exec_driver_sql("DETACH DATABASE legacy")
+                except Exception:
+                    pass
+        if moved:
+            try:
+                from .log_utils import log_quiet
+            except ImportError:
+                from log_utils import log_quiet
+            log_quiet(__name__)
+    except Exception:
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(__name__)
+
+
 def init_db() -> None:
     """建表（幂等）。延迟 import models 以避免循环依赖。"""
     from server import models  # noqa: F401  确保模型注册到 Base.metadata
@@ -95,6 +184,7 @@ def init_db() -> None:
         if _dir:
             os.makedirs(_dir, exist_ok=True)
     Base.metadata.create_all(bind=engine)
+    _migrate_legacy_root_db(engine)
     _migrate_queue_hash(engine)
     _migrate_settings_uk(engine)
 
