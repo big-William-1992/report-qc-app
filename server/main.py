@@ -2074,8 +2074,12 @@ class _NoCacheStaticFiles(StaticFiles):
 
 
 # ── 路由模块注册（2026-09-09）──────────────────────────────────────────
-# route_push 定义在 server/routes/ 下，含 PACS 推送端点。
-# route_account 有缺失 schema（RegisterReq/ChangePwdReq），暂不注册。
+# 2026-09-30 清理：server/routes/ 下原有 10 个「未注册的重复路由模块」
+# （account/feedback/license/ocr/qc/queue/ris/sample/screen/settings）已删除——
+# 它们从未被 include_router（见 git 历史 8f5b274），且内容比 main.py 陈旧
+# （例如 route_qc 的规则保存缺少 _reload_engine_rules()），属于「两套实现」隐患。
+# 现仅保留真正注册的 route_push。若日后要继续拆分路由，请一次拆完并删除
+# main.py 中的同名端点，否则 tests/test_single_implementation.py 会失败。
 from server.routes.route_push import router as _router_push
 app.include_router(_router_push)
 

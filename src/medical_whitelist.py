@@ -157,7 +157,8 @@ def _collect_from_engine_region() -> Set[str]:
     """从 engine.REGION_LEXICON 收集 R17 逐部位比对词表"""
     words: Set[str] = set()
     try:
-        from rules_region import REGION_LEXICON
+        # 2026-09-30：原指向 src/rules_region.py（已删除的死引擎栈），改指活引擎包。
+        from engine.lexicon_region import REGION_LEXICON
         for _key, meta in REGION_LEXICON.items():
             base = meta.get("base", "")
             if base:
@@ -173,7 +174,8 @@ def _collect_typo_correct_side() -> Set[str]:
     """从 TYPO_MAP_DEFAULT 收集已知正确写法（错词映射的正确侧）"""
     words: Set[str] = set()
     try:
-        from engine_config import TYPO_MAP_DEFAULT
+        # 2026-09-30：原指向 src/engine_config.py（已删除的死引擎栈），改指词表真源。
+        from typo_lexicon import TYPO_MAP_DEFAULT
         for _wrong, correct in TYPO_MAP_DEFAULT.items():
             if len(correct) >= 2:
                 words.add(correct)

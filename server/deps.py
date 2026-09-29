@@ -399,7 +399,7 @@ def _settings_path() -> str:
 
 
 # ── 登录频率限制（防爆破） ──────────────────────────────────────────────────
-# 统一为 emp_id 维度的内存限流，避免 main.py / route_account.py 各写一套口径。
+# 统一为 emp_id 维度的内存限流，避免各端点各写一套口径。
 _LOGIN_FAIL_LIMIT = int(os.environ.get("QC_LOGIN_FAIL_LIMIT", "5"))   # 最大失败次数
 _LOGIN_FAIL_WINDOW = int(os.environ.get("QC_LOGIN_FAIL_WINDOW", "600"))  # 累计窗口（秒）
 _LOGIN_LOCK_DURATION = int(os.environ.get("QC_LOGIN_LOCK_SECONDS", "900"))  # 锁定时长（秒）

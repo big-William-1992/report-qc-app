@@ -162,7 +162,7 @@ class TestCaptureAndQc(unittest.TestCase):
         self.patcher_avail = mock.patch.object(
             appmod.ocr_provider, "availability", return_value=(True, ""))
         # _capture_and_qc 实际调用 engine.extract_meta_full（基础信息区结构化解析）——
-        # 拆分后 extract_meta_full 内部调用 engine_meta 的原始 extract_meta，
+        # extract_meta_full 内部调用 engine/meta_extract 的 extract_meta，
         # mock 门面上的 extract_meta 不再拦截，故直接 mock extract_meta_full。
         self.patcher_meta = mock.patch.object(
             appmod.engine, "extract_meta_full",
