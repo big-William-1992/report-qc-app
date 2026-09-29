@@ -1,6 +1,16 @@
-# 二进制模型与产物：建议用 Git LFS 管理（当前仓库未启用 LFS，先标注意图；
-# 后续 `git lfs migrate` 迁移历史时按此规则自动处理）。
-*.onnx filter=lfs diff=lfs merge=lfs -text
+# 二进制模型与产物
+#
+# 2026-09-30 决定：OCR 模型（assets/ocr_models/*.onnx，共约 13MB）**不进 LFS**，
+# 作为普通文件直接入库。原因（一次真实事故）：
+#   *.onnx 曾被标为 LFS 后，仓库里的 blobs 变成 131~133 字节的指针文本；
+#   而 actions/checkout 默认 lfs:false、任何没装 git-lfs 的克隆/Docker 构建
+#   拿到的也是指针 → PyInstaller 把指针当模型打进 exe，装机后「屏幕区域 OCR」
+#   静默失效（旧校验只数文件名，全程绿灯）。13MB 换掉这一整类故障是划算的。
+#   打包校验另有按字节数核对的阻断式断言（见 .github/workflows/build-windows.yml）。
+#
+# 训练权重（几百 MB）仍走 LFS —— 那才是 LFS 的正确用法。
+*.safetensors filter=lfs diff=lfs merge=lfs -text
+# 数据库与压缩产物不入库（见 .gitignore），此处仅兜底防误提交。
 *.db filter=lfs diff=lfs merge=lfs -text
 *.zip filter=lfs diff=lfs merge=lfs -text
 # 统一换行（Windows 构建环境友好）
@@ -10,4 +20,3 @@
 *.md text eol=lf
 # Windows 批处理必须 CRLF（LF 会导致 cmd 解析异常/标签跳转错乱）
 *.bat text eol=crlf
-*.safetensors filter=lfs diff=lfs merge=lfs -text

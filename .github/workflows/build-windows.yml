@@ -29,17 +29,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Fetch 离线 OCR 模型（Git LFS，仅 onnx）
-        # 2026-09-30 修复（发布级风险）：assets/ocr_models/*.onnx 自 8fd4e75 起
-        # 以 Git LFS 指针入库，而 actions/checkout 默认 lfs:false 只取到
-        # 131~133 字节的指针文本 —— PyInstaller 会把这些文本当模型打进 exe，
-        # 装完 OCR 直接失效（旧校验只数文件名，因此"看起来正常"）。
-        # 只拉 onnx（约 13MB），不拉 adapters/*.safetensors（约 319MB），
-        # 避免耗尽 GitHub LFS 免费配额（1GB/月）。
+      - name: Fetch 离线 OCR 模型（防御性：onnx 已改为普通文件入库）
+        # 2026-09-30 说明：*.onnx 曾以 Git LFS 指针入库，而 actions/checkout 默认
+        # lfs:false 只取到 131~133 字节的指针文本 → PyInstaller 把指针当模型打进
+        # exe，装机后 OCR 静默失效（旧校验只数文件名，所以"看起来正常"）。
+        # 现在 .gitattributes 已把 *.onnx 移出 LFS，克隆/构建**无需 git-lfs** 即可
+        # 拿到真实模型；本步骤保留作兜底：万一将来有人又把 onnx 标回 LFS，这里
+        # 仍能拉到真实内容（没有匹配对象时不下载任何东西，无副作用）。
+        # 真正的防线是下面 Verify bundle 里**按字节数**核对的阻断式断言。
         shell: bash
         run: |
-          git lfs pull --include="assets/ocr_models/*.onnx"
-          echo "--- 拉取后实际大小（指针文件约 132B，真实模型 2.4M/10.7M/586K）---"
+          git lfs pull --include="assets/ocr_models/*.onnx" || true
+          echo "--- OCR 模型实际大小（应为 2432880 / 10690752 / 585532）---"
           ls -l assets/ocr_models/
 
       - name: Set up Python 3.12
