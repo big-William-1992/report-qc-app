@@ -23,20 +23,41 @@ python3 tools/run_eval.py --save
 
 ## 当前基线（benchmarks/eval_baseline.json）
 
-| 链路 | recall | specificity | 样本量 | 记录时间 |
-|---|---|---|---|---|
-| `rules` | 100.0% | 100.0% | 91 错 + 109 正常 = 200 | 2026-08-25 |
-| `llm` | **未记录** | **未记录** | — | — |
+| 链路 | recall | specificity | 样本量 | 耗时 | 记录时间 |
+|---|---|---|---|---|---|
+| `rules` | 100.0% | 100.0% | 91 错 + 109 正常 = 200 | 20s | 2026-09-30 |
+| `llm`（微调 Qwen3-4B LoRA，MLX，`prompt_mode=ft`） | **9.9%** | 100.0% | 同上 | 479s（≈2.4s/例） | 2026-09-30 |
 
-> ⚠️ **LLM 基线尚未记录**，需要在装有模型的机器上跑一次 `python3 tools/run_eval.py --llm --save`。
-> 两种可用形态（见 `DEPLOYMENT.md`）：
-> - Ollama：`ollama create qc-qwen3 -f merged/Modelfile` 后把 `src/llm_config.json` 的
->   `provider=ollama, model=qc-qwen3, prompt_mode=ft`；
-> - MLX：`pip install mlx mlx-lm` 后 `provider=mlx` + `adapter_path=saves/qwen3-4b-qc-lora-v2`。
->
-> 只装了 `onnxruntime` 而没有 `mlx-lm` / Ollama 的环境，`--llm` 会走优雅降级
-> （`available=false`，规则结果不受影响，见 `tests/test_llm_degrade.py`），
-> 此时**不会**产出有意义的 LLM 指标——不要把这种运行结果当成基线保存。
+跑法（本机 `mlx_lm` 装在 Homebrew python，不在项目托管 venv 里）：
+
+```bash
+/opt/homebrew/bin/python3 tools/run_eval.py --llm --save
+```
+
+### 怎么读这个 9.9%（重要，别误读）
+
+1. **不是"模型坏了"**：同一份实测显示它 `specificity=100%`——109 份正常报告
+   **零误报**；200 例中有大量报告它直接输出 `[]`（保守）。基线里保留了 20 条漏检
+   与 10 条误报示例可供复盘。
+2. **也不是"LLM 没用"**：这套评测集的标签是**规则注入/规则蒸馏**的确定性错误
+   （错别字、左右混淆、描述-结论矛盾…），而 LLM 层的设计定位恰是抓
+   **规则抓不到的语义级错误**，且系统提示里明确要求"不重复规则已能判定的硬错误"。
+   → 该集**测不出 LLM 的目标价值**，只测"它与规则的重合度"。
+3. **`prompt_mode` 必须保持 `ft`**，这一点有实测对照（同 20 例、同一模型）：
+   | prompt_mode | recall | specificity | 发现数 | 零输出例数 |
+   |---|---|---|---|---|
+   | `ft`（简洁，与训练分布对齐） | 18.2% | **100.0%** | 6 | 15/20 |
+   | `full`（taxonomy + RAG） | 0.0% | **0.0%** | 25 | 0/20 |
+   `full` 模式对**每一份**报告都报错（含全部正常报告），还会编造出不在允许清单里的
+   `error_type` —— 这就是 `docs/LLM_MODEL_DEPLOYMENT.md`（第七节关键参数说明）里"会诱导幻觉（凑错误类型）"的实测证据。
+
+### 因此，下一步该做的不是"调 prompt"，而是补评测集
+
+- 建一套**语义级错误**的人工标注集（随访建议缺失、良恶性与处置建议不匹配、
+  叙事/用语规范等），才能量化 LLM 的增量价值；标注范式见
+  `docs/LLM质控数据标注范式.md`。
+- 若还希望 LLM 兼任"确定性错误的第二道复核"，则要针对性地扩充对应训练数据，
+  否则就明确把 LLM 定位为**语义补充**，不要用本集数字当它的 KPI。
 
 ## 读指标时的两个坑
 

@@ -52,6 +52,11 @@
   `db="error: TypeError"`。后果：探活永远"绿"，真正的连库/缺表故障查不出来
   （CI 的 launch-test 与桌面壳就绪判断都看这个接口）。修复：显式取
   `SessionLocal`，并额外探一次 `samples` 表（能发现"库在但表缺失"）。
+- **LLM 模型部署指南被整体覆盖**：v4.3.6 的 `d73e2b9` 把 `DEPLOYMENT.md`
+  （LLM 质控模型部署指南，155 行）替换成了「科室多机部署手册」，原内容只剩在
+  git 历史里——「应用怎么部署」与「模型怎么部署」是两件事，不该互相覆盖。
+  修复：从 `723531b` 恢复为独立文档 `docs/LLM_MODEL_DEPLOYMENT.md`
+  （并在 `prompt_mode` 行补入实测对照），README 文档导航补一行。
 
 ### 变更 (Changed)
 - **samplelib 并轨 ORM**：`src/samplelib.py` 不再自建裸 `sqlite3` 连接与手写
@@ -67,6 +72,10 @@
   `include_router` 的路由模块 + `server/static_spa.py`（实测 49 处「路径+方法」
   重复注册，后注册者永不生效）。
 - **版本号**：`4.3.6` → `4.3.7`
+- **OCR 模型移出 Git LFS**：`assets/ocr_models/*.onnx`（约 13MB）改为普通文件
+  入库，从根上消灭「没有 git-lfs 的克隆/CI/Docker 构建拿到 131~133 字节指针、
+  再把指针打进 exe」这一整类故障。训练权重 `*.safetensors` 仍走 LFS。
+  已验证：把 LFS 过滤器替换为 `cat` 后浅克隆，三个模型字节数完全正确。
 
 ### 新增 (Added)
 - **回归守卫测试**（+32 用例，均为此前完全没有覆盖的路径）：
@@ -83,9 +92,20 @@
     统计可读；store 在全新库上「用前自愈」。
   - `tests/test_health_endpoint.py`：health 必须报 `db=connected`，且在
     `samples` 表缺失时**必须**报错（证明探针真的在查库）。
-- `benchmarks/README.md`：评测口径说明，并**明确标注 LLM 基线尚未记录**
-  （需在装有 MLX 或 Ollama+GGUF 的机器上跑 `tools/run_eval.py --llm --save`）。
-- `AGENTS.md` 新增 4 节：单一实现约定、数据层约定、Git LFS 约定、测试隔离。
+- `benchmarks/README.md`：评测口径说明、**首次记录 LLM 基线**，并给出读法与
+  下一步。实测（微调 Qwen3-4B LoRA / MLX / `prompt_mode=ft`，200 例）：
+
+  | 链路 | recall | specificity | 耗时 |
+  |---|---|---|---|
+  | rules | 100.0% | 100.0% | 20s |
+  | llm | 9.9% | 100.0% | 479s |
+
+  同 20 例的 `prompt_mode` 对照：`ft` → 18.2% / **100%**；`full` → 0% / **0%**
+  （对每份报告都报，含正常报告）——实测证实"必须用 ft、full 会诱导幻觉"。
+  9.9% 的解读已写入该文档：本集标签是**规则注入**的确定性错误，测不出 LLM 的
+  目标价值（语义级漏报），只反映"与规则的重合度"；下一步应补语义错误标注集。
+- `AGENTS.md` 新增 4 节：单一实现约定、数据层约定（含两处刻意保留的裸 sqlite3）、
+  Git LFS 约定（onnx 不再进 LFS）、测试隔离。
 
 ### 文档 (Docs)
 - `ARCHITECTURE.md`：修正引擎/服务端目录树（删掉已删模块）、数据层章节

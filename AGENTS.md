@@ -86,19 +86,25 @@
   而打包态真实位置在用户目录 → 「恢复成功」却不生效）。
 - 改动数据层后至少跑：`tests/test_data_layer_unified.py`、
   `tests/test_sample_user.py`、`tests/test_export_import.py`。
+- **刻意保留的裸 sqlite3（不要"顺手统一"掉）**：
+  - `src/badcase_store.py` —— 它用**独立的 `feedback.db`**（不与 qc.db 同库，
+    便于诊断包单独导出/精调管线消费），不是"同库双轨"；
+  - `src/backup.py` —— 用 `sqlite3` 做 `VACUUM INTO` 与完整性校验，属**文件级**
+    操作，天然不属于 ORM 语义。
+  这两处的 sqlite3 是有意为之；`src/samplelib.py` 的裸 sqlite3 已并轨 ORM。
 
-## 9. Git LFS：模型文件是 LFS 指针，别把指针打进安装包
+## 9. Git LFS：只给训练权重用，OCR 模型（13MB）现在是普通文件
 
-- `assets/ocr_models/*.onnx`、`adapters/**/*.safetensors` 等由 `.gitattributes`
-  标记为 LFS。**没有 git-lfs 的克隆/checkout 拿到的是 131~133 字节的指针文本**。
-- CI 里 `actions/checkout` 默认 `lfs: false`，所以需要模型的 job 必须显式拉取：
-  ```yaml
-  - run: git lfs pull --include="assets/ocr_models/*.onnx"   # 只拉 13MB，别拉 319MB 的 adapters
-  ```
-- 打包校验必须按**字节数**核对模型（`2432880 / 10690752 / 585532`），
-  只判断文件名会把指针文本当成"模型齐全"。
-- 提交前留意 `git status`：若 `*.onnx` 显示 modified 而你没动过它，那是 LFS
-  过滤器在比对（HEAD 里是真实二进制、工作区过 clean 后是指针），**不要提交**。
+- **`assets/ocr_models/*.onnx` 不进 LFS**（2026-09-30 起）：约 13MB，作为普通
+  二进制直接入库。原因见 `.gitattributes` 注释——曾标为 LFS 后，仓库里变成
+  131~133 字节的指针文本，任何没装 git-lfs 的克隆/CI/Docker 构建都会把指针
+  打进 exe，装机后「屏幕区域 OCR」静默失效。**不要**再给 `*.onnx` 加 LFS 规则。
+- `adapters/**/*.safetensors`、`saves/**/*.safetensors`（几百 MB）**仍走 LFS**，
+  那才是 LFS 的正确用法；没有 git-lfs 的克隆拿到的是指针，属预期。
+- 打包校验必须按**字节数**核对 OCR 模型（`2432880 / 10690752 / 585532`），
+  只判断文件名会把指针文本当成"模型齐全"（校验已是阻断式）。
+- 若在 CI 里额外 `git lfs pull`，请限定 `--include`，别把 319MB 的 adapters
+  全拉下来（会吃掉 GitHub LFS 免费配额 1GB/月）。
 
 ## 10. 测试隔离与本地库
 

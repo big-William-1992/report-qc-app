@@ -18,6 +18,7 @@
 | [USER_GUIDE.md](USER_GUIDE.md) | 用户指南——面向放射科医生的操作手册 |
 | [CHANGELOG.md](CHANGELOG.md) | 变更日志——版本历史 |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | 部署指南——多机部署、浮动授权、离线更新 |
+| [docs/LLM_MODEL_DEPLOYMENT.md](docs/LLM_MODEL_DEPLOYMENT.md) | LLM 语义质控模型部署——Ollama/MLX/云端三形态、`prompt_mode` 参数 |
 | [DATA_SECURITY.md](DATA_SECURITY.md) | 数据安全白皮书——架构安全、加密、备份 |
 | [PRIVACY_POLICY.md](PRIVACY_POLICY.md) | 隐私政策——PIPL 合规 |
 | [TERMS_OF_SERVICE.md](TERMS_OF_SERVICE.md) | 服务条款——¥59/年定价、退款政策 |
