@@ -913,6 +913,12 @@ except Exception:
 try:
     samplelib.migrate_legacy_samples()
     samplelib.rescue_samples_conv()   # 抢救 samples_conv_old 滞留历史样本（2026-08-18 P0）
+    # 医生反馈库（独立 feedback.db，2026-08-25 P1-4）。
+    # 2026-09-30 修复：此前启动流程从未调用 badcase_store.init_db()，导致
+    # /api/v1/feedback 必然 "no such table: feedback" 并被吞成「暂存失败」。
+    # badcase_store 现已改为用前自愈，这里再显式建一次，保证启动即可用。
+    import badcase_store as _bcs
+    _bcs.init_db()
     _migrate_queue_to_db()
     _migrate_settings_to_db()
     # 导出产物兜底清理（2026-08-18）：下载中断/未触发下载时文件残留，
@@ -1481,11 +1487,20 @@ def health():
     data: Dict[str, Any] = {"status": "up", "version": APP_VERSION}
 
     # DB 连通性检测
+    # 2026-09-30 修复：此前写的是 `with _db_mod.get_db() as _sess:` —— 但 get_db()
+    # 是 FastAPI 的**生成器依赖**（yield 会话），不是上下文管理器，直接抛
+    # TypeError。结果是 /api/v1/health 永远返回 db="error: TypeError"：
+    # 探活永远"绿"、真正的连库故障永远查不出来（CI 的 launch-test 正是探这个接口）。
+    # 现改为显式取 SessionLocal 并关掉，同时探一次 samples 表（能发现"库在但表缺失"）。
     try:
         from server import db as _db_mod
         from sqlalchemy import text as _text
-        with _db_mod.get_db() as _sess:
+        _sess = _db_mod.SessionLocal()
+        try:
             _sess.execute(_text("SELECT 1"))
+            _sess.execute(_text("SELECT COUNT(*) FROM samples"))
+        finally:
+            _sess.close()
         data["db"] = "connected"
     except Exception as _db_exc:
         data["db"] = f"error: {type(_db_exc).__name__}"

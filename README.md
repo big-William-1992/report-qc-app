@@ -312,6 +312,6 @@ ruff check --select E9,F63,F7,F821,F822,F811,F401,F702,B018 src/ server/
 
 > 完整测试策略见 [TESTING_STRATEGY.md](TESTING_STRATEGY.md)。
 
-- 单元测试：417 收集 / 415 通过 / 7 跳过（pytest；受限沙箱下另有 2 项因禁止写用户目录而失败，非缺陷）
+- 单元测试：424 收集 / 422 通过 / 7 跳过（pytest；受限沙箱下另有 2 项因禁止写用户目录而失败，非缺陷）
 - E2E 测试：Playwright
 - CI 门禁：pytest 全量 + ruff 致命规则

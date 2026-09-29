@@ -47,17 +47,44 @@ def _db_path(path: Optional[str] = None) -> str:
         return os.path.join(user_data_dir(), _DB_NAME)
 
 
+def init_db(path: str = None) -> None:
+    """建表（幂等）。record/stats/list_recent 也会自动确保建表，见 _ensure。"""
+    _ensure(path)
+
+
+# 已确保建表的库（按绝对路径缓存）。2026-09-30 修复：此前只有显式调用 init_db()
+# 才会建表，而 server/main.py 的启动流程**从未调用**它 —— 于是生产环境
+# POST /api/v1/feedback 必然抛 "no such table: feedback"，被端点吞成
+# 「反馈暂存失败（不影响质控结果）」，医生反馈全部丢失且无人知晓。
+# 现在改为「用前自愈」：任何写入/读取入口都会先确保表存在。
+_ENSURED: set = set()
+
+
+def _ensure(path: Optional[str] = None) -> str:
+    """确保 feedback 表存在（幂等）。返回库文件路径。"""
+    p = _db_path(path)
+    key = os.path.abspath(p)
+    if key in _ENSURED and os.path.exists(p):
+        return p
+    d = os.path.dirname(p)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    c = sqlite3.connect(p, timeout=30)
+    try:
+        c.executescript(_SCHEMA)
+        c.commit()
+    finally:
+        c.close()
+    _ENSURED.add(key)
+    return p
+
+
 def _conn(path: Optional[str] = None) -> sqlite3.Connection:
-    c = sqlite3.connect(_db_path(path), timeout=30)
+    c = sqlite3.connect(_ensure(path), timeout=30)
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA busy_timeout=30000")
     c.row_factory = sqlite3.Row
     return c
-
-
-def init_db(path: str = None) -> None:
-    with _conn(path) as c:
-        c.executescript(_SCHEMA)
 
 
 _VALID_TYPES = {"false_positive", "missed", "wrong_type", "other"}

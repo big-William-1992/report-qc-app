@@ -39,6 +39,19 @@
   R19 按长度分别并入「安全词」与「覆盖区间」。同时收紧
   `tests/test_r19_sensitivity.py` 的 `or` 联合断言（正是它掩盖了该缺陷）。
 - **跨机合并/导入丢失科室归属**：`_import_rows` 的 INSERT 漏了 `dept_id` 列。
+- **医生反馈（badcase 回流）整条链路从未可用**：`badcase_store` 的 `feedback`
+  表只在显式调用 `init_db()` 时创建，而启动流程**从未调用**它 → 生产环境
+  `POST /api/v1/feedback` 必然 `no such table: feedback`，被端点吞成
+  ok=False「反馈暂存失败」并返回 HTTP 200 → 医生点的每一次「误报/漏报」静默丢失。
+  （`tests/test_badcase_store.py` 没抓到是因为它自己先调了 `init_db()`，
+  即由测试代劳了生产没做的前置条件。）修复：`badcase_store` 改为「用前自愈」
+  （record/stats/list_recent 自动确保建表），启动流程再显式建一次。
+- **`/api/v1/health` 的 DB 探针永远失败**：实现写的是
+  `with _db_mod.get_db() as _sess:`，但 `get_db()` 是 FastAPI 的**生成器依赖**
+  （yield 会话），不是上下文管理器 → 每次抛 TypeError 被吞成
+  `db="error: TypeError"`。后果：探活永远"绿"，真正的连库/缺表故障查不出来
+  （CI 的 launch-test 与桌面壳就绪判断都看这个接口）。修复：显式取
+  `SessionLocal`，并额外探一次 `samples` 表（能发现"库在但表缺失"）。
 
 ### 变更 (Changed)
 - **samplelib 并轨 ORM**：`src/samplelib.py` 不再自建裸 `sqlite3` 连接与手写
@@ -56,7 +69,7 @@
 - **版本号**：`4.3.6` → `4.3.7`
 
 ### 新增 (Added)
-- **回归守卫测试**（+25 用例，均为此前完全没有覆盖的路径）：
+- **回归守卫测试**（+32 用例，均为此前完全没有覆盖的路径）：
   - `tests/test_single_implementation.py`：引擎必须命中包、旧模块不得复活、
     `server/routes/` 每个模块必须真被注册、同一路径+方法不得注册两次。
   - `tests/test_data_layer_unified.py`：样本库与 ORM 必须同库、schema 只有一个
@@ -66,6 +79,10 @@
   - `tests/test_llm_degrade.py`：LLM 不可用/报错时规则结果照常返回、
     两个端点的契约键恒在（此前 `run_full_qc` 零测试覆盖，而「模型未部署」
     正是默认状态）。
+  - `tests/test_feedback_endpoint.py`：从 HTTP 入口提交反馈必须真落库、可导出、
+    统计可读；store 在全新库上「用前自愈」。
+  - `tests/test_health_endpoint.py`：health 必须报 `db=connected`，且在
+    `samples` 表缺失时**必须**报错（证明探针真的在查库）。
 - `benchmarks/README.md`：评测口径说明，并**明确标注 LLM 基线尚未记录**
   （需在装有 MLX 或 Ollama+GGUF 的机器上跑 `tools/run_eval.py --llm --save`）。
 - `AGENTS.md` 新增 4 节：单一实现约定、数据层约定、Git LFS 约定、测试隔离。
@@ -78,7 +95,7 @@
   `qwen2.5:3b` 且缺 `prompt_mode`，照抄会诱导幻觉。
 
 ### 测试 (Test)
-- 全量 **415 passed / 7 skipped**（新增 25 用例零回归）；ruff 致命规则全绿。
+- 全量 **422 passed / 7 skipped**（新增 32 用例零回归）；ruff 致命规则全绿。
   （受限沙箱下另有 2 项因被禁止写用户目录而失败，属环境限制非缺陷。）
 
 ---
