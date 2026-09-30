@@ -21,6 +21,25 @@
 
 ---
 
+## 0.5 已备好的小样本（10 条，可直接开跑）
+
+为了把"从零开始"的成本压到最低，已生成一组**10 条样例候选**与医生说明：
+
+| 文件 | 用途 |
+|---|---|
+| [`data/semantic_eval/candidates_sample10.jsonl`](../data/semantic_eval/candidates_sample10.jsonl) | 10 份脱敏报告（胸腔/腹部/头颅/盆腔/甲状腺/乳腺/腰椎/膝/颈椎/肱骨），`label` 已留空，并附**系统当时的判定** `engine_snapshot_at_creation` 供对照 |
+| [`docs/医生标注说明_10条样例.md`](医生标注说明_10条样例.md) | 给医生的**一页纸**说明：填哪 5 个字段、错误类型怎么选、3 条判定原则、填好的样子 |
+
+流程：医生照说明填 `label` 并把 `label_source` 改成 `human` → 交回 → 跑
+
+```bash
+python3 tools/semantic_eval.py validate data/semantic_eval/candidates_sample10.jsonl
+python3 tools/semantic_eval.py score    data/semantic_eval/candidates_sample10.jsonl --json
+```
+
+即可得到**检出率 / 误报率**与分层结果。
+> 10 条只够"跑通链路"，不足以作为效能结论；正式评测建议按 §2 扩到 100–300 条。
+
 ## 1. 三分钟流程
 
 ```bash
