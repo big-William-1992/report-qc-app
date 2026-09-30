@@ -315,10 +315,36 @@ def get_backup_status() -> dict[str, Any]:
     }
 
 
+def _safe_backup_path(backup_name: str) -> Optional[str]:
+    """把 backup_name 解析为**保证位于备份目录内**的绝对路径；越界返回 None。
+
+    2026-09-30 安全修复：此前 `os.path.join(bdir, backup_name)` 直接落地，
+    `backup_name="../../../../tmp/evil.db"` 可解析到备份目录之外 —— 配合
+    `POST /api/v1/admin/backup/restore` 即成为**任意文件读取/复制**原语
+    （admin 权限，但足以把任意文件复制进数据库位置）。
+
+    判据用 realpath（解析符号链接）后做前缀比对，且要求是备份目录的**直接子项**，
+    这样 `../x`、`/etc/passwd`、`sub/../../x` 与指向目录外的软链接都会被拒。
+    """
+    if not backup_name:
+        return None
+    # 先挡掉绝对路径与明显的目录跳转，避免依赖后续规范化
+    if os.path.isabs(backup_name):
+        return None
+    bdir = os.path.realpath(backup_dir())
+    candidate = os.path.realpath(os.path.join(bdir, backup_name))
+    if candidate != bdir and candidate.startswith(bdir + os.sep):
+        return candidate
+    return None
+
+
 def restore_backup(backup_name: str) -> dict[str, Any]:
     """从备份文件恢复。返回结果摘要。"""
     bdir = backup_dir()
-    src = os.path.join(bdir, backup_name)
+    src = _safe_backup_path(backup_name)
+    if src is None:
+        # 越界或非法名称：不回显解析后的路径，避免泄露宿主机目录结构
+        return {"ok": False, "error": f"非法的备份文件名: {os.path.basename(backup_name)}"}
 
     if not os.path.isfile(src):
         return {"ok": False, "error": f"备份文件不存在: {backup_name}"}

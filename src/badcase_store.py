@@ -124,12 +124,26 @@ def record(data: Dict[str, Any], path: str = None) -> int:
 
 
 def list_recent(limit: int = 100, feedback_type: Optional[str] = None,
-                path: str = None) -> List[dict]:
+                path: str = None, user_id: Optional[str] = None,
+                restrict_user: bool = False) -> List[dict]:
+    """列出反馈记录。
+
+    `user_id` 用于数据隔离（2026-09-30 安全修复）：`restrict_user=True` 时
+    只返回该 user_id 的记录 —— 供 `/api/v1/feedback/export` 给普通医生用，
+    避免任意登录用户下载**全院医生**的反馈原文（含完整 report 正文）。
+    默认 `restrict_user=False` 保持原有行为（精调管线/管理员需全量）。
+    """
     q = "SELECT * FROM feedback"
     args: list = []
+    where: list = []
     if feedback_type:
-        q += " WHERE feedback_type=?"
+        where.append("feedback_type=?")
         args.append(feedback_type)
+    if restrict_user:
+        where.append("user_id=?")
+        args.append(user_id or "")
+    if where:
+        q += " WHERE " + " AND ".join(where)
     q += " ORDER BY id DESC LIMIT ?"
     args.append(int(limit))
     with _conn(path) as c:

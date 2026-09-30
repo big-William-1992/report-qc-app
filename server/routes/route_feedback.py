@@ -52,9 +52,17 @@ def feedback_stats(emp: str = Depends(require_emp_local)):
 @router.get("/api/v1/feedback/export")
 def feedback_export(limit: int = 1000,
                     emp: str = Depends(require_emp_local)):
-    """导出最近反馈(JSONL), 供 tools/export_badcase_training.py 精调管线消费。"""
+    """导出反馈(JSONL), 供 tools/export_badcase_training.py 精调管线消费。
+
+    2026-09-30 安全修复（跨用户 PHI 越权）：原实现 `list_recent(limit=limit)`
+    **不过滤 user_id**，任何登录用户都能下载全院医生的反馈原文
+    （`feedback` 表存有 `report` 正文，最长 20000 字符）。现按 `_scope_user_id`
+    隔离：admin/本机（返回 None）可全量导出，普通医生仅本人反馈。
+    """
     from badcase_store import list_recent
+    from server.core import _scope_user_id
     import json as _json
-    rows = list_recent(limit=limit)
+    scope = _scope_user_id(emp)
+    rows = list_recent(limit=limit, user_id=scope, restrict_user=scope is not None)
     body = "\n".join(_json.dumps(r, ensure_ascii=False) for r in rows)
     return JSONResponse(content=body or "", media_type="application/x-ndjson")

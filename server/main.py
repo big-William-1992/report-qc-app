@@ -977,7 +977,13 @@ def changelog_get(emp: str = Depends(require_emp_local)):
 
 @app.get("/api/v1/export/data")
 def data_export(emp: str = Depends(require_emp_local)):
-    """导出全量数据（样本 + 队列 + 设置），供用户迁移或备份。"""
+    """导出样本 + 队列 + 设置，供用户迁移或备份。
+
+    2026-09-30 安全修复（跨用户 PHI 越权）：原实现用 `require_emp_local`（普通医生即可）
+    且 `.query(Sample).all()` **完全不过滤** —— 实测医生 B 调本端点能拿到医生 A 的
+    `patient` / `report_text`。现改为与 `/api/v1/samples`、`/api/v1/stats/*` 一致的
+    `_scope_user_id(emp)` 隔离：admin/本机看全部，普通医生仅本人数据。
+    """
     from fastapi.responses import Response
     from datetime import datetime          # 本文件惯例：函数内局部导入（见 sample_dashboard 等）
     from server.models import Sample, QueueItem, Setting
@@ -986,11 +992,19 @@ def data_export(emp: str = Depends(require_emp_local)):
     #      db 只提供 get_db 生成器依赖）→ 调用即 AttributeError；
     #   ② 下方 `_json.dumps` 的 `_json` 只在另一个函数的函数体内被局部导入 →
     #      NameError。此处统一改为模块级 json 与统一会话入口。
+    scope = _scope_user_id(emp)
     db_s = SessionLocal()
     try:
-        samples = db_s.query(Sample).all()
-        queues = db_s.query(QueueItem).all()
-        settings = db_s.query(Setting).all()
+        if scope is None:
+            samples = db_s.query(Sample).all()
+            queues = db_s.query(QueueItem).all()
+            settings = db_s.query(Setting).all()
+        else:
+            # 普通医生：样本/队列按 user_id 隔离；设置表 user_id 为 NULL 的是全局项
+            # （不属任何个人），不对普通医生下发，避免泄露全局配置。
+            samples = db_s.query(Sample).filter(Sample.user_id == scope).all()
+            queues = db_s.query(QueueItem).filter(QueueItem.user_id == scope).all()
+            settings = db_s.query(Setting).filter(Setting.user_id == scope).all()
     finally:
         db_s.close()
     payload = {
