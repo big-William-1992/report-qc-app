@@ -135,3 +135,23 @@ def test_token_logic_defined_in_one_place():
         if re.search(r"^def\s+(make_token|verify_token)\b", src, re.M):
             offenders.append(rel)
     assert not offenders, f"以下文件重复定义了令牌逻辑：{offenders}"
+
+
+def test_no_duplicate_rule_implementations():
+    """同一规则方法不得在多个 mixin 模块里各写一份。
+
+    2026-09-30 实例：`_r10_template` 在 rules_sentence.py 与 rules_template.py
+    各有一份**逐字相同**的实现，而 RuleEngine 的多继承只会用 MRO 靠前的那份
+    → 另一份是永不执行的死代码；改错那份会"改了没反应"（与历史上"双引擎/双路由"
+    同类）。修 R10 单行报告误报时顺手去重，这里加断言防止再长出来。
+    """
+    import glob
+    import re
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    owners = {}
+    for path in glob.glob(os.path.join(root, "src", "engine", "rules_*.py")):
+        src = open(path, encoding="utf-8").read()
+        for name in re.findall(r"^\s*def (_r\d+[a-z_]*)", src, re.M):
+            owners.setdefault(name, []).append(os.path.basename(path))
+    dup = {k: v for k, v in owners.items() if len(v) > 1}
+    assert not dup, f"规则实现重复（MRO 只生效一个，另一个是死代码）：{dup}"

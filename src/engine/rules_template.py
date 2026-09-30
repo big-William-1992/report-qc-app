@@ -26,6 +26,11 @@ try:
 except Exception:  # pragma: no cover
     _HF_OK = False
 from ._compat_lexicons import _pull_symbols  # noqa: F401
+# 段落标题唯一数据源（textsplit）。R10 不再自己写第三份标题正则：
+# 历史上标题集合各处各写一遍，导致「CT所见/MRI所见/超声所见」等标题只在部分
+# 规则里生效（2026-08-18 H9 事故），这里必须复用。
+from .textsplit import (_FINDINGS_HEADERS as _SECTION_FINDINGS_RE,
+                        _IMPRESSION_HEADERS as _SECTION_IMPRESSION_RE)
 _pull_symbols("models", "textsplit", "lexicon_region", "claims",
               "config_store", "ner", "scoring", "meta_extract")
 
@@ -35,10 +40,17 @@ class TemplateRulesMixin:
         cfg = (self.rules_config.get("template") or dict(DEFAULT_TEMPLATE))
         required = cfg.get("required_sections", ["findings", "impression"])
         sev = cfg.get("severity", "low")
-        has_findings = bool(re.search(r"检查所见|影像描述|影像所见|表现", text))
-        # 结论段判定限定『行首标题 + 冒号』（2026-08-18 修复）：此前子串"结论"会误匹配
-        # 『临床初步结论』『结论尚待』等正文词，导致真缺结论段时漏检模板缺失。
-        has_impression = bool(re.search(r"(?m)^\s*(?:诊断印象|印象|诊断意见|影像结论|影像诊断|结论)\s*[:：]", text))
+        has_findings = bool(re.search(_SECTION_FINDINGS_RE, text, re.I))
+        # 结论段判定：**标题 + 冒号**，且标题前必须是段边界（行首/空白/句读）。
+        # 2026-08-18 的修复意图要保留：不能只按子串匹配"结论"，否则
+        #   『临床初步结论』『结论尚待』等正文词会被当成结论段，真缺结论段时反而漏报。
+        # 2026-09-30 修复（真实缺陷）：此前用 `(?m)^\s*` 锚定**行首**，于是
+        #   **单行报告**（从 HIS/PACS 复制粘贴、换行被压掉，而"粘贴即查"正是主用法）
+        #   即使写着"……诊断印象：胸部未见明显异常。"也被判"缺少结论段" → 高发误报。
+        #   改为按段边界（行首 / 空白 / 。；，、）判定，与是否换行无关。
+        has_impression = bool(re.search(
+            r"(?:^|[\s。；;，,、])(?:" + _SECTION_IMPRESSION_RE + r")\s*[:：]",
+            text, re.I))
         if "findings" in required and not has_findings:
             out.append(Finding("R10-TEMPLATE", "模板缺失-描述段", sev,
                 "报告缺少『检查所见/影像描述/影像所见』段，不符合结构化报告规范", "", (-1, -1)))

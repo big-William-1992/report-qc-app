@@ -86,26 +86,11 @@ class SentenceRulesMixin:
                 out.append(Finding("R9-CONFLICT", "自定义互斥冲突", sev, msg, a, (-1, -1)))
         return out
 
-    # R10 结构化报告模板合规（必填段 + 随访建议；要点由 rules_config.json 的 template 维护）
-    def _r10_template(self, text) -> List[Finding]:
-        out = []
-        cfg = (self.rules_config.get("template") or dict(DEFAULT_TEMPLATE))
-        required = cfg.get("required_sections", ["findings", "impression"])
-        sev = cfg.get("severity", "low")
-        has_findings = bool(re.search(r"检查所见|影像描述|影像所见|表现", text))
-        # 结论段判定限定『行首标题 + 冒号』（2026-08-18 修复）：此前子串"结论"会误匹配
-        # 『临床初步结论』『结论尚待』等正文词，导致真缺结论段时漏检模板缺失。
-        has_impression = bool(re.search(r"(?m)^\s*(?:诊断印象|印象|诊断意见|影像结论|影像诊断|结论)\s*[:：]", text))
-        if "findings" in required and not has_findings:
-            out.append(Finding("R10-TEMPLATE", "模板缺失-描述段", sev,
-                "报告缺少『检查所见/影像描述/影像所见』段，不符合结构化报告规范", "", (-1, -1)))
-        if "impression" in required and not has_impression:
-            out.append(Finding("R10-TEMPLATE", "模板缺失-结论段", sev,
-                "报告缺少『诊断印象/结论』段，不符合结构化报告规范", "", (-1, -1)))
-        if cfg.get("require_followup") and not re.search(r"随访|建议|复查|随诊", text):
-            out.append(Finding("R10-TEMPLATE", "模板缺失-随访建议", sev,
-                "报告未给出随访/复查建议，建议补充", "", (-1, -1)))
-        return out
+    # R10 结构化报告模板合规：**唯一定义在 rules_template.py**
+    # 2026-09-30：本文件此前也定义了一份 _r10_template（与 rules_template 逐字相同）。
+    # RuleEngine 的多继承 MRO 只会用其中一个，另一份是**永不执行的死代码** ——
+    # 改错那份会"改了没反应"。已删除本文件副本，并由 tests/test_single_implementation.py
+    # 新增断言防止再次长出重复规则实现。
 
     # R11 上下文逻辑错误（信息框 vs 描述框/结论框 跨框比对）
     # （R11 信息框-正文矛盾已全部并入 R1-GENDER / R2-LATERALITY / R17-PERREGION，
