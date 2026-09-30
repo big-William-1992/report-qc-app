@@ -49,6 +49,8 @@
 | [docs/EVAL_SET_GUIDE.md](docs/EVAL_SET_GUIDE.md) | 语义评测集标注与打分指南（研究 A/B 分开，拒收银标） |
 | [docs/DELIVERY_HARDENING.md](docs/DELIVERY_HARDENING.md) | 交付硬化——反代/TLS/服务化/备份灾备/离线签名/上线清单 |
 | [docs/PRICING_AND_PACKAGING.md](docs/PRICING_AND_PACKAGING.md) | 定价与打包建议——分层套餐、价格带、报价单模板、红线话术 |
+| [docs/COMMERCIAL_LICENSE_TERMS.md](docs/COMMERCIAL_LICENSE_TERMS.md) | **商业许可与订购协议（拟稿，待律师定稿）**——16 条正文 + 待确认清单 |
+| [docs/ORDER_FORM_TEMPLATE.md](docs/ORDER_FORM_TEMPLATE.md) | 订购单/报价单模板（附件 A 规格表），报价只换表不动法律文本 |
 | [docs/ROUTES_SPLIT_PLAN.md](docs/ROUTES_SPLIT_PLAN.md) | `server/main.py` 拆分计划（89 端点的分阶段方案与验收条件） |
 | [docs/reviews/](docs/reviews/) | 历史审查/修复报告归档（活文档见上表，历史报告放这里） |
 

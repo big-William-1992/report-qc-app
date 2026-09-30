@@ -16,6 +16,7 @@
 | **D8** | **是否提供无头服务模式**（影响 Windows 服务化方式） | 打包 exe 目前是桌面壳；做服务需要单独的启动入口 | 创始人 | DELIVERY_HARDENING 附录 A |
 | **D9** | **PostgreSQL 切换阈值**：单库 SQLite 能撑多少并发/多大规模 | 多科室并发写入时 SQLite 会成为瓶颈；切换需要数据迁移与运维支持 | 创始人 + 院内信息科 | DELIVERY_HARDENING §10 |
 | **D10** | **`server/main.py` 拆分是否按计划执行** | 89 个端点、2567 行；不定则并行开发继续互相踩 | 创始人（排期） | [ROUTES_SPLIT_PLAN.md](ROUTES_SPLIT_PLAN.md) |
+| **D11** | **医院/公立机构为何仍需付费？**（PolyForm 的「Noncommercial Organizations」把 *public safety or health organization* 与 *government institution* 列为免费档，**不论经费来源** → 公立医院可能据此主张免费使用） | 这直接决定商业许可的**正当性写法**：不能主张"医院商用即侵权"，只能改为"订阅 = 书面商业授权 + 更新 + 支持 + 可入账凭证"。**须律师确认**：① 该写法是否足够；② 是否需在 `NOTICE.md`/协议中声明"诊疗活动中的使用视为商业用途"及其在 PolyForm 下的效力 | 律师（优先） | [COMMERCIAL_LICENSE_TERMS.md](COMMERCIAL_LICENSE_TERMS.md) §0 Q1、[LICENSE_OPTIONS.md](LICENSE_OPTIONS.md) |
 
 ## 已完成的决策（留档）
 
