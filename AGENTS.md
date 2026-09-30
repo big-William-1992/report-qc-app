@@ -129,8 +129,10 @@
 - `server/main.py` 在 **import 时**就执行 `db.init_db()`，所以「先 import 再
   set_test_db」的顺序会先碰一次真实库；新写 API 测试请照 `tests/test_api_guard.py`
   的写法（模块级先设环境变量，再 import）。
-- 沙箱/受限环境下会有两个已知的环境性失败（写 `~/.config`、session 断言），
-  与代码无关；判断回归要看「除这 2 个之外是否全绿」。
+- 沙箱/受限环境下有**一个**已知环境性失败：`tests/test_accounts.py::TestAccounts::test_session`
+  （session 文件写在 `user_data_dir()`，沙箱禁止写工作区外 → 断言失败），与代码无关。
+  > 2026-09-30 更新：原先还有 `test_api_guard::TestRegionsValidation`（写 `~/.config`）；
+  拆 S3 时把 OCR 配置路径统一到 `paths.ocr_config_path()`（→ `user_data_dir()`）后该用例已通过。
 
 
 ## 11. 隐私与授权：几处有意为之的约束

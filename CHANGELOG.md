@@ -137,6 +137,21 @@
   （含**结构指标**——编辑距离调用次数，不受机器性能影响，退回全桶扫描立刻爆掉）。
 
 ### 重构 (Refactor)
+- **路由拆分 S3**（screen + ocr，唯一需要真重构的一片）：新增
+  `server/ocr_runtime.py` 承载共享运行时（推理锁 `OCR_LOCK`、整屏缓存 `SHOT`、
+  识别缓存 `OCR_CACHE`、上传上限、`grab_fullscreen()`、`ocr_config_path()`），
+  端点拆至 `server/routes/route_screen.py`（4）与 `route_ocr.py`（3）。
+  **必须先抽状态再拆端点**：screen 与 ocr 共用同一把推理锁（RapidOCR 单次峰值约 610MB，
+  并发会让低配桌面 OOM），若各模块自持一份锁/缓存，会出现锁不互斥、缓存命中率归零。
+  main.py 2428 → **2171 行**。
+- **修复"Web 与桌面读写不同 OCR 配置文件"**（回归缺陷）：main.py 里另有一份
+  `_ocr_config_path()`（`%APPDATA%/MedicalReportQC` 或 `~/.config/MedicalReportQC`），
+  与已统一的 `paths.ocr_config_path()`（`user_data_dir()`）**指向不同文件**，
+  但其 docstring 却写着"实现桌面/Web 区域配置互通"。现统一委托 paths（单一来源）。
+  副作用：原先因写 `~/.config` 被沙箱拒绝而失败的 `TestRegionsValidation`（3 例）现已通过。
+- **抓屏/OCR 失败补服务端留痕**：原 `except Exception: return JSONResponse(503, …)`
+  只把错误名返给前端，服务端无日志可查（医生只会说"识别不了"）。
+  静默吞异常总数 171 → **169**。
 - **路由拆分 S2**：`/api/v1/license/*`（5 端点）迁出至 `server/routes/route_license.py`
   （公开端点——登录/激活本身是闸门流程，要求先登录会死锁）。main.py 2568 → 2428 行。
   顺带把 `license_status_get` 里合并扩展信息的 `except Exception: pass` 改为

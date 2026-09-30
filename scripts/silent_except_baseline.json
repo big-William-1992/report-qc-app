@@ -21,9 +21,14 @@
       "swallow": 6
     },
     "server/main.py": {
-      "log_quiet": 20,
+      "log_quiet": 19,
       "pass": 2,
-      "swallow": 8
+      "swallow": 5
+    },
+    "server/ocr_runtime.py": {
+      "log_quiet": 2,
+      "pass": 0,
+      "swallow": 0
     },
     "server/routes/route_license.py": {
       "log_quiet": 1,
@@ -156,5 +161,5 @@
       "swallow": 0
     }
   },
-  "total": 171
+  "total": 169
 }

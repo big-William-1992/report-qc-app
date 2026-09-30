@@ -1,6 +1,6 @@
 # server/main.py 拆分计划（89 个端点 → server/routes/）
 
-> 状态：**S1、S2 已完成（2026-09-30）**；S3–S6 待执行。
+> 状态：**S1、S2、S3 已完成（2026-09-30）**；S4–S6 待执行。
 > 执行按"一次一个切片"推进 —— 半拆状态比不拆更危险。
 
 ## 已完成：S1（前置改造 + queue + stats）
@@ -50,6 +50,30 @@ RapidOCR 单次峰值约 610MB，并发推理会让医院低配桌面 OOM）。
 **结论：screen 不是"小且独立"的切片**。强行只搬 screen 会把共享锁与状态留成跨文件引用，
 反而制造新的耦合。正确做法是 **screen + ocr 合并为一片**，并抽出一个
 `server/ocr_runtime.py` 存放共享锁与截图/缓存状态。→ 已调整为 **S3 = screen + ocr**。
+
+## 已完成：S3（screen 4 + ocr 2，唯一需要真重构的一片）
+
+| 内容 | 结果 |
+|---|---|
+| 抽出共享运行时 | 新增 `server/ocr_runtime.py`：`OCR_LOCK`（推理串行锁）、`SHOT`（整屏原图缓存）、`OCR_CACHE`、`OCR_MAX_BYTES`、`grab_fullscreen()`、`ocr_config_path()`、配置读写助手 |
+| 拆出屏幕路由 | `server/routes/route_screen.py`：capture / ocr / regions GET+PUT（4 端点） |
+| 拆出 OCR 路由 | `server/routes/route_ocr.py`：`/api/v1/ocr`、`/api/v1/ocr/base64`、`/api/v1/ocr/meta`（3 端点） |
+| main.py | 删除这 7 个端点 + 共享状态定义 + `_grab_fullscreen` + `_ocr_config_path`；2428 → **2171 行** |
+| 验证 | 全量 pytest 514 passed（仅 1 项已知沙箱环境失败）、e2e 2/2、OpenAPI 78 路径无重复、screen/ocr 端点冒烟通过 |
+
+### S3 顺手修掉的两个真问题
+
+1. **Web 与桌面读写的是两个不同的 OCR 配置文件**（回归缺陷）
+   `main.py` 里另有一份 `_ocr_config_path()`，用 `%APPDATA%/MedicalReportQC` 或
+   `~/.config/MedicalReportQC`；而本轮早先把 `paths.ocr_config_path()` 统一到了
+   `user_data_dir()` → **两者指向不同文件**，但那份实现的 docstring 却写着
+   "实现桌面/Web 区域配置互通"（即注释与事实不符）。现统一委托 `paths.ocr_config_path()`
+   （单一来源）。副作用：原本因"写 `~/.config` 被沙箱拒绝"而失败的
+   `test_api_guard::TestRegionsValidation`（3 例）现在**通过**了。
+2. **抓屏/识别失败没有服务端日志**：`except Exception: return JSONResponse(503, ...)`
+   只把错误名返给前端；医生只会说"点了没反应/识别不了"，服务端无痕迹可查
+   （macOS 屏幕录制权限、远程桌面黑屏都在此抛错）。已补 `log_quiet` 留痕。
+   净效果：静默吞异常总数 171 → **169**（迁移本身让它下降了）。
 
 ### S1 的经验（给后续切片）
 

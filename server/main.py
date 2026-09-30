@@ -17,11 +17,9 @@ report_qc_app/server/main.py
 """
 import os
 import sys
-import io
 import re
 import time
 import hashlib
-import base64
 import json
 import threading
 from pathlib import Path
@@ -465,53 +463,8 @@ def qc_rules_put(cfg: Dict[str, Any], emp: str = Depends(require_admin)):
 
 
 # ----------------------------- OCR（可选） -----------------------------
-# OCR 是计算密集型且无速率限制：限制上传大小，并要求本地放行/远程凭证，
-# 避免内网暴露时被无凭证调用消耗内存与 OCR 算力（拒绝服务面）。
-_OCR_MAX_BYTES = int(os.environ.get("QC_OCR_MAX_BYTES", str(20 * 1024 * 1024)))
-
-
-@app.post("/api/v1/ocr")
-async def ocr_upload(file: UploadFile = File(...), emp: str = Depends(require_emp_local),
-                  _lic: bool = Depends(require_license_active)):
-    from PIL import Image
-    ok, why = ocr_provider.availability()
-    if not ok:
-        return JSONResponse(status_code=503,
-                            content=_envelope(False, "OCR_UNAVAILABLE", None, why))
-    data = await file.read(_OCR_MAX_BYTES + 1)
-    if len(data) > _OCR_MAX_BYTES:
-        raise HTTPException(413, f"图片过大（上限 {_OCR_MAX_BYTES // (1024*1024)}MB）")
-    try:
-        img = Image.open(io.BytesIO(data))
-    except Exception as e:
-        raise HTTPException(400, f"图片解析失败：{e}")
-    # 推理串行（2026-08-18）：RapidOCR 单次峰值约 610MB，与 /screen/ocr 共用
-    # _OCR_LOCK，避免并发推理在同一实例上内存叠加导致医院低配桌面 OOM。
-    with _OCR_LOCK:
-        text = ocr_provider.ocr_image(img)
-    return _envelope(True, "OK", {"text": text})
-
-
-@app.post("/api/v1/ocr/base64")
-def ocr_base64(req: OCRB64, emp: str = Depends(require_emp_local),
-               _lic: bool = Depends(require_license_active)):
-    from PIL import Image
-    import base64 as _b64
-    ok, why = ocr_provider.availability()
-    if not ok:
-        return JSONResponse(status_code=503,
-                            content=_envelope(False, "OCR_UNAVAILABLE", None, why))
-    if len(req.image_base64) > _OCR_MAX_BYTES * 4 // 3:
-        raise HTTPException(413, f"图片过大（上限 {_OCR_MAX_BYTES // (1024*1024)}MB）")
-    try:
-        raw = _b64.b64decode(req.image_base64)
-        img = Image.open(io.BytesIO(raw))
-    except Exception as e:
-        raise HTTPException(400, f"图片解析失败：{e}")
-    with _OCR_LOCK:
-        text = ocr_provider.ocr_image(img)
-    return _envelope(True, "OK", {"text": text})
-
+# 图片 OCR 端点（POST /api/v1/ocr、/api/v1/ocr/base64）已于 2026-09-30 拆分至
+# server/routes/route_ocr.py；推理锁与大小上限见 server/ocr_runtime.py。
 
 # ----------------------------- RIS / PACS 直连（迁移自 web/api/ris.py） -----------------------------
 @app.get("/api/v1/ris/config")
@@ -1497,226 +1450,10 @@ def update_check(emp: str = Depends(require_emp_local)):
 # 注意：拆分**必须**删掉这里的原实现，否则同一路径两份处理器，后者永不生效
 # （tests/test_single_implementation.py 会拦截重复注册）。
 
-# ----------------------------- 屏幕采集（真·框选 PACS 屏幕） -----------------------------
-# 用户诉求：不是上传报告图，而是在 PACS 软件窗口上框选三个区域
-#   basic=病人基础信息 / findings=影像描述 / impression=影像诊断
-# 流程：/screen/capture 抓全屏（原图缓存于内存）→ SPA 在缩略图上拖三个框
-#      → /screen/ocr 传比例框 → 后端在「原始分辨率」截图上裁剪 → RapidOCR
-# 在原图上裁剪（而非缩略图）可避免下采样导致的小字识别率骤降。
-_SHOT: Dict[str, Any] = {"img": None, "w": 0, "h": 0, "ts": 0.0}
-_SHOT_MAX_W = 1600          # 传给前端的缩略图最大宽度（省带宽，不影响识别精度）
-
-# OCR 结果缓存：按「区域 key + 裁剪图指纹」缓存识别文本，画面未变时跳过推理，降低重识别卡顿。
-_OCR_CACHE: Dict[str, Any] = {}     # region_key -> {"sig": tuple, "text": str}
-_OCR_CACHE_MAX = 12
-# 截屏/识别共享全局（_SHOT/_OCR_CACHE）并发锁：热键连按 + SPA 同时触发时，
-# 防止「一个请求重抓屏覆盖另一个正在裁剪的原图」「缓存读写非原子」的竞态。
-_OCR_LOCK = threading.Lock()
-# RIS 轮询互斥：后台守护线程与 /ris/poll-now 手动触发共用 _ris_poll_once，
-# 无锁时两路并发会把同一批报告各自识别为"新报告"重复入库/入队（2026-08-18 修复）。
-_RIS_POLL_LOCK = threading.Lock()
-
-
-
-
-
-
-def _grab_fullscreen():
-    from PIL import ImageGrab
-    img = ImageGrab.grab()
-    if img is None:
-        raise RuntimeError("截屏返回空图")
-    # macOS 未授予「屏幕录制」权限时会返回纯黑图（不抛异常），这里做启发式检测
-    try:
-        ext = img.convert("L").getextrema()
-        if ext == (0, 0):
-            raise RuntimeError(
-                "截屏结果全黑：macOS 需在『系统设置 → 隐私与安全性 → 屏幕录制』"
-                "中勾选本应用（终端/星衍质控），授权后需重启应用。")
-    except RuntimeError:
-        raise
-    except Exception:
-        try:
-            from .log_utils import log_quiet
-        except ImportError:
-            from log_utils import log_quiet
-        log_quiet(__name__)
-    return img
-
-
-@app.post("/api/v1/screen/capture")
-def screen_capture(emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
-    """抓取整屏，返回缩略图 base64（原图缓存于服务端供后续高精度裁剪）。"""
-    try:
-        with _OCR_LOCK:
-            img = _grab_fullscreen()
-            _SHOT["img"], _SHOT["w"], _SHOT["h"], _SHOT["ts"] = img, img.width, img.height, time.time()
-    except Exception as exc:
-        return JSONResponse(status_code=503,
-                            content=_envelope(False, "SCREEN_UNAVAILABLE", None, type(exc).__name__))
-    thumb = img
-    if img.width > _SHOT_MAX_W:
-        ratio = _SHOT_MAX_W / float(img.width)
-        thumb = img.resize((_SHOT_MAX_W, max(1, int(img.height * ratio))))
-    buf = io.BytesIO()
-    thumb.convert("RGB").save(buf, format="PNG")
-    return _envelope(True, "OK", {
-        "image_base64": base64.b64encode(buf.getvalue()).decode(),
-        "width": img.width, "height": img.height,
-        "thumb_width": thumb.width, "thumb_height": thumb.height,
-        "ts": _SHOT["ts"],
-    })
-
-
-@app.post("/api/v1/screen/ocr")
-def screen_ocr(req: ScreenOCRReq, emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
-    """按比例框在缓存的整屏原图上裁剪并 OCR，返回三区文本 + 结构化 meta。"""
-    ok, why = ocr_provider.availability()
-    if not ok:
-        return JSONResponse(status_code=503,
-                            content=_envelope(False, "OCR_UNAVAILABLE", None, why))
-    img = _SHOT.get("img")
-    with _OCR_LOCK:
-        if req.refresh or img is None:
-            try:
-                img = _grab_fullscreen()
-                _SHOT["img"], _SHOT["w"], _SHOT["h"], _SHOT["ts"] = \
-                    img, img.width, img.height, time.time()
-            except Exception as exc:
-                return JSONResponse(status_code=503,
-                                    content=_envelope(False, "SCREEN_UNAVAILABLE", None, type(exc).__name__))
-        W, H = img.width, img.height
-        texts: Dict[str, str] = {}
-        errors: Dict[str, str] = {}
-
-        if req.dynamic:
-            # ---- 动态语义识别：先按三区外接矩形裁剪（限定报告区），
-            #      再对裁剪结果 OCR 一次，按标题在文本流中切分 ----
-            # 固定像素框在 PACS 内容上下/左右滚动后会错位；本模式不依赖精确坐标，
-            # 只依赖「检查所见/影像描述 → 描述段、诊断印象/结论 → 诊断段」的文本顺序，
-            # 滚动改变的是屏幕上的像素位置，不改变文本流顺序，故怎么滚都能识别对。
-            # 外接矩形只需粗略覆盖报告区即可：排除 PACS 报告区外的工具栏/图像区/
-            # 其他窗口文字，避免整屏 OCR 把无关内容切进描述/诊断段。
-            ocr_img = img
-            if req.dynamic_region:
-                dr = req.dynamic_region
-                x0 = max(0, min(W - 1, int(dr.x * W)))
-                y0 = max(0, min(H - 1, int(dr.y * H)))
-                x1 = max(x0 + 1, min(W, int((dr.x + dr.w) * W)))
-                y1 = max(y0 + 1, min(H, int((dr.y + dr.h) * H)))
-                ocr_img = img.crop((x0, y0, x1, y1))
-            try:
-                full = ocr_provider.ocr_image(ocr_img) or ""
-                texts, errors = engine.split_dynamic(full)
-            except Exception as exc:
-                errors["_dynamic"] = type(exc).__name__
-        else:
-            # ---- 固定框位模式（原逻辑，供精确框选场景）----
-            for role, r in (req.regions or {}).items():
-                x0 = max(0, min(W - 1, int(r.x * W)))
-                y0 = max(0, min(H - 1, int(r.y * H)))
-                x1 = max(x0 + 1, min(W, int((r.x + r.w) * W)))
-                y1 = max(y0 + 1, min(H, int((r.y + r.h) * H)))
-                crop = img.crop((x0, y0, x1, y1))
-                # 画面未变则直接复用上次识别结果，跳过 CPU 推理（解决重复识别卡顿）
-                try:
-                    sig = ocr_provider.image_signature(crop)
-                except Exception:
-                    sig = None
-                cached = _OCR_CACHE.get(role)
-                if cached and cached.get("sig") == sig:
-                    texts[role] = cached.get("text") or ""
-                    continue
-                try:
-                    txt = ocr_provider.ocr_image(crop) or ""
-                    texts[role] = txt
-                    _OCR_CACHE[role] = {"sig": sig, "text": txt}
-                    if len(_OCR_CACHE) > _OCR_CACHE_MAX:
-                        _OCR_CACHE.pop(next(iter(_OCR_CACHE)))
-                except Exception as exc:
-                    texts[role] = ""
-                    errors[role] = type(exc).__name__
-    meta = {}
-    try:
-        meta = engine.extract_meta_full(texts.get("basic", ""),
-                                        texts.get("findings", ""),
-                                        texts.get("impression", ""))
-    except Exception:
-        try:
-            meta = engine.extract_meta(texts.get("basic", ""))
-        except Exception:
-            meta = {}
-    return _envelope(True, "OK", {"texts": texts, "meta": meta, "errors": errors})
-
-
-# 动态模式三段切分（basic/findings/impression）已于 2026-08-23 收敛至 engine.split_dynamic
-# （单一实现，标题表 _DYNAMIC_*_TITLES 亦在 engine 维护），server 仅作调用方。
-
-
-
-
-@app.post("/api/v1/ocr/meta")
-def ocr_meta(req: OCRMetaReq, emp: str = Depends(require_emp_local)):
-    """对三段 OCR 文本做结构化抽取（姓名/性别/年龄/部位/侧别/检查类型）。
-
-    与 ``/screen/ocr`` 共用 ``engine.extract_meta_full``，保证「屏幕模式」与「图片模式」
-    姓名回填行为一致、都走后端最稳健的跨区补抽逻辑。前端在图片模式下拿到本结果后
-    优先用于回填，避免只依赖前端解析在『独立姓名行』等边缘布局下漏抽。
-    """
-    try:
-        meta = engine.extract_meta_full(req.basic or "", req.findings or "", req.impression or "")
-    except Exception as exc:
-        return _envelope(False, "META_ERR", None, type(exc).__name__)
-    return _envelope(True, "OK", {"meta": meta})
-
-
-def _ocr_config_path() -> str:
-    """与 src/app.py 的 _ocr_config_path 同路径，实现桌面/Web 区域配置互通。"""
-    ap = os.path.expandvars("%APPDATA%")
-    if ap and os.path.isabs(ap):
-        d = os.path.join(ap, "MedicalReportQC")
-    else:
-        d = os.path.join(os.path.expanduser("~"), ".config", "MedicalReportQC")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, "ocr_config.json")
-
-
-@app.get("/api/v1/screen/regions")
-def screen_regions_get(emp: str = Depends(require_emp_local)):
-    """读取 SPA 侧保存的比例框（web_regions）。"""
-    try:
-        with open(_ocr_config_path(), encoding="utf-8") as fh:
-            cfg = json.load(fh) or {}
-    except Exception:
-        cfg = {}
-    return _envelope(True, "OK", {"web_regions": cfg.get("web_regions") or {}})
-
-
-@app.put("/api/v1/screen/regions")
-def screen_regions_put(regions: Dict[str, Any], emp: str = Depends(require_emp_local)):
-    # 坐标校验（2026-08-18）：0<=x,y<=1 且 0<w,h<=1 且非 NaN——此前原样持久化坏值，
-    # 越界/NaN 会在 /screen/ocr 的 int(r.x*W) 抛 ValueError 500。
-    import math
-    for _k, r in (regions or {}).items():
-        if not isinstance(r, dict):
-            raise HTTPException(400, "区域格式应为 {key: {x,y,w,h}}")
-        for _f in ("x", "y", "w", "h"):
-            v = r.get(_f)
-            if not isinstance(v, (int, float)) or math.isnan(v):
-                raise HTTPException(400, f"区域坐标 {_f} 非法")
-        if not (0 <= r["x"] <= 1 and 0 <= r["y"] <= 1
-                and 0 < r["w"] <= 1 and 0 < r["h"] <= 1):
-            raise HTTPException(400, "区域坐标越界（x/y 0~1，w/h 0~1 且 >0）")
-    try:
-        with open(_ocr_config_path(), encoding="utf-8") as fh:
-            cfg = json.load(fh) or {}
-    except Exception:
-        cfg = {}
-    cfg["web_regions"] = regions
-    with open(_ocr_config_path(), "w", encoding="utf-8") as fh:
-        json.dump(cfg, fh, ensure_ascii=False, indent=2)
-    return _envelope(True, "OK", {"web_regions": regions}, "框选区域已保存")
-
+# 屏幕采集/框选 OCR（/api/v1/screen/*）、文本抽取（/api/v1/ocr/meta）与截图/识别共享状态
+# 已于 2026-09-30 拆分：端点 → server/routes/route_screen.py 与 route_ocr.py；
+# 共享状态（推理锁 OCR_LOCK / 截图缓存 SHOT / 识别缓存 OCR_CACHE / 上传大小上限）→
+# server/ocr_runtime.py（screen 与 ocr **必须共用同一份**，否则锁不互斥、缓存命中率归零）。
 
 # ----------------------------- 应用设置（SPA 设置面板） -----------------------------
 _DEFAULT_SETTINGS = {
@@ -1951,10 +1688,14 @@ from server.routes.route_push import router as _router_push
 from server.routes.route_queue import router as _router_queue
 from server.routes.route_stats import router as _router_stats
 from server.routes.route_license import router as _router_license
+from server.routes.route_screen import router as _router_screen
+from server.routes.route_ocr import router as _router_ocr
 app.include_router(_router_push)
 app.include_router(_router_queue)
 app.include_router(_router_stats)
 app.include_router(_router_license)
+app.include_router(_router_screen)
+app.include_router(_router_ocr)
 
 # ── 审计日志查询（2026-09-09 新增）────────────────────────────────────
 @app.get("/api/v1/admin/audit-logs")
