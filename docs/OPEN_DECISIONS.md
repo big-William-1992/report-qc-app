@@ -6,8 +6,8 @@
 
 | ID | 待决事项 | 为什么必须现在定 | 需要谁 | 关联文档 |
 |---|---|---|---|---|
-| **D1** | **产品监管定性**：走"非医疗器械的质控辅助工具"，还是启动二类医疗器械注册 | 决定对外话术、能否进招标、临床验证的设计路径；README 与 DISCLAIMER 曾自相矛盾（已改为统一陈述"未注册"事实） | 律师 + 器械注册顾问 | [COMPLIANCE_GAP_ANALYSIS.md](COMPLIANCE_GAP_ANALYSIS.md) §2、§6 |
-| **D2** | **许可模式**：仓库是 MIT（含"可自由再分发"），而服务条款按年订阅 + 激活码 | 收费前必须消除冲突，否则"付费用户"与"任何人可免费再分发"并存 | 律师 | DISCLAIMER §三、[TERMS_OF_SERVICE.md](../TERMS_OF_SERVICE.md) |
+| ~~D1~~ | ~~产品监管定性~~ → **✅ 已定（2026-09-30）：实验性质** | 已写入 README 与 DISCLAIMER：实验性软件、非医疗器械、不得用于临床诊断；**边界条件**：一旦进真实临床工作流（纳入质控台账/参与签发），须重新评估定性并完成注册/测评。副作用：与 D3 收费需在合同中明确"卖的是服务与更新，非医疗质量担保" | 创始人已决 | [DISCLAIMER.md](DISCLAIMER.md)、[COMPLIANCE_GAP_ANALYSIS.md](COMPLIANCE_GAP_ANALYSIS.md) §2 |
+| **D2** | **许可模式**：仓库是 MIT（明文允许修改、再分发、**销售**），而服务条款按年订阅 + 激活码 + 禁止修改分发 | 收费前必须消除冲突。**关键事实**：仓库 public、0 fork/0 star/1 次下载、release 二进制匿名可下载且内含 `server/*.py` 源码；MIT 已对**已发布版本永久生效**，换许可只能保护将来 → 现在是修正成本最低的窗口 | 律师 | [LICENSE_OPTIONS.md](LICENSE_OPTIONS.md)、[TERMS_OF_SERVICE.md](../TERMS_OF_SERVICE.md) |
 | **D3** | **定价结构**：现文档写 ¥59/年（单机口径），远低于医院采购的正常区间 | 价格锚定不可逆；且要覆盖实施/售后成本 | 创始人 | [PRICING_AND_PACKAGING.md](PRICING_AND_PACKAGING.md) §2、§4 |
 | **D4** | **等保义务与等级**：是否测评、测几级、由谁整改 | 义务主体通常是医疗机构；厂商需提供可测评的产品与材料，**不要对外承诺"我们做了等保三级"** | 院内信息科 + 测评机构 | COMPLIANCE_GAP_ANALYSIS §4 |
 | **D5** | **备份加密策略**：内置备份为明文 SQLite（含完整报告正文） | 命中等保"数据保密性"与 PIPL；`deploy/backup.sh` 已支持 age/gpg/7z，需决定是否强制 | 院内信息科 + 创始人 | [DELIVERY_HARDENING.md](DELIVERY_HARDENING.md) §5 |

@@ -29,6 +29,7 @@ _LIVE_ROOT_DOCS = {
     "DEPLOYMENT.md", "DEVELOPMENT_GUIDE.md", "PRD.md", "TESTING_STRATEGY.md",
     "USER_GUIDE.md", "RELEASE_CHECKLIST.md", "VERSION_LIFECYCLE.md",
     "PRIVACY_POLICY.md", "TERMS_OF_SERVICE.md", "DATA_SECURITY.md",
+    "LICENSE-HISTORY.md",   # 许可变更历史（事实声明，需与 LICENSE 同处根目录）
     "LLM质控层技术方案.md", "新Mac恢复步骤.md",
 }
 

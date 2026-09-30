@@ -2,11 +2,12 @@
 
 > 面向放射科医生的影像报告智能质控助手：粘贴即查、复制即控、后台快捷键一键质控、离线 OCR 自动回填、按错误严重度红/橙/蓝高亮、样本沉淀、科室报表、责任到人。
 
-> ⚠️ **合规与免责**：本软件为报告质量**辅助核查**工具，**不提供诊断结论、不替代医师判断**。
-> **当前尚未取得医疗器械注册证，也未完成等保测评**；是否构成第二类医疗器械、对外如何定性，
-> 需专业机构确认（见 [docs/OPEN_DECISIONS.md](docs/OPEN_DECISIONS.md) D1，与
-> [docs/DISCLAIMER.md](docs/DISCLAIMER.md) 口径一致）。默认配置下报告数据**仅存本机 / 院内内网**；
-> 联网行为（RIS/PACS 直连、浮动授权心跳、自动更新、可选的云端 LLM）已在免责声明中逐条列明。
+> ⚠️ **定位与免责（2026-09-30）**：本软件为**实验性质**的报告质量**辅助核查**工具，
+> 用于技术验证/科研/教学；**非医疗器械，不提供诊断结论、不替代医师判断、不得用于临床诊断**。
+> 若要在真实临床工作流中正式使用，必须**重新评估监管定性**并完成相应注册/测评
+> （见 [docs/DISCLAIMER.md](docs/DISCLAIMER.md) 与 [docs/OPEN_DECISIONS.md](docs/OPEN_DECISIONS.md) D1）。
+> 默认配置下报告数据**仅存本机 / 院内内网**；联网行为（RIS/PACS 直连、浮动授权心跳、
+> 自动更新、可选的云端 LLM）已在免责声明中逐条列明。
 
 ---
 
@@ -32,7 +33,8 @@
 | [docs/INSTALL.md](docs/INSTALL.md) | 安装与权限配置 |
 | [docs/ACTIVATION.md](docs/ACTIVATION.md) | 授权、试用期与激活码流程 |
 | [AGENTS.md](AGENTS.md) | **给 AI/新人的硬约定**（前端经典脚本、单一实现、数据层、迁移、测试隔离、门禁） |
-| [docs/OPEN_DECISIONS.md](docs/OPEN_DECISIONS.md) | **待决策清单**（监管定性/许可模式/定价/等保/备份加密等 10 项，需人拍板） |
+| [docs/OPEN_DECISIONS.md](docs/OPEN_DECISIONS.md) | **待决策清单**（D1 已定实验性质；许可模式/定价/等保/备份加密等 9 项待定） |
+| [docs/LICENSE_OPTIONS.md](docs/LICENSE_OPTIONS.md) | **许可模式选择（D2）**：MIT 与订阅制的冲突事实、后果、4 个选项与建议 |
 | [docs/DISCLAIMER.md](docs/DISCLAIMER.md) | 免责声明与合规说明（与 README 口径一致） |
 | [docs/COMPLIANCE_GAP_ANALYSIS.md](docs/COMPLIANCE_GAP_ANALYSIS.md) | 合规差距分析——法规清单、定性判定、等保逐控制点、PHI 分级、里程碑 |
 | [docs/CLINICAL_VALIDATION_PLAN.md](docs/CLINICAL_VALIDATION_PLAN.md) | 临床验证方案——双人盲法+仲裁、样本量、统计方法、图表清单 |
