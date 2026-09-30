@@ -136,6 +136,21 @@
   且评测基线保持 100%/100%。守卫：`tests/test_r19_performance.py`
   （含**结构指标**——编辑距离调用次数，不受机器性能影响，退回全桶扫描立刻爆掉）。
 
+### 重构 (Refactor)
+- **路由拆分 S1**（`docs/ROUTES_SPLIT_PLAN.md` 第一片）：把 7 个端点从 2567 行的
+  `server/main.py` 拆到 `server/routes/route_queue.py`（4）与 `route_stats.py`（3），
+  并先下沉两个跨域助手：`_scope_user_id` → `server/core.py`、
+  `require_license_active` → `server/security.py`（否则路由模块只能反向 import main，
+  形成循环依赖）。main.py 保留二者的再导出，既有引用不变。
+  验证：全量 pytest 绿、引擎基线 100%/100% 持平、Playwright e2e 2/2、
+  OpenAPI 78 条路径无重复。
+- **顺带修好"重复路由守卫"本身失效**（门禁空跑）：该守卫原只遍历 `app.routes`，
+  但本仓 FastAPI 版本 `include_router()` **不摊平子路由**，而是插入 `_IncludedRouter`
+  包装对象（无 `.path`/`.routes`，仅 `original_router`）→ 对"拆分到 routes/ 的端点被重复
+  注册"这一**正是它要防的场景完全失明**（实测 8 个端点不可见）。
+  修复：递归跟进 `routes` 与 `original_router`；新增**反证测试**确保收集器真能看到
+  `include_router` 注册的端点；反向验证（故意重复注册 stats/trend）确认守卫会报错。
+
 ### 工程 (Engineering)
 - **数据库迁移框架**（`server/migrations.py`）：`schema_migrations` 表 + 编号迁移 +
   **迁移前自动快照** + 失败留痕且不写版本号（下次重试）。此前 schema 变更散落在

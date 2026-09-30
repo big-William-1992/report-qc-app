@@ -225,6 +225,28 @@ def queue_add_text(text: str, meta: dict, source: str = "RIS轮询",
     return str(_id) if _id else None
 
 
+def _scope_user_id(emp: str) -> "str | None":
+    """多用户数据隔离（2026-08-18）：admin/本机返回 None（看全部样本与统计）；
+    普通医生返回本人工号，样本读取/导出/统计仅限本人数据。
+
+    2026-09-30 从 main.py 下沉到共享层：它是**跨域助手**（queue / stats / samples
+    等多处使用），留在 main.py 会导致拆分路由时只能互相 import main（循环依赖）。
+    """
+    if not emp or emp == "local":
+        return None
+    try:
+        import accounts
+        if accounts.get_role(emp) == "admin":
+            return None
+    except Exception:
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet("server.core._scope_user_id")
+    return emp
+
+
 def _migrate_queue_to_db() -> None:
     """旧 qc_queue.json → QueueItem 表（一次性，2026-08-18 收敛）；完成后改名 .bak。"""
     from server.models import QueueItem

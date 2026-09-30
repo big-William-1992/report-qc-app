@@ -1,7 +1,41 @@
 # server/main.py 拆分计划（89 个端点 → server/routes/）
 
-> 状态：**计划（未执行）**。2026-09-30 审计给出方案与验收条件；
-> 执行按"一次一个切片、每个切片一个 PR"推进 —— 半拆状态比不拆更危险。
+> 状态：**S1 已完成（2026-09-30）**；S2–S6 待执行。
+> 执行按"一次一个切片"推进 —— 半拆状态比不拆更危险。
+
+## 已完成：S1（前置改造 + queue + stats）
+
+| 内容 | 结果 |
+|---|---|
+| 跨域助手 `_scope_user_id` 下沉 | → `server/core.py`（原在 main.py；queue/stats/samples 多处使用，留在 main 会造成循环依赖） |
+| 授权门 `require_license_active` 下沉 | → `server/security.py`（与 `require_emp_local`/`require_admin` 同类；路由模块不再反向 import main） |
+| 拆出队列路由 | `server/routes/route_queue.py`（4 端点：GET/POST/DELETE /api/v1/queue[/{qid}]） |
+| 拆出统计路由 | `server/routes/route_stats.py`（3 端点：/api/v1/stats/{error-types,trend,report}） |
+| main.py | 删除上述 7 个端点的原实现（**必须删**，否则同路径两份处理器） |
+| 注册 | `app.include_router` 两个新模块；main.py 保留 `_scope_user_id`/`require_license_active` 的再导出，既有引用不变 |
+| main.py 体量 | 2567 → 2468 行 |
+| 验证 | 全量 pytest 绿（除 2 项已知沙箱环境失败）、引擎基线 100%/100% 持平、Playwright e2e 2/2、OpenAPI 78 条路径无重复 |
+
+### S1 顺带修好的一个**门禁本身失效**（重要）
+
+`tests/test_single_implementation.py::test_no_duplicate_registered_routes` 原先只遍历
+`app.routes`。但本仓 FastAPI 版本里 `include_router()` **不把子路由摊平**，而是插入一个
+`_IncludedRouter` 包装对象（无 `.path`/`.methods`/`.routes`，只有 `original_router`）——
+于是守卫对"拆分到 `routes/` 的端点被重复注册"这一**正是它要防的场景完全失明**
+（实测：push/queue/stats 共 8 个端点不可见，等于门禁空跑）。
+
+- 修复：收集器递归跟进 `routes` 与 `_IncludedRouter.original_router`；
+- 新增**反证测试** `test_route_collector_sees_included_routers`：断言收集器确实能看到
+  `include_router` 注册的端点（防止将来又变回"空跑"）；
+- 反向验证：故意在 `route_stats.py` 里重复注册 `/api/v1/stats/trend` → 守卫**报错**；
+  修复前该场景会静默通过。
+
+### S1 的经验（给后续切片）
+
+1. **拆之前先看依赖方向**：跨域助手必须先下沉，否则路由模块只能 `import main`（循环）。
+2. **拆完立刻用 OpenAPI 核对端点账**（`app.openapi()["paths"]`），别用 `app.routes`
+   目测——本仓版本下后者看不到子路由（这一坑差点让我误判"拆分失败"）。
+3. 每片都跑：全量 pytest + `WITH_E2E=1 bash scripts/check_all.sh` + 引擎基线。
 
 ---
 

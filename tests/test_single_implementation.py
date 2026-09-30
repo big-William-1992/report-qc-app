@@ -81,20 +81,54 @@ def test_route_modules_are_all_registered():
         "且会与 main.py 的同名端点形成两套实现）：" + ", ".join(orphans))
 
 
-def test_no_duplicate_registered_routes():
-    """同一「路径 + 方法」不得注册两次——后注册的那份永远不生效。"""
-    from server.main import app
+def _iter_api_routes(routes):
+    """递归收集所有 /api/ 路由 (path, method)。
 
-    seen = collections.Counter()
-    for route in app.routes:
+    ⚠️ 2026-09-30 修复：**必须递归**。本仓的 FastAPI 版本里 `app.include_router()`
+    不会把子路由摊平进 `app.routes`，而是插入一个 `_IncludedRouter` 包装对象
+    （实测：app.routes 90 项里有 3 个 _IncludedRouter，push/queue/stats 共 8 个端点
+    **完全不可见**）。旧版守卫只遍历 `app.routes`，因此对"拆分到 routes/ 的端点被
+    重复注册"这一**正是它要防的场景**是盲的 —— 等于门禁失效。
+    """
+    for route in routes:
+        # 本仓 FastAPI 版本把 include_router 的结果包成 `_IncludedRouter`，
+        # 该对象**没有** .routes/.path，只暴露 `original_router`（实测）——
+        # 旧守卫因此对子路由完全失明。这里两条路径都跟。
+        sub = getattr(route, "routes", None) or getattr(
+            getattr(route, "original_router", None), "routes", None)
+        if sub:
+            yield from _iter_api_routes(sub)
+            continue
         path = getattr(route, "path", None)
         methods = getattr(route, "methods", None)
         if not path or not methods or not str(path).startswith("/api/"):
             continue
         for method in methods:
-            seen[(path, method)] += 1
+            yield (str(path), str(method).upper())
+
+
+def test_no_duplicate_registered_routes():
+    """同一「路径 + 方法」不得注册两次——后注册的那份永远不生效。"""
+    from server.main import app
+
+    seen = collections.Counter(_iter_api_routes(app.routes))
     dups = {f"{m} {p}": n for (p, m), n in seen.items() if n > 1}
     assert not dups, f"同一路径+方法被注册多次（隐式覆盖，后者永不生效）：{dups}"
+
+
+def test_route_collector_sees_included_routers():
+    """反证守卫不是"空跑"：必须能看到 include_router 注册进来的端点。
+
+    这是上一条守卫的前提条件——如果收集器看不到子路由，重复注册永远测不出来。
+    这里断言"能看到 route_push 的推送端点"（它一直是经 include_router 注册的）。
+    """
+    from server.main import app
+    routes = set(_iter_api_routes(app.routes))
+    assert any(p == "/api/v1/push/report" for p, _m in routes), \
+        f"收集器看不到 include_router 注册的端点，守卫形同虚设（当前 {len(routes)} 条）"
+    # 拆分后的模块端点也必须在（S1：queue/stats）
+    assert any(p == "/api/v1/queue" for p, _m in routes), "看不到 route_queue 的端点"
+    assert any(p == "/api/v1/stats/trend" for p, _m in routes), "看不到 route_stats 的端点"
 
 
 def test_auth_deps_have_single_source():

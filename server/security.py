@@ -182,3 +182,26 @@ def require_admin(authorization: Optional[str] = Header(None)) -> str:
     if accounts.get_role(emp) != "admin":
         raise HTTPException(403, "需要管理员权限")
     return emp
+
+
+# ── 授权门（2026-09-30 从 main.py 下沉）──────────────────────────────────────
+# 为什么放这里：它是**写接口的授权依赖**，与 require_emp_local / require_admin 同类；
+# 留在 main.py 会让拆出去的路由模块只能反向 import main（循环依赖）。
+# 端点数量多、语义为"拒绝写操作"，故归入鉴权/授权层。
+def require_license_active():
+    """授权门服务端强制（2026-08-18 接入）：试用期结束且未激活时拒绝写操作。
+
+    与前端 gate 同源（license_web.check_trial，读 appdata/license.json）；
+    开发/内测试用期内（trial）放行，过期未激活返回 403。
+    仅用于产生/修改数据的写接口（读接口不拦，登录用户仍可查看历史数据）。
+    2026-08-24 安全加固：license 读取异常时拒绝而非放行（fail-closed）。
+    """
+    try:
+        import license_web
+        from server.core import _appdata_dir
+        state, _days = license_web.check_trial(_appdata_dir())
+    except Exception:
+        raise HTTPException(500, "授权验证异常，请检查 license.json 是否完整")
+    if state == "expired":
+        raise HTTPException(403, "试用期已结束，请输入激活码激活后继续使用")
+    return True

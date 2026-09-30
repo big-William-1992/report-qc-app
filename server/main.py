@@ -113,7 +113,6 @@ def SessionLocal():
 from server.core import (  # 共享层（2026-08-18 拆分）：日志/响应封装/数据目录/队列与设置数据层
     _log, _envelope, _eng_scores, _appdata_dir, _atomic_json_write, _JSON_IO_LOCK,
     _queue_orm_all, _queue_orm_add,  # noqa: F401 (re-export)
-    _queue_orm_add_dedup, _queue_orm_remove,
     _queue_orm_clear, _load_queue,  # noqa: F401 (部分符号 re-export 给旧引用)
     queue_add_text,  # 入队的唯一实现（main/deps 共用，2026-09-30）
     _migrate_queue_to_db, _settings_orm_all, _settings_orm_save, _migrate_settings_to_db,
@@ -130,45 +129,20 @@ from server.security import (  # noqa: F401 (re-export 给旧引用)
     require_emp,
     require_emp_local,
     require_admin,
+    require_license_active,
 )
 from server.deps import log_audit, _login_locked, _record_login_failure, _clear_login_failures  # 审计日志 + 登录限流
 
 _require_secret_for_network_host(os.environ.get("QC_HOST", "127.0.0.1"))
 
 
-def _scope_user_id(emp: str) -> Optional[str]:
-    """多用户数据隔离（2026-08-18）：admin/本机返回 None（看全部样本与统计）；
-    普通医生返回本人工号，样本读取/导出/统计仅限本人数据。"""
-    if not emp or emp == "local":
-        return None
-    try:
-        if accounts.get_role(emp) == "admin":
-            return None
-    except Exception:
-        try:
-            from .log_utils import log_quiet
-        except ImportError:
-            from log_utils import log_quiet
-        log_quiet(__name__)
-    return emp
+# _scope_user_id 已于 2026-09-30 下沉至 server/core.py（跨域助手，供 route_queue/route_stats
+# 与 samples/stats 共用）；此处从 core 再导出，保持 main.py 内既有引用不变。
+from server.core import _scope_user_id  # noqa: E402  (re-export)
 
 
-def require_license_active():
-    """授权门服务端强制（2026-08-18 接入）：试用期结束且未激活时拒绝写操作。
-
-    与前端 gate 同源（license_web.check_trial，读 appdata/license.json）；
-    开发/内测试用期内（trial）放行，过期未激活返回 403。
-    仅用于产生/修改数据的写接口（读接口不拦，登录用户仍可查看历史数据）。
-    2026-08-24 安全加固：license 读取异常时拒绝而非放行（fail-closed）。
-    """
-    try:
-        state, _days = license_web.check_trial(_appdata_dir())
-    except Exception:
-        raise HTTPException(500, "授权验证异常，请检查 license.json 是否完整")
-    if state == "expired":
-        raise HTTPException(403, "试用期已结束，请输入激活码激活后继续使用")
-    return True
-
+# require_license_active 已于 2026-09-30 下沉至 server/security.py（路由拆分前置改造）。
+# 这里保留名字（下方 security 导入处再导出），使 main.py 内既有引用与外部 import 不变。
 
 # ----------------------------- 应用 -----------------------------
 app = FastAPI(title="星衍放射质控 API", version=APP_VERSION)
@@ -1416,33 +1390,8 @@ async def sample_import_upload(file: UploadFile = File(...), emp: str = Depends(
             log_quiet(__name__)
 
 
-# ----------------------------- 统计 -----------------------------
-@app.get("/api/v1/stats/error-types")
-def stats_error_types(emp: str = Depends(require_emp_local)):
-    return _envelope(True, "OK", samplelib.stats_by_error_type(
-        user_id=_scope_user_id(emp)))
-
-
-@app.get("/api/v1/stats/trend")
-def stats_trend(emp: str = Depends(require_emp_local)):
-    return _envelope(True, "OK", samplelib.stats_by_date(
-        user_id=_scope_user_id(emp)))
-
-
-@app.get("/api/v1/stats/report")
-def stats_report(start: Optional[str] = None, end: Optional[str] = None,
-                 emp: str = Depends(require_emp_local)):
-    """质控问题分类统计报表（时间段筛选 + 问题类型 TOP 榜 + 科室/医生排行榜）。
-
-    start / end 格式 YYYY-MM-DD，缺省不限。
-    """
-    try:
-        data = samplelib.stats_report(start=start, end=end,
-                                      user_id=_scope_user_id(emp))
-        return _envelope(True, "OK", data)
-    except Exception as exc:
-        raise HTTPException(500, type(exc).__name__)
-
+# 统计端点（/api/v1/stats/*）已于 2026-09-30 拆分至 server/routes/route_stats.py，
+# 并经 app.include_router 注册（见文件末尾）。
 
 @app.get("/api/v1/samples/stats/dashboard")
 def sample_dashboard(emp: str = Depends(require_emp_local)):
@@ -1585,64 +1534,10 @@ def update_check(emp: str = Depends(require_emp_local)):
 
 
 
-@app.get("/api/v1/queue")
-def queue_list(emp: str = Depends(require_emp_local)):
-    items = _load_queue()
-    # 归属过滤（2026-08-18）：非 admin 仅看自己提交的队列项 + RIS 公共复核项（_emp=ris-poll）
-    if accounts.get_role(emp) != "admin":
-        items = [it for it in items
-                 if (it.get("meta") or {}).get("_emp") in (emp, "ris-poll")]
-    return _envelope(True, "OK", {"items": items, "count": len(items)})
-
-
-@app.post("/api/v1/queue")
-def queue_add(req: QueueItemReq, emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
-    """加入待质控队列；按正文 MD5 去重（2026-08-18 收敛：落 qc.db QueueItem 表，
-    数据库层唯一索引原子去重，杜绝并发重复入队）。"""
-    text = (req.text or "").strip()
-    if not text:
-        raise HTTPException(400, "text 不能为空")
-    meta = dict(req.meta or {})
-    meta.setdefault("patient", (req.patient or "").strip())
-    meta.setdefault("applied_site", (req.site or "").strip())
-    meta.setdefault("source", req.source or "手动")
-    meta.setdefault("_emp", emp)  # 记录提交人工号，供 queue_list 归属过滤（2026-08-18）
-    new_id, duplicated = _queue_orm_add_dedup(text, meta)
-    if duplicated:
-        return _envelope(True, "OK", {"id": str(new_id), "duplicated": True}, "该报告已在队列中")
-    items = _load_queue()
-    return _envelope(True, "OK", {"id": str(new_id), "duplicated": False, "count": len(items) + 1})
-
-
-@app.delete("/api/v1/queue")
-def queue_clear(emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
-    # 归属校验（2026-08-18）：清空是破坏性操作，仅 admin 可整表清空；
-    # 普通医生只能清掉自己的条目（走逐条删除）。
-    if accounts.get_role(emp) != "admin":
-        raise HTTPException(403, "仅管理员可清空队列，可逐条移出自己提交的条目")
-    _queue_orm_clear()
-    return _envelope(True, "OK", {"count": 0}, "队列已清空")
-
-
-@app.delete("/api/v1/queue/{qid}")
-def queue_remove(qid: str, emp: str = Depends(require_emp_local), _lic: bool = Depends(require_license_active)):
-    try:
-        qid_int = int(qid)
-    except (TypeError, ValueError):
-        raise HTTPException(404, "队列条目不存在")
-    items = _load_queue()
-    it = next((x for x in items if str(x.get("id")) == qid), None)
-    if not it:
-        raise HTTPException(404, "队列条目不存在")
-    # 归属校验：非 admin 仅可移出自己提交（meta._emp == 工号）或 RIS 公共复核项
-    if accounts.get_role(emp) != "admin":
-        owner = (it.get("meta") or {}).get("_emp")
-        if owner not in (emp, "ris-poll"):
-            raise HTTPException(403, "只能移出自己提交的条目")
-    if not _queue_orm_remove(qid_int):
-        raise HTTPException(404, "队列条目不存在")
-    return _envelope(True, "OK", {"count": len(_load_queue())}, "已移出队列")
-
+# 队列端点（GET/POST/DELETE /api/v1/queue[/{qid}]）已于 2026-09-30 拆分至
+# server/routes/route_queue.py，并经 app.include_router 注册（见文件末尾）。
+# 注意：拆分**必须**删掉这里的原实现，否则同一路径两份处理器，后者永不生效
+# （tests/test_single_implementation.py 会拦截重复注册）。
 
 # ----------------------------- 屏幕采集（真·框选 PACS 屏幕） -----------------------------
 # 用户诉求：不是上传报告图，而是在 PACS 软件窗口上框选三个区域
@@ -2095,7 +1990,11 @@ class _NoCacheStaticFiles(StaticFiles):
 # 现仅保留真正注册的 route_push。若日后要继续拆分路由，请一次拆完并删除
 # main.py 中的同名端点，否则 tests/test_single_implementation.py 会失败。
 from server.routes.route_push import router as _router_push
+from server.routes.route_queue import router as _router_queue
+from server.routes.route_stats import router as _router_stats
 app.include_router(_router_push)
+app.include_router(_router_queue)
+app.include_router(_router_stats)
 
 # ── 审计日志查询（2026-09-09 新增）────────────────────────────────────
 @app.get("/api/v1/admin/audit-logs")
