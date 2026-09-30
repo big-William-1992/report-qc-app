@@ -1,0 +1,32 @@
+# 历史许可：MIT License（适用于本文件所列范围内的版本）
+
+> **适用范围**：本仓库在 **2026-09-30 之前**（即 commit `a535f27` 及更早）以 MIT 许可发布，
+> 且**该授权对已发布/已分发的那些版本永久有效**，不因后续更换许可而收回。
+> 变更记录见 `LICENSE-HISTORY.md`；自变更之后的新版本以 `LICENSE` 为准。
+>
+> 之所以单独保留这份文本：任何已按 MIT 取得权利的人（含 fork、二次分发者）
+> 都需要能核对其权利来源。
+
+---
+
+MIT License
+
+Copyright (c) 2026 谢君 (Xie Jun)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

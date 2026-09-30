@@ -7,7 +7,7 @@
 | ID | 待决事项 | 为什么必须现在定 | 需要谁 | 关联文档 |
 |---|---|---|---|---|
 | ~~D1~~ | ~~产品监管定性~~ → **✅ 已定（2026-09-30）：实验性质** | 已写入 README 与 DISCLAIMER：实验性软件、非医疗器械、不得用于临床诊断；**边界条件**：一旦进真实临床工作流（纳入质控台账/参与签发），须重新评估定性并完成注册/测评。副作用：与 D3 收费需在合同中明确"卖的是服务与更新，非医疗质量担保" | 创始人已决 | [DISCLAIMER.md](DISCLAIMER.md)、[COMPLIANCE_GAP_ANALYSIS.md](COMPLIANCE_GAP_ANALYSIS.md) §2 |
-| **D2** | **许可模式**：仓库是 MIT（明文允许修改、再分发、**销售**），而服务条款按年订阅 + 激活码 + 禁止修改分发 | 收费前必须消除冲突。**关键事实**：仓库 public、0 fork/0 star/1 次下载、release 二进制匿名可下载且内含 `server/*.py` 源码；MIT 已对**已发布版本永久生效**，换许可只能保护将来 → 现在是修正成本最低的窗口 | 律师 | [LICENSE_OPTIONS.md](LICENSE_OPTIONS.md)、[TERMS_OF_SERVICE.md](../TERMS_OF_SERVICE.md) |
+| ~~D2~~ | ~~许可模式~~ → **✅ 已定（2026-09-30）：选项 A — 改专有/源可见许可** | 已实施：`LICENSE` 改为 **PolyForm Noncommercial 1.0.0**（非商业免费、商业需授权）；旧 MIT 文本存档为 `LICENSE-MIT`；`LICENSE-HISTORY.md` 记录分界点（≤`a535f27` 为 MIT，之后为 PolyForm）；`NOTICE.md` 提供 `Required Notice:`；README/DISCLAIMER/ToS/落地页口径已统一；CI 会把许可与免责复制进发布物。**仍需律师**：商业许可（订购协议）正式条款定稿 | 创始人已决 | [LICENSE_OPTIONS.md](LICENSE_OPTIONS.md)、[LICENSE](../LICENSE)、[LICENSE-HISTORY.md](../LICENSE-HISTORY.md) |
 | **D3** | **定价结构**：现文档写 ¥59/年（单机口径），远低于医院采购的正常区间 | 价格锚定不可逆；且要覆盖实施/售后成本 | 创始人 | [PRICING_AND_PACKAGING.md](PRICING_AND_PACKAGING.md) §2、§4 |
 | **D4** | **等保义务与等级**：是否测评、测几级、由谁整改 | 义务主体通常是医疗机构；厂商需提供可测评的产品与材料，**不要对外承诺"我们做了等保三级"** | 院内信息科 + 测评机构 | COMPLIANCE_GAP_ANALYSIS §4 |
 | **D5** | **备份加密策略**：内置备份为明文 SQLite（含完整报告正文） | 命中等保"数据保密性"与 PIPL；`deploy/backup.sh` 已支持 age/gpg/7z，需决定是否强制 | 院内信息科 + 创始人 | [DELIVERY_HARDENING.md](DELIVERY_HARDENING.md) §5 |
@@ -16,6 +16,13 @@
 | **D8** | **是否提供无头服务模式**（影响 Windows 服务化方式） | 打包 exe 目前是桌面壳；做服务需要单独的启动入口 | 创始人 | DELIVERY_HARDENING 附录 A |
 | **D9** | **PostgreSQL 切换阈值**：单库 SQLite 能撑多少并发/多大规模 | 多科室并发写入时 SQLite 会成为瓶颈；切换需要数据迁移与运维支持 | 创始人 + 院内信息科 | DELIVERY_HARDENING §10 |
 | **D10** | **`server/main.py` 拆分是否按计划执行** | 89 个端点、2567 行；不定则并行开发继续互相踩 | 创始人（排期） | [ROUTES_SPLIT_PLAN.md](ROUTES_SPLIT_PLAN.md) |
+
+## 已完成的决策（留档）
+
+- **D1 = 实验性质**（2026-09-30）：实验性软件、非医疗器械、不得用于临床诊断；
+  若进真实临床工作流须重新评估监管定性。
+- **D2 = 选项 A（PolyForm Noncommercial 1.0.0）**（2026-09-30）：
+  非商业免费、商业需授权，与激活码/订阅制自洽；旧版本 MIT 永久有效（已留档）。
 
 ## 工程侧已就绪、只等决定的支撑
 

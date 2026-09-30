@@ -134,6 +134,23 @@ jobs:
       - name: Build exe (PyInstaller)
         run: python -m PyInstaller build/report_qc.spec --noconfirm --clean
 
+      - name: Attach LICENSE / NOTICE / DISCLAIMER to bundle (BLOCKING)
+        # 2026-09-30：许可改为 PolyForm Noncommercial 1.0.0 后，其 "Notices" 章节
+        # 要求**任何分发者随副本提供**许可条款（或其 URL）与 `Required Notice:` 行。
+        # 绿色版 zip 与安装包都从 dist/报告质控软件/ 取文件（Compress-Archive 与
+        # setup.iss 的 [Files] 均以该目录为源），所以在这里放一份即可覆盖两个产物。
+        shell: bash
+        run: |
+          set -euo pipefail
+          D="dist/报告质控软件"
+          test -d "$D" || { echo "::error::缺少 $D（PyInstaller 产物路径变了？）"; exit 1; }
+          cp LICENSE "$D/LICENSE"
+          cp NOTICE.md "$D/NOTICE.md"
+          cp docs/DISCLAIMER.md "$D/免责声明.md"
+          echo "--- 已附随许可文件 ---"
+          ls -l "$D/LICENSE" "$D/NOTICE.md" "$D/免责声明.md"
+          grep -q "Required Notice:" "$D/NOTICE.md" || { echo "::error::NOTICE.md 缺少 Required Notice 行"; exit 1; }
+
       - name: Smoke test - engine import & run
         # 干净环境下验证引擎能正常 import 并跑一份示例报告（抓逻辑层错误）
         # 非阻断：即使引擎冒烟测试出问题，也不影响 exe 产物的上传

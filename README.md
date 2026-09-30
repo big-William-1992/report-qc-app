@@ -8,6 +8,12 @@
 > （见 [docs/DISCLAIMER.md](docs/DISCLAIMER.md) 与 [docs/OPEN_DECISIONS.md](docs/OPEN_DECISIONS.md) D1）。
 > 默认配置下报告数据**仅存本机 / 院内内网**；联网行为（RIS/PACS 直连、浮动授权心跳、
 > 自动更新、可选的云端 LLM）已在免责声明中逐条列明。
+>
+> 📄 **许可**：非商业用途（科研/教学/个人/非营利与公共机构）按
+> [PolyForm Noncommercial License 1.0.0](LICENSE) **免费**使用；
+> **商业用途（含医院/企业诊疗或经营活动）需取得商业许可**（年费订阅即商业许可）。
+> 2026-09-30 及更早版本为 MIT（存档 [LICENSE-MIT](LICENSE-MIT)，对已发布版本永久有效），
+> 变更记录见 [LICENSE-HISTORY.md](LICENSE-HISTORY.md)。
 
 ---
 
@@ -22,6 +28,8 @@
 | [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) | 发布清单——发布流程、验证步骤、回滚方案 |
 | [USER_GUIDE.md](USER_GUIDE.md) | 用户指南——面向放射科医生的操作手册 |
 | [CHANGELOG.md](CHANGELOG.md) | 变更日志——版本历史 |
+| [LICENSE](LICENSE) / [NOTICE.md](NOTICE.md) | 许可条款（PolyForm Noncommercial 1.0.0）与 Required Notice、第三方组件清单 |
+| [LICENSE-HISTORY.md](LICENSE-HISTORY.md) / [LICENSE-MIT](LICENSE-MIT) | 许可变更分界与旧 MIT 文本存档 |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | 部署指南——多机部署、浮动授权、离线更新 |
 | [docs/LLM_MODEL_DEPLOYMENT.md](docs/LLM_MODEL_DEPLOYMENT.md) | LLM 语义质控模型部署——Ollama/MLX/云端三形态、`prompt_mode` 参数 |
 | [DATA_SECURITY.md](DATA_SECURITY.md) | 数据安全白皮书——架构安全、加密、备份 |

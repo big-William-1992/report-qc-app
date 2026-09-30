@@ -187,3 +187,15 @@
 - 覆盖率基线 60.1%，只允许上升（`scripts/coverage_gate.py`）。
 - 前端改动：改动 `modules/*.js` 后必须 `python3 tools/build_bundle.py`，否则
   `tests/test_frontend_bundle.py` 与 CI 的 e2e 都会红。
+
+## 15. 许可：非商业免费 + 商业需授权（不要动）
+
+- 本仓许可是 **PolyForm Noncommercial License 1.0.0**（`LICENSE`），**不是 MIT**（MIT 仅适用于
+  变更点之前的版本，文本存档在 `LICENSE-MIT`）。**不要**把它改回 MIT / Apache 等宽松许可，
+  也**不要**删除 `NOTICE.md`、`LICENSE-MIT`、`LICENSE-HISTORY.md`。
+- **随副本传递是许可的硬性义务**：`LICENSE` 的 Notices 章节要求任何分发者一并提供许可条款
+  （或其 URL，见 `NOTICE.md` 顶部）——所以 CI 打包必须把 `LICENSE`、`NOTICE.md`、
+  `docs/DISCLAIMER.md` 复制进 `dist/报告质控软件/`（绿色版与安装包都从这里取文件）。
+- 涉及"免费/开源/可再分发"的对外文案改动前，先读 `LICENSE-HISTORY.md` 与
+  `docs/LICENSE_OPTIONS.md`；非商业免费 ≠ 可自由商用。
+- 商业许可（订购协议）的正式条款仍需律师定稿（见 `docs/OPEN_DECISIONS.md` D2 备注）。

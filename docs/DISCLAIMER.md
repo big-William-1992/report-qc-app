@@ -43,12 +43,16 @@
 
 ## 三、许可与再分发
 
-- 以仓库 `LICENSE` 与 `TERMS_OF_SERVICE.md` 为准。
-- ⚠️ **口径冲突待确认**：仓库现为 MIT 许可（含"可自由再分发"语义），
-  而服务条款按年订阅 + 激活码授权 —— 两者对"是否可自由再分发、是否需要付费"表述不一致，
-  **收费或对外发布前须经法务确认**（见 [OPEN_DECISIONS.md](OPEN_DECISIONS.md) D2，
-  事实与选项已整理在 [LICENSE_OPTIONS.md](LICENSE_OPTIONS.md)）。
-  在确认前，请勿对外承诺"免费可再分发"。
+- **当前许可**：**PolyForm Noncommercial License 1.0.0**（全文见仓库根目录 `LICENSE`，
+  官方地址 <https://polyformproject.org/licenses/noncommercial/1.0.0>）。
+- **非商业用途免费**：科研、教学、个人学习与试验，以及非营利/公共机构（含教育机构、
+  公共研究机构、公共安全与卫生组织、政府机构等）的使用，均属许可允许的用途。
+- **商业用途需另行授权**：医院/企业在诊疗或经营活动中的使用属商业用途，
+  需取得商业许可（年费订阅即商业许可），联系方式：stardev@xingyan-ai.com。
+- **随副本传递义务**：依许可 "Notices" 章节，向他人提供本软件时须同时提供
+  本许可条款（或其 URL）以及 `NOTICE.md` 中的 `Required Notice:` 行。
+- **历史版本**：2026-09-30 及更早发布的版本使用 **MIT License**（文本存档于 `LICENSE-MIT`），
+  该授权对已发布版本**永久有效**；变更记录见 `LICENSE-HISTORY.md`。
 
 ## 四、商标与第三方
 

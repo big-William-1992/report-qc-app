@@ -30,6 +30,7 @@ _LIVE_ROOT_DOCS = {
     "USER_GUIDE.md", "RELEASE_CHECKLIST.md", "VERSION_LIFECYCLE.md",
     "PRIVACY_POLICY.md", "TERMS_OF_SERVICE.md", "DATA_SECURITY.md",
     "LICENSE-HISTORY.md",   # 许可变更历史（事实声明，需与 LICENSE 同处根目录）
+    "NOTICE.md",            # Required Notice + 第三方组件（PolyForm 要求随副本传递）
     "LLM质控层技术方案.md", "新Mac恢复步骤.md",
 }
 
@@ -111,3 +112,46 @@ def test_ci_has_frontend_e2e_gate():
             hits.append(fn)
     assert hits, ("没有任何 workflow 跑 `playwright test` —— 前端界面行为无 CI 门禁"
                   "（2026-09-30 白屏事故的直接原因）")
+
+
+# ── 许可一致性（2026-09-30 D2 决策：PolyForm Noncommercial 1.0.0）─────────────
+# 这些断言的目的：防止"改了 LICENSE 但对外文案/发布流程没跟上"，
+# 以及防止后人把许可"顺手"改回宽松许可（那会让"商业需授权"整套商业模型失效）。
+
+def test_license_is_polyform_noncommercial():
+    lic = _read("LICENSE")
+    assert "PolyForm Noncommercial License 1.0.0" in lic, \
+        "LICENSE 应为 PolyForm Noncommercial 1.0.0（D2 决策；不要改回 MIT/Apache）"
+    assert "MIT License" not in lic.split("PolyForm")[0], "LICENSE 顶部不应残留 MIT 文本"
+
+
+def test_license_notice_contains_required_notice():
+    """PolyForm 的 Notices 章节要求随副本传递 `Required Notice:` 行。"""
+    for f in ("LICENSE", "NOTICE.md"):
+        assert "Required Notice:" in _read(f), f"{f} 缺少 Required Notice 行"
+
+
+def test_mit_history_is_archived():
+    """旧 MIT 文本必须留档：已按 MIT 取得权利的人需要能核对来源。"""
+    assert os.path.isfile(os.path.join(_ROOT, "LICENSE-MIT")), \
+        "缺少 LICENSE-MIT（旧 MIT 文本存档）"
+    hist = _read("LICENSE-HISTORY.md")
+    assert "MIT" in hist and "PolyForm" in hist, "许可变更历史必须同时记录 MIT 与 PolyForm 的分界"
+
+
+def test_public_docs_match_license():
+    """对外文档必须与新许可口径一致（不能还写着"MIT 免费可再分发"）。"""
+    for rel in ("README.md", "docs/DISCLAIMER.md", "docs/index.html",
+                "TERMS_OF_SERVICE.md"):
+        txt = _read(rel)
+        assert "PolyForm" in txt, f"{rel} 未说明当前许可为 PolyForm"
+        assert "可自由使用、修改与再分发" not in txt, \
+            f"{rel} 仍残留 MIT 时期的“可自由再分发”表述（与非商业许可冲突）"
+
+
+def test_ci_bundle_carries_license():
+    """发布物必须随附许可（PolyForm 的硬性义务）——CI 需把许可复制进 dist。"""
+    wf = _read(".github/workflows/build-windows.yml")
+    assert "cp LICENSE" in wf and "dist/报告质控软件" in wf, \
+        "CI 未把 LICENSE 复制进打包目录（绿色版与安装包都从该目录取文件）"
+    assert 'grep -q "Required Notice:"' in wf, "CI 未校验 Required Notice 行存在"

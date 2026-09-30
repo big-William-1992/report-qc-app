@@ -1,6 +1,10 @@
 # D2 · 许可模式选择：事实、冲突与选项
 
-> 状态：**待创始人 + 律师决定**。本文只陈述事实与可选方案，不构成法律意见。
+> 状态：**已决（2026-09-30）—— 采用“选项 A：专有/源可见许可”，具体文本为
+> PolyForm Noncommercial License 1.0.0**（见 `LICENSE`；实施记录见 `LICENSE-HISTORY.md`）。
+> 本文作为**决策依据留档**，并保留"为什么选 A、A 的配套工程注意"两节供追述。
+> 仍待律师：商业许可（订购协议）的正式条款文本。
+> 本文不构成法律意见。
 > 相关：`LICENSE`、`TERMS_OF_SERVICE.md`、`docs/DISCLAIMER.md`、`docs/OPEN_DECISIONS.md` D2/D3。
 
 ---
