@@ -137,6 +137,21 @@
   （含**结构指标**——编辑距离调用次数，不受机器性能影响，退回全桶扫描立刻爆掉）。
 
 ### 重构 (Refactor)
+- **路由拆分 S6b（最后一片）**：15 个 `/api/v1/admin/*` 端点（审计日志/授权管理/订单/
+  错误报告/备份恢复）拆至 `server/routes/route_admin.py`；main.py 1377 → **1065 行**。
+  **拆分全部完成**：起点 2567 行 → 1065 行（-58%），63 个端点迁入 10 个路由模块，
+  3 个共享运行时抽为 `server/{ocr,ris,qc}_runtime.py`。
+- **修复订单管理整块失效**（商业化功能，此前无任何测试覆盖）：5 个订单端点
+  （list/create/confirm/cancel/export）都调用 `db.get_session()`，而 `server/db.py`
+  没有该函数（只有 `SessionLocal`/`get_db`）→ 每个请求 AttributeError。
+  已统一改为 `SessionLocal()`（与本仓其余代码一致）；新增
+  `tests/test_endpoint_smoke_admin_orders.py`（3 例）为其补冒烟：订单四件套、
+  `/api/v1/export/data`、管理端只读端点。
+- **本轮拆分的真正价值（记入 docs/ROUTES_SPLIT_PLAN.md）**：机械搬迁过程中，
+  把长期藏在 2567 行巨文件里、**无人测试**的端点逐一过手，暴露并修复了 4 个
+  长期缺陷 —— poll-now 的 NameError、export/data 的三处缺陷、订单管理整块失效、
+  health 的跨域引用。共性：**端点无测试覆盖 + 失败被包装成业务响应**，
+  所以"500+ 例全绿"并不代表可用。
 - **路由拆分 S6a**：`accounts`(7) 与 `feedback`(3) 端点拆至
   `server/routes/route_accounts.py`、`route_feedback.py`；main.py 1519 → **1377 行**
   （自 S1 起累计 2567 → 1377）。

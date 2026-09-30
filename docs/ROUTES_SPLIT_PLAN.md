@@ -1,6 +1,7 @@
 # server/main.py 拆分计划（89 个端点 → server/routes/）
 
-> 状态：**S1–S5、S6a 已完成（2026-09-30）**；S6b（admin 15 端点）待执行。
+> 状态：**全部完成（S1–S6b，2026-09-30）**。main.py 由 2567 行降至约 1050 行，
+> 63 个端点迁入 `server/routes/`，共享运行时抽为 `*_runtime.py`。
 > 执行按"一次一个切片"推进 —— 半拆状态比不拆更危险。
 
 ## 已完成：S1（前置改造 + queue + stats）
@@ -167,6 +168,54 @@ S3 用"文本标记区间"搬代码时，**连带删掉了 `_RIS_POLL_LOCK` 的�
 > 两次事故（S5 的 `_run_qc`、S6a 的 `_LOGIN_FAIL`）有共同特征：**被拆域的状态被
 > 另一个域以"模块级全局名"隐式依赖**。这类跨域耦合在"只测被改域"的测试里不可见，
 > 静态守卫是唯一可靠的兜底。后续若继续拆 samples/settings/orders，务必留意同类情况。
+
+## 已完成：S6b（admin 15 端点）—— 最后一片
+
+| 内容 | 结果 |
+|---|---|
+| 拆出管理端 | `server/routes/route_admin.py`：审计日志/授权管理/订单/错误报告/备份恢复（15 端点） |
+| main.py | 1377 → **1065 行**（自 S1 起累计 **2567 → 1065**） |
+| 验证 | 519 passed、e2e 2/2、OpenAPI 78 路径无重复、订单创建端到端通过 |
+
+### ⭐ 又发现一批"整块失效"的端点（订单管理 100% 不可用）
+
+冒烟时发现 **5 个订单端点**（list/create/confirm/cancel/export）全部调用
+`db.get_session()` —— 而 `server/db.py` **没有这个函数**（只有 `SessionLocal` 与
+`get_db` 生成器）→ **每个请求都 AttributeError**，即**商业化功能"订单管理"整块失效**。
+这与 main.py 里 `/api/v1/export/data` 是同一写法、同一根因（该文件也无测试覆盖）。
+
+已全部改为 `SessionLocal()`；新增 `tests/test_endpoint_smoke_admin_orders.py`（3 例）
+为订单四件套 + 导出 + 管理端只读端点补最小冒烟，防止回归。
+
+### 拆分总账
+
+| 切片 | 端点 | main.py 行数 |
+|---|---|---|
+| 起点 | — | 2567 |
+| S1 queue+stats | 7 | 2468 |
+| S2 license | 5 | 2428 |
+| S3 screen+ocr | 7（+抽出 ocr_runtime） | 2171 |
+| S4 ris | 8（+抽出 ris_runtime） | 1872 |
+| S5 qc | 16（+抽出 qc_runtime） | 1519 |
+| S6a accounts+feedback | 10 | 1377 |
+| **S6b admin** | **15** | **1065** |
+| 合计 | **63 个端点** | **-1502 行（-58%）** |
+
+新增模块：`server/routes/{route_queue,route_stats,route_license,route_screen,route_ocr,
+route_ris,route_qc,route_accounts,route_feedback,route_admin}.py`（10 个）+
+`server/{ocr_runtime,ris_runtime,qc_runtime}.py`（3 个共享运行时）。
+
+### 拆分带来的最大价值：暴露"没人测过的端点"
+
+拆分本身是机械劳动，但**它把这些端点从 2567 行的巨文件里拎出来逐一过手**，
+于是暴露出 4 个长期存在、无人知晓的缺陷：
+1. `/api/v1/ris/poll-now` → NameError（S3 我误删锁定义，新守卫抓到）；
+2. `/api/v1/export/data` → 三处缺陷叠加，100% 不可用；
+3. **订单管理 5 个端点 → `db.get_session()` 不存在，整块失效**；
+4. `GET /api/v1/health` → 跨域引用 `_LOGIN_FAIL`（守卫抓到）。
+
+这些都是"全量测试 500+ 例全绿"却依然存在的缺陷，根因一致：
+**端点没有测试覆盖 + 失败被包装成业务响应**。
 
 ### S1 的经验（给后续切片）
 
