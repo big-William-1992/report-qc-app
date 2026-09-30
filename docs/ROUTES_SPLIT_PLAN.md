@@ -1,6 +1,6 @@
 # server/main.py 拆分计划（89 个端点 → server/routes/）
 
-> 状态：**S1–S4 已完成（2026-09-30）**；S5–S6 待执行。
+> 状态：**S1–S5 已完成（2026-09-30）**；S6 待执行。
 > 执行按"一次一个切片"推进 —— 半拆状态比不拆更危险。
 
 ## 已完成：S1（前置改造 + queue + stats）
@@ -112,6 +112,37 @@ S3 用"文本标记区间"搬代码时，**连带删掉了 `_RIS_POLL_LOCK` 的�
 > 澄清（避免夸大）：`main.py` 中另有多处 `datetime.now()`，但它们**所在函数都有局部
 > `import datetime`**（如 `sample_dashboard`、`orders_*`），经逐个核查**并未失效**；
 > 只有 `data_export` 漏了。此前一度误判为"5 个端点坏了"，已核实更正。
+
+## 已完成：S5（qc 16 端点 + 质控运行时）
+
+| 内容 | 结果 |
+|---|---|
+| 抽出质控运行时 | `server/qc_runtime.py`：`_get_engine()`（进程级 RuleEngine 单例）、`_reload_engine_rules()`、`_run_qc()`、`_qc_rate_ok()`（按 IP 限流） |
+| 拆出质控路由 | `server/routes/route_qc.py`：16 端点（check/batch/llm/full/export-report + rules 读写 + rules/config + 错字表 5 个 + scan-reports） |
+| main.py | 1872 → **1519 行**（自 S1 起累计 2567 → 1519） |
+| 验证 | 516 passed（仅 1 项已知沙箱失败）、e2e 2/2、OpenAPI 78 路径无重复、qc 端点冒烟通过、引擎基线持平 |
+
+### ⭐ 新增的"悬空引用"守卫**当场抓到了本片引入的回归**
+
+把 `_run_qc` 迁到 `qc_runtime` 后，**`main.py` 里另一个域**（`POST /api/v1/samples` 的
+"入库即质控"）仍在引用它 → 调用即 `NameError`。
+
+`tests/test_no_dangling_endpoint_names.py`（S4 新增）**立刻把它标红**：
+```
+- POST /api/v1/samples (sample_create): ['_run_qc']
+```
+这正是该守卫存在的意义：跨域的悬空引用，靠"只测被改域"的行为测试很难发现
+（本例中 `test_api_guard` 只覆盖了其中一条路径）。修复：main.py 从 `qc_runtime` 再导出
+这些符号，供仍在内联的其它域使用。
+
+### qc 拆分的两条注意
+
+1. **引擎单例必须只有一份**：多份单例各自持有 `rules_config` 副本 → "改了规则只有部分端点
+   生效"。故单例随 `qc_runtime` 走，`route_qc` 只导入。
+2. **qc 端点与 feedback 端点曾交错排列**：285–468 区间里夹着 `/api/v1/feedback*`（3 个），
+   拆分时必须按端点边界切，不能按"连续区间"整段搬（否则会把 feedback 一起搬走）。
+   本次即因整段搬导致 `route_qc` 误含 feedback 端点，已按精确边界重做。
+   → **教训：搬代码前先打印区间内的 `@app.` 清单核对**。
 
 ### S1 的经验（给后续切片）
 

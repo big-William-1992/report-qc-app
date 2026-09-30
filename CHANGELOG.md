@@ -137,6 +137,17 @@
   （含**结构指标**——编辑距离调用次数，不受机器性能影响，退回全桶扫描立刻爆掉）。
 
 ### 重构 (Refactor)
+- **路由拆分 S5**（最核心一片）：抽出 `server/qc_runtime.py`（进程级 RuleEngine 单例、
+  规则刷新、`_run_qc`、按 IP 限流），16 个 `/api/v1/qc/*` 端点拆至
+  `server/routes/route_qc.py`；main.py 1872 → **1519 行**（自 S1 起累计 2567 → 1519）。
+  · **引擎单例必须只有一份**：多份会各自持有 rules_config 副本 → "改了规则只有部分端点生效"。
+  · qc 与 feedback 端点原先**交错排列**，拆分按精确端点边界切（整段搬会误含 feedback）。
+- **S4 新增的"悬空引用"守卫当场抓到本片引入的回归**：`_run_qc` 迁出后，
+  main.py 中另一域（`POST /api/v1/samples` 入库即质控）仍引用它 → `NameError`；
+  守卫立即标出 `POST /api/v1/samples (sample_create): ['_run_qc']`。
+  已由 main.py 从 qc_runtime 再导出修复。这类**跨域**悬空引用，靠"只测被改域"的
+  行为测试很难覆盖（test_api_guard 只覆盖了其中一条路径）。
+- 静默吞异常 168 → **167**（随拆分收敛）。
 - **路由拆分 S4**：抽出 `server/ris_runtime.py`（轮询配置/`RIS_POLL_LOCK`/轮询引擎/守护线程），
   8 个 `/api/v1/ris/*` 端点拆至 `server/routes/route_ris.py`；
   main.py 2171 → **1872 行**（自 S1 起累计 2567 → 1872）。

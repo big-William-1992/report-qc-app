@@ -21,7 +21,7 @@
       "swallow": 6
     },
     "server/main.py": {
-      "log_quiet": 15,
+      "log_quiet": 14,
       "pass": 2,
       "swallow": 1
     },
@@ -166,5 +166,5 @@
       "swallow": 0
     }
   },
-  "total": 168
+  "total": 167
 }
