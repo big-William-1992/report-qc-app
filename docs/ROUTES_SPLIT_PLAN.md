@@ -1,6 +1,6 @@
 # server/main.py 拆分计划（89 个端点 → server/routes/）
 
-> 状态：**S1、S2、S3 已完成（2026-09-30）**；S4–S6 待执行。
+> 状态：**S1–S4 已完成（2026-09-30）**；S5–S6 待执行。
 > 执行按"一次一个切片"推进 —— 半拆状态比不拆更危险。
 
 ## 已完成：S1（前置改造 + queue + stats）
@@ -74,6 +74,44 @@ RapidOCR 单次峰值约 610MB，并发推理会让医院低配桌面 OOM）。
    只把错误名返给前端；医生只会说"点了没反应/识别不了"，服务端无痕迹可查
    （macOS 屏幕录制权限、远程桌面黑屏都在此抛错）。已补 `log_quiet` 留痕。
    净效果：静默吞异常总数 171 → **169**（迁移本身让它下降了）。
+
+## 已完成：S4（ris 8 端点 + 轮询运行时）
+
+| 内容 | 结果 |
+|---|---|
+| 抽出轮询运行时 | `server/ris_runtime.py`：轮询配置持久化（`ris_poll.json`）、`RIS_POLL_LOCK`、`ris_poll_once/locked/loop`、`start_poll_thread()` |
+| 拆出 RIS 路由 | `server/routes/route_ris.py`：config/drivers/test-connection/fetch-reports/poll-status/poll-config/poll-now（8 端点） |
+| main.py | 1868 → 删除 RIS 段后 **1872**（S4 起点 2171） |
+| 验证 | 516 passed（仅 1 项已知沙箱失败）、e2e 2/2、OpenAPI 78 路径无重复、RIS 端点冒烟通过、引擎基线持平 |
+
+### ⚠️ S4 最重要的产出：发现并修好「S3 把 `/ris/poll-now` 弄坏了」
+
+S3 用"文本标记区间"搬代码时，**连带删掉了 `_RIS_POLL_LOCK` 的定义**，而
+`/api/v1/ris/poll-now` 仍引用它 → 调用返回
+`{'ok': False, 'code': 'POLL_ERR', 'data': {'error': 'NameError'}}`。
+
+**而 514 个测试 + 前端 e2e 全绿都没发现**，因为：
+① 该端点把自己的异常包装成业务响应（不是 500）；② 当时没有任何测试打到它。
+
+修复与加固：
+- `_RIS_POLL_LOCK` 随 S4 迁入 `ris_runtime.RIS_POLL_LOCK`（唯一一份，路由模块从中导入）；
+- 新增 `tests/test_no_dangling_endpoint_names.py`：
+  用 `dis` 取 `LOAD_GLOBAL` 的 opcode（**不能用 `co_names`**，它含属性名与函数内局部 import，
+  会产生海量误报——首版即因此报废），检查每个已注册端点引用的全局名是否存在，
+  并附 `/ris/poll-now` 的回归用例。这类"没人调的端点"正是此前测试的盲区。
+
+### S4 顺带修好的另一个真缺陷：`/api/v1/export/data` 100% 不可用
+
+该端点（商业化"数据可移植性"功能）有三处独立缺陷，且无任何测试覆盖：
+1. `db.get_session()` —— `server/db.py` 里**没有这个函数**（只有 `SessionLocal` 与 `get_db` 生成器）→ AttributeError；
+2. `_json.dumps(...)` —— `_json` 只在**另一个函数体内**被局部导入 → NameError；
+3. `datetime.datetime.now()` / `datetime.now()` 混用 —— 该函数缺少局部 `import datetime` → NameError。
+
+现已修复并冒烟验证（返回合法 JSON）。
+
+> 澄清（避免夸大）：`main.py` 中另有多处 `datetime.now()`，但它们**所在函数都有局部
+> `import datetime`**（如 `sample_dashboard`、`orders_*`），经逐个核查**并未失效**；
+> 只有 `data_export` 漏了。此前一度误判为"5 个端点坏了"，已核实更正。
 
 ### S1 的经验（给后续切片）
 

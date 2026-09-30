@@ -21,12 +21,17 @@
       "swallow": 6
     },
     "server/main.py": {
-      "log_quiet": 19,
+      "log_quiet": 15,
       "pass": 2,
-      "swallow": 5
+      "swallow": 1
     },
     "server/ocr_runtime.py": {
       "log_quiet": 2,
+      "pass": 0,
+      "swallow": 0
+    },
+    "server/ris_runtime.py": {
+      "log_quiet": 7,
       "pass": 0,
       "swallow": 0
     },
@@ -161,5 +166,5 @@
       "swallow": 0
     }
   },
-  "total": 169
+  "total": 168
 }

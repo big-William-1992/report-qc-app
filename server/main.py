@@ -19,7 +19,6 @@ import os
 import sys
 import re
 import time
-import hashlib
 import json
 import threading
 from pathlib import Path
@@ -98,7 +97,6 @@ def _audit_log(*args):
         log_quiet(__name__)
 
 import engine
-import ris
 import accounts
 import samplelib
 import ocr_provider  # noqa: F401 (副作用导入: 确保 PyInstaller 收集 OCR 引擎)
@@ -108,8 +106,7 @@ def SessionLocal():
     """会话工厂代理：转发到当前 server.db 绑定，避免测试切库后 main 残留旧引用。"""
     return db.SessionLocal()
 from server.core import (  # 共享层（2026-08-18 拆分）：日志/响应封装/数据目录/队列与设置数据层
-    _log, _envelope, _eng_scores, _appdata_dir, _atomic_json_write, _JSON_IO_LOCK,
-    _queue_orm_all, _queue_orm_add,  # noqa: F401 (re-export)
+    _log, _envelope, _eng_scores, _appdata_dir, _queue_orm_all, _queue_orm_add,  # noqa: F401 (re-export)
     _queue_orm_clear, _load_queue,  # noqa: F401 (部分符号 re-export 给旧引用)
     queue_add_text,  # 入队的唯一实现（main/deps 共用，2026-09-30）
     _migrate_queue_to_db, _settings_orm_all, _settings_orm_save, _migrate_settings_to_db,
@@ -466,268 +463,14 @@ def qc_rules_put(cfg: Dict[str, Any], emp: str = Depends(require_admin)):
 # 图片 OCR 端点（POST /api/v1/ocr、/api/v1/ocr/base64）已于 2026-09-30 拆分至
 # server/routes/route_ocr.py；推理锁与大小上限见 server/ocr_runtime.py。
 
-# ----------------------------- RIS / PACS 直连（迁移自 web/api/ris.py） -----------------------------
-@app.get("/api/v1/ris/config")
-def ris_config_get(emp: str = Depends(require_emp_local)):
-    """读取已保存的 RIS 连接配置（password 脱敏不回传）。
-    2026-08-18 新增：此前 save_config 仅被 Tkinter 版调用，SPA 配置后轮询线程读不到。"""
-    cfg = dict(ris.load_config())
-    if cfg.get("password"):
-        cfg["password"] = "******"
-    return _envelope(True, "OK", cfg)
-
-
-@app.put("/api/v1/ris/config")
-def ris_config_put(req: RisConfigReq, emp: str = Depends(require_admin)):
-    """保存 RIS 连接配置（轮询/拉取复用；管理权限）。"""
-    cfg = ris.load_config()
-    cfg.update({
-        "db_type": req.db_type or "sqlserver",
-        "host": req.host or "",
-        "port": req.port or "",
-        "database": req.database or "",
-        "user": req.user or "",
-        "password": req.password or cfg.get("password", ""),  # 未填则保留原值
-        "query": req.query_sql or cfg.get("query", ""),
-    })
-    ris.save_config(cfg)
-    return _envelope(True, "OK", {}, "RIS 连接配置已保存")
-
-
-@app.get("/api/v1/ris/drivers")
-def ris_drivers(emp: str = Depends(require_emp_local)):
-    """返回支持的数据库驱动列表及可用性。"""
-    drivers = []
-    for dtype in ("sqlserver", "oracle", "mysql", "postgresql"):
-        ok, mod, msg = ris.driver_available(dtype)
-        drivers.append({"type": dtype, "available": ok, "module": mod or "", "message": msg})
-    return _envelope(True, "OK", drivers)
-
-
-@app.post("/api/v1/ris/test-connection")
-def ris_test_connection(req: RisConfigReq, emp: str = Depends(require_emp_local)):
-    config = {
-        "db_type": req.db_type, "host": req.host, "port": req.port,
-        "database": req.database, "user": req.user,
-        "password": req.password, "query": req.query_sql,
-    }
-    ok, msg = ris.test_connection(config)
-    return _envelope(True, "OK", {"ok": ok, "message": msg})
-
-
-@app.post("/api/v1/ris/fetch-reports")
-def ris_fetch_reports(req: RisConfigReq, limit: int = Query(50, ge=1, le=200),
-                      emp: str = Depends(require_emp_local)):
-    config = {
-        "db_type": req.db_type, "host": req.host, "port": req.port,
-        "database": req.database, "user": req.user,
-        "password": req.password, "query": req.query_sql,
-    }
-    try:
-        reports = ris.fetch_reports(config, limit=limit)
-    except Exception as exc:
-        # 统一错误封装（与 poll-now 失败路径对齐），避免 FastAPI 默认 500 破坏前端 data.ok 判定
-        return _envelope(False, "RIS_ERR", {}, f"RIS 拉取失败：{type(exc).__name__}：{exc}")
-    items = [{
-        "report_text": (r.get("report_text", "") or "")[:500],
-        "patient": r.get("patient", ""),
-        "gender": r.get("gender", ""),
-        "age": r.get("age", ""),
-        "modality": r.get("modality", ""),
-        "applied_site": r.get("applied_site", ""),
-        "ts": r.get("ts", ""),
-    } for r in (reports or [])]
-    return _envelope(True, "OK", {"items": items, "count": len(items)})
-
+# RIS/PACS 端点（/api/v1/ris/*）已于 2026-09-30 拆分至 server/routes/route_ris.py，
+# 并经 app.include_router 注册（见文件末尾）。轮询状态见 server/ris_runtime.py。
 
 # ----------------------------- RIS 主动轮询质检（P0：发现即质控闭环） -----------------------------
 # 后台守护线程按 interval_min 周期性拉取 RIS 新报告 → 自动质控 → 结果入库样本库 + 进待质控队列。
 # 配置与「已处理去重指纹」持久化在 appdata/ris_poll.json，重启不丢失、不重复处理。
-_POLL_PATH = None
-
-
-def _poll_path() -> str:
-    global _POLL_PATH
-    if _POLL_PATH is None:
-        _POLL_PATH = os.path.join(_appdata_dir(), "ris_poll.json")
-    return _POLL_PATH
-
-
-_POLL_DEFAULT = {
-    "enabled": False,          # 轮询总开关
-    "interval_min": 30,        # 拉取间隔（分钟）
-    "limit": 50,               # 每次最多拉取条数
-    "auto_qc": True,           # 拉取后自动质控入库
-    "auto_enqueue": True,      # 同时进待质控队列（医师复核）
-    "last_run": "",            # 上次成功运行时间（ISO）
-    "last_count": 0,           # 上次新增数量
-    "last_error": "",          # 最近一次错误信息
-    "seen": [],                # 已处理报告正文 MD5 指纹（去重）
-}
-
-
-def _poll_config() -> dict:
-    cfg = dict(_POLL_DEFAULT)
-    cfg["seen"] = list(cfg["seen"])
-    try:
-        with _JSON_IO_LOCK:
-            with open(_poll_path(), encoding="utf-8") as fh:
-                data = json.load(fh) or {}
-        for k in _POLL_DEFAULT:
-            if k in data:
-                cfg[k] = data[k]
-    except FileNotFoundError:   # silent-except-ok: 首次运行没有轮询状态文件属正常，非降级
-        pass
-    except Exception:
-        try:
-            from .log_utils import log_quiet
-        except ImportError:
-            from log_utils import log_quiet
-        log_quiet(__name__)   # 文件存在但损坏 / 无权限：需要留痕
-    return cfg
-
-
-def _save_poll_config(cfg: dict) -> None:
-    try:
-        os.makedirs(os.path.dirname(_poll_path()), exist_ok=True)
-        with _JSON_IO_LOCK:
-            _atomic_json_write(_poll_path(), cfg)
-    except Exception:
-        try:
-            from .log_utils import log_quiet
-        except ImportError:
-            from log_utils import log_quiet
-        log_quiet(__name__)
-
-
-
-
-@app.get("/api/v1/ris/poll-status")
-def ris_poll_status(emp: str = Depends(require_emp_local)):
-    cfg = _poll_config()
-    return _envelope(True, "OK", {
-        "enabled": cfg.get("enabled", False),
-        "interval_min": cfg.get("interval_min", 30),
-        "limit": cfg.get("limit", 50),
-        "auto_qc": cfg.get("auto_qc", True),
-        "auto_enqueue": cfg.get("auto_enqueue", True),
-        "last_run": cfg.get("last_run", ""),
-        "last_count": cfg.get("last_count", 0),
-        "last_error": cfg.get("last_error", ""),
-        "seen_count": len(cfg.get("seen") or []),
-    })
-
-
-@app.put("/api/v1/ris/poll-config")
-def ris_poll_config_put(req: RisPollConfigReq, emp: str = Depends(require_emp_local)):
-    cfg = _poll_config()
-    if req.enabled is not None:
-        cfg["enabled"] = bool(req.enabled)
-    if req.interval_min is not None:
-        cfg["interval_min"] = max(5, min(int(req.interval_min), 1440))
-    if req.limit is not None:
-        cfg["limit"] = max(5, min(int(req.limit), 200))
-    if req.auto_qc is not None:
-        cfg["auto_qc"] = bool(req.auto_qc)
-    if req.auto_enqueue is not None:
-        cfg["auto_enqueue"] = bool(req.auto_enqueue)
-    _save_poll_config(cfg)
-    return _envelope(True, "OK", ris_poll_status(emp), "轮询配置已保存")
-
-
-@app.post("/api/v1/ris/poll-now")
-def ris_poll_now(emp: str = Depends(require_emp_local)):
-    """手动立即触发一次轮询（不依赖 enabled 开关，便于配置后首跑验证）。"""
-    try:
-        result = _ris_poll_once(manual=True)
-        return _envelope(True, "OK", result)
-    except Exception as exc:
-        return _envelope(False, "POLL_ERR", {"error": type(exc).__name__}, f"轮询失败：{exc}")
-
-
-def _ris_poll_once(manual: bool = False) -> dict:
-    """执行一次轮询：拉取 RIS → 质控 → 入库 + 入队。返回统计。
-
-    互斥：非阻塞获取全局锁；若另一路（后台线程/手动）正在轮询则直接返回
-    {"skipped": True}，避免并发拉取同一批报告重复入库/入队。
-    """
-    if not _RIS_POLL_LOCK.acquire(blocking=False):
-        return {"skipped": True, "reason": "已有轮询在进行中"}
-    try:
-        return _ris_poll_once_locked(manual)
-    finally:
-        _RIS_POLL_LOCK.release()
-
-
-def _ris_poll_once_locked(manual: bool = False) -> dict:
-    cfg = _poll_config()
-    config = ris.load_config()
-    if not config.get("host"):
-        raise RuntimeError("RIS 连接未配置，请在 RIS 直连页填写并测试连接")
-    reports = ris.fetch_reports(config, limit=int(cfg.get("limit", 50)))
-    new_reports = []
-    if not reports:
-        new_count = 0
-    else:
-        seen = set(cfg.get("seen") or [])
-        new_reports = []
-        for r in reports:
-            norm = "".join((r.get("report_text") or "").split())
-            if not norm:
-                continue
-            h = hashlib.md5(norm.encode("utf-8", "ignore")).hexdigest()
-            if h in seen:
-                continue
-            seen.add(h)
-            new_reports.append(r)
-        cfg["seen"] = list(seen)[-5000:]   # 仅保留最近 5000 指纹，防无限膨胀
-        new_count = len(new_reports)
-        emp_id = "ris-poll"
-        if cfg.get("auto_qc"):
-            for r in new_reports:
-                try:
-                    qc = _run_qc(r.get("report_text") or "", {
-                        "patient": r.get("patient", ""), "gender": r.get("gender", ""),
-                        "age": r.get("age", ""), "modality": r.get("modality", ""),
-                        "applied_site": r.get("applied_site", ""),
-                    }, False)
-                    findings = []
-                    for f in qc.get("findings") or []:
-                        findings.append(engine.Finding(
-                            rule_id=f.get("rule_id", ""), error_type=f.get("error_type", ""),
-                            severity=f.get("severity", "low"), message=f.get("message", ""),
-                            snippet=f.get("snippet", ""),
-                            span=tuple(f.get("span", (-1, -1))),
-                            suggestion=f.get("suggestion", "")))
-                    samplelib.save_sample(
-                        r.get("report_text") or "",
-                        {"patient": r.get("patient", ""), "gender": r.get("gender", ""),
-                         "age": r.get("age", ""), "modality": r.get("modality", ""),
-                         "applied_site": r.get("applied_site", "")},
-                        findings, qc.get("score") or {},
-                        anonymize=False, user_id=emp_id,
-                        dept_id=accounts.get_dept_id(emp_id))
-                except Exception:
-                    continue
-        if cfg.get("auto_enqueue"):
-            for r in new_reports:
-                try:
-                    _queue_add_text(r.get("report_text") or "",
-                                    {"patient": r.get("patient", ""),
-                                     "gender": r.get("gender", ""),
-                                     "age": r.get("age", ""),
-                                     "modality": r.get("modality", ""),
-                                     "applied_site": r.get("applied_site", "")},
-                                    source="RIS轮询")
-                except Exception:
-                    continue
-    cfg["last_run"] = datetime_now_iso()
-    cfg["last_count"] = new_count
-    cfg["last_error"] = ""
-    _save_poll_config(cfg)
-    return {"count": new_count, "total_seen": len(cfg.get("seen") or []),
-            "last_run": cfg["last_run"], "new_reports": new_reports[:5]}
-
+# RIS/PACS 端点（/api/v1/ris/*）已于 2026-09-30 拆分至 server/routes/route_ris.py，
+# 并经 app.include_router 注册（见文件末尾）。轮询状态见 server/ris_runtime.py。
 
 def datetime_now_iso() -> str:
     import datetime as _dt
@@ -739,64 +482,8 @@ def _queue_add_text(text: str, meta: dict, source: str = "RIS轮询"):
     return queue_add_text(text, meta, source=source)
 
 
-def _ris_poll_loop(stop_event: threading.Event):
-    """后台守护线程：按 interval_min 周期轮询。sleep 分片避免阻塞退出。
-    2026-08-18 修复：此前固定每 60s 一轮，interval_min（默认 30 分钟）完全不参与调度，
-    对医院 RIS 库造成 30 倍无谓查询压力。
-    2026-08-24：连续失败指数退避——连续 N 次失败后间隔翻倍（上限 4h），
-    连续 5 次失败自动禁用轮询 + 日志告警，避免对不可达服务器无谓探测。"""
-    _consec_fails = 0
-    _MAX_CONSEC_FAILS = 5  # 连续失败 N 次后自动禁用
-    _BACKOFF_CAP = 4 * 3600  # 退避上限 4 小时
-    while not stop_event.is_set():
-        try:
-            cfg = _poll_config()
-            if cfg.get("enabled"):
-                _ris_poll_once(manual=False)
-                _consec_fails = 0  # 成功则重置计数
-        except Exception:
-            _consec_fails += 1
-            try:
-                _log("error", f"RIS 轮询异常 (连续第{_consec_fails}次): "
-                     f"{type(sys.exc_info()[1]).__name__}: {sys.exc_info()[1]}")
-                cfg = _poll_config()
-                cfg["last_error"] = str(sys.exc_info()[1])[:300]
-                cfg["last_run"] = datetime_now_iso()
-                # 连续失败达阈值：自动禁用 + 写入告警标记
-                if _consec_fails >= _MAX_CONSEC_FAILS:
-                    cfg["enabled"] = False
-                    cfg["last_error"] = (
-                        f"[自动禁用] 连续 {_consec_fails} 次轮询失败，已暂停。"
-                        f"请检查 RIS 数据库连接后手动重新启用。"
-                        f" 最近错误: {str(sys.exc_info()[1])[:200]}")
-                    try:
-                        _log("warning",
-                             f"RIS 轮询连续失败 {_consec_fails} 次，已自动禁用。"
-                             "请检查 RIS 数据库连接配置后在设置中重新启用。")
-                    except Exception:
-                        try:
-                            from .log_utils import log_quiet
-                        except ImportError:
-                            from log_utils import log_quiet
-                        log_quiet(__name__)
-                _save_poll_config(cfg)
-            except Exception:
-                try:
-                    from .log_utils import log_quiet
-                except ImportError:
-                    from log_utils import log_quiet
-                log_quiet(__name__)
-        # 分片 sleep：基础 interval + 指数退避（每次失败翻倍，上限 _BACKOFF_CAP）
-        base_sec = max(15, int((_poll_config().get("interval_min") or 30) * 60))
-        if _consec_fails > 0:
-            backoff = min(base_sec * (2 ** min(_consec_fails - 1, 6)), _BACKOFF_CAP)
-        else:
-            backoff = base_sec
-        for _i in range(max(1, backoff // 5)):
-            if stop_event.is_set():
-                return
-            time.sleep(5)
-
+# RIS 轮询运行时（配置/互斥锁/轮询引擎/守护线程）已于 2026-09-30 迁至
+# server/ris_runtime.py；main.py 在文件末尾调用 start_poll_thread() 启动它。
 
 # 模块级建表 + 存量数据迁移（import 即就绪，不依赖 __main__ 入口：
 # TestClient / uvicorn / 桌面壳 import server.main 均需要表已存在，2026-08-18 修复）。
@@ -884,12 +571,17 @@ except Exception as _e:
             from log_utils import log_quiet
         log_quiet(__name__)
 
-# 模块加载即启动轮询守护线程（daemon，进程退出自动终止）
-_RIS_POLL_STOP = threading.Event()
-_RIS_POLL_THREAD = threading.Thread(target=_ris_poll_loop,
-                                    args=(_RIS_POLL_STOP,), daemon=True)
-_RIS_POLL_THREAD.name = "ris-poll-loop"
-_RIS_POLL_THREAD.start()
+# RIS 轮询守护线程：运行时在 server/ris_runtime.py，这里只负责启动
+# （原先是模块级 Thread 直接 start；迁出后由该模块封装，行为一致：import 即启动）
+try:
+    from server.ris_runtime import start_poll_thread as _start_ris_poll
+    _start_ris_poll()
+except Exception:
+    try:
+        from .log_utils import log_quiet
+    except ImportError:
+        from log_utils import log_quiet
+    log_quiet("server.main.start_ris_poll")
 
 
 # ----------------------------- 账号（责任到人） -----------------------------
@@ -1690,12 +1382,14 @@ from server.routes.route_stats import router as _router_stats
 from server.routes.route_license import router as _router_license
 from server.routes.route_screen import router as _router_screen
 from server.routes.route_ocr import router as _router_ocr
+from server.routes.route_ris import router as _router_ris
 app.include_router(_router_push)
 app.include_router(_router_queue)
 app.include_router(_router_stats)
 app.include_router(_router_license)
 app.include_router(_router_screen)
 app.include_router(_router_ocr)
+app.include_router(_router_ris)
 
 # ── 审计日志查询（2026-09-09 新增）────────────────────────────────────
 @app.get("/api/v1/admin/audit-logs")
@@ -2065,8 +1759,14 @@ def errors_export(admin: str = Depends(require_admin)):
 def data_export(emp: str = Depends(require_emp_local)):
     """导出全量数据（样本 + 队列 + 设置），供用户迁移或备份。"""
     from fastapi.responses import Response
+    from datetime import datetime          # 本文件惯例：函数内局部导入（见 sample_dashboard 等）
     from server.models import Sample, QueueItem, Setting
-    db_s = db.get_session()
+    # 2026-09-30 修复（该端点此前 100% 不可用，且无测试覆盖）：
+    #   ① `db.get_session()` 在 server/db.py 中**不存在**（正确入口是 SessionLocal，
+    #      db 只提供 get_db 生成器依赖）→ 调用即 AttributeError；
+    #   ② 下方 `_json.dumps` 的 `_json` 只在另一个函数的函数体内被局部导入 →
+    #      NameError。此处统一改为模块级 json 与统一会话入口。
+    db_s = SessionLocal()
     try:
         samples = db_s.query(Sample).all()
         queues = db_s.query(QueueItem).all()
@@ -2074,7 +1774,7 @@ def data_export(emp: str = Depends(require_emp_local)):
     finally:
         db_s.close()
     payload = {
-        "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
         "version": APP_VERSION,
         "samples": [
             {"ts": s.ts, "patient": s.patient, "gender": s.gender, "age": s.age,
@@ -2097,10 +1797,10 @@ def data_export(emp: str = Depends(require_emp_local)):
         ],
     }
     return Response(
-        content=_json.dumps(payload, ensure_ascii=False, indent=2),
+        content=json.dumps(payload, ensure_ascii=False, indent=2),
         media_type="application/json",
         headers={"Content-Disposition":
-                 f"attachment; filename=data_export_{datetime.datetime.now().strftime('%Y%m%d')}.json"})
+                 f"attachment; filename=data_export_{datetime.now().strftime('%Y%m%d')}.json"})
 
 
 # ── 备份管理 API（P0 改造，2026-09-12）──────────────────────────────────

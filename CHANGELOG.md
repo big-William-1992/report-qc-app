@@ -137,6 +137,21 @@
   （含**结构指标**——编辑距离调用次数，不受机器性能影响，退回全桶扫描立刻爆掉）。
 
 ### 重构 (Refactor)
+- **路由拆分 S4**：抽出 `server/ris_runtime.py`（轮询配置/`RIS_POLL_LOCK`/轮询引擎/守护线程），
+  8 个 `/api/v1/ris/*` 端点拆至 `server/routes/route_ris.py`；
+  main.py 2171 → **1872 行**（自 S1 起累计 2567 → 1872）。
+- **修复 S3 引入的回归：`/api/v1/ris/poll-now` 返回 NameError**。
+  S3 用"标记区间"搬代码时连带删掉了 `_RIS_POLL_LOCK` 的定义，而该端点仍引用它；
+  更值得警惕的是 **514 个测试 + e2e 全绿都没发现**（异常被包装成业务响应，
+  且无测试打该端点）。除随 S4 归位该锁外，新增
+  `tests/test_no_dangling_endpoint_names.py`：用 `dis` 的 `LOAD_GLOBAL` 检查**每个已注册端点**
+  引用的全局名是否都存在（`co_names` 不可用——含属性名与局部 import，误报爆炸），
+  并附 poll-now 回归用例。这类"没人调的端点"是既有测试的盲区。
+- **修复 `/api/v1/export/data` 100% 不可用**（此前无测试覆盖）：`db.get_session()` 不存在
+  （应为 `SessionLocal()`）、`_json` 仅在别处函数内局部导入、`datetime` 缺少局部导入，
+  三处独立缺陷叠加。现已修复并冒烟通过。
+- RIS 两模块补降级留痕（单份报告入库/入队失败继续处理但留痕；拉取与手动轮询失败服务端留痕），
+  静默吞异常总数 169 → **168**。
 - **路由拆分 S3**（screen + ocr，唯一需要真重构的一片）：新增
   `server/ocr_runtime.py` 承载共享运行时（推理锁 `OCR_LOCK`、整屏缓存 `SHOT`、
   识别缓存 `OCR_CACHE`、上传上限、`grab_fullscreen()`、`ocr_config_path()`），
