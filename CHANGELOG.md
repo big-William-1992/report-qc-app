@@ -137,6 +137,14 @@
   （含**结构指标**——编辑距离调用次数，不受机器性能影响，退回全桶扫描立刻爆掉）。
 
 ### 重构 (Refactor)
+- **路由拆分 S6a**：`accounts`(7) 与 `feedback`(3) 端点拆至
+  `server/routes/route_accounts.py`、`route_feedback.py`；main.py 1519 → **1377 行**
+  （自 S1 起累计 2567 → 1377）。
+- **悬空引用守卫第二次抓到跨域回归**：移除 accounts 段后，`GET /api/v1/health` 仍引用
+  `_LOGIN_FAIL`（登录失败限流表，原先定义在 accounts 段内，实为 `server/deps.py` 的同名对象）
+  → 守卫标出 `GET /api/v1/health (health): ['_LOGIN_FAIL']`，已改为从 deps 显式导入。
+  两次事故（S5 `_run_qc`、S6a `_LOGIN_FAIL`）共性：**被拆域的状态被另一个域以模块级全局名
+  隐式依赖**，只测被改域无法发现。
 - **路由拆分 S5**（最核心一片）：抽出 `server/qc_runtime.py`（进程级 RuleEngine 单例、
   规则刷新、`_run_qc`、按 IP 限流），16 个 `/api/v1/qc/*` 端点拆至
   `server/routes/route_qc.py`；main.py 1872 → **1519 行**（自 S1 起累计 2567 → 1519）。

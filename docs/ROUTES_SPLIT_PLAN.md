@@ -1,6 +1,6 @@
 # server/main.py 拆分计划（89 个端点 → server/routes/）
 
-> 状态：**S1–S5 已完成（2026-09-30）**；S6 待执行。
+> 状态：**S1–S5、S6a 已完成（2026-09-30）**；S6b（admin 15 端点）待执行。
 > 执行按"一次一个切片"推进 —— 半拆状态比不拆更危险。
 
 ## 已完成：S1（前置改造 + queue + stats）
@@ -143,6 +143,30 @@ S3 用"文本标记区间"搬代码时，**连带删掉了 `_RIS_POLL_LOCK` 的�
    拆分时必须按端点边界切，不能按"连续区间"整段搬（否则会把 feedback 一起搬走）。
    本次即因整段搬导致 `route_qc` 误含 feedback 端点，已按精确边界重做。
    → **教训：搬代码前先打印区间内的 `@app.` 清单核对**。
+
+## 已完成：S6a（accounts 7 + feedback 3）
+
+| 内容 | 结果 |
+|---|---|
+| 账号/登录/科室 | `server/routes/route_accounts.py`（7 端点，依赖全在共享层，无自有状态） |
+| 医生反馈 | `server/routes/route_feedback.py`（3 端点，存储为独立 feedback.db） |
+| main.py | 1519 → **1377 行**（自 S1 起累计 2567 → 1377） |
+| 验证 | 516 passed、e2e 2/2、OpenAPI 78 路径无重复、accounts/feedback 冒烟通过 |
+
+### ⭐ 悬空引用守卫**第二次**抓到跨域回归
+
+移除 accounts 段后，`GET /api/v1/health` 仍引用 `_LOGIN_FAIL`（登录失败限流表，
+原先**定义在 accounts 段内**，实为 `server/deps.py` 的同名对象）→ 守卫立即标出：
+
+```
+- GET /api/v1/health (health): ['_LOGIN_FAIL']
+```
+
+修复：main.py 显式 `from server.deps import _LOGIN_FAIL`（该表的唯一来源）。
+
+> 两次事故（S5 的 `_run_qc`、S6a 的 `_LOGIN_FAIL`）有共同特征：**被拆域的状态被
+> 另一个域以"模块级全局名"隐式依赖**。这类跨域耦合在"只测被改域"的测试里不可见，
+> 静态守卫是唯一可靠的兜底。后续若继续拆 samples/settings/orders，务必留意同类情况。
 
 ### S1 的经验（给后续切片）
 

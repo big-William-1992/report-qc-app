@@ -75,9 +75,8 @@ if _qc_db_override:
             from log_utils import log_quiet
         log_quiet(__name__)
 
-from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Depends, Query, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from server.schemas import *  # 请求/响应模型（2026-08-21 T56 收敛：内联模型已抽离到 schemas.py）
 
@@ -128,7 +127,10 @@ from server.security import (  # noqa: F401 (re-export 给旧引用)
 # 此处再导出：main.py 内仍有其它域（如 /api/v1/samples 入库即质控）引用 _run_qc。
 from server.qc_runtime import _get_engine, _qc_rate_ok, _reload_engine_rules, _run_qc  # noqa: F401,E402
 
-from server.deps import log_audit, _login_locked, _record_login_failure, _clear_login_failures  # 审计日志 + 登录限流
+from server.deps import log_audit  # 审计日志 + 登录限流
+# 登录失败限流表（定义在 server.deps，唯一一份）。/api/v1/health 用它估算活跃会话数；
+# 随 accounts 端点拆出后，main 需要显式导入（此前依赖 accounts 段内的同名局部定义）。
+from server.deps import _LOGIN_FAIL  # noqa: F401
 
 _require_secret_for_network_host(os.environ.get("QC_HOST", "127.0.0.1"))
 
@@ -227,45 +229,9 @@ def _worst_sev(findings: list) -> str:
 # 质控计算与规则/错字表端点（/api/v1/qc/*）已于 2026-09-30 拆分至
 # server/routes/route_qc.py；共享运行时（引擎单例/限流/_run_qc）见 server/qc_runtime.py。
 
-@app.post("/api/v1/feedback")
-def submit_feedback(req: FeedbackReq,
-                    emp: str = Depends(require_emp_local),
-                    _lic: bool = Depends(require_license_active)):
-    """医生反馈回流: 误报👎/漏报➕ → feedback.db (P1-4 badcase 闭环入口)。
-    存储失败不影响质控主流程(降级返回 ok=False 而非 500)。"""
-    try:
-        from badcase_store import record
-        data = req.model_dump()
-        data["user_id"] = emp
-        fid = record(data)
-        return _envelope(True, "已记录，感谢反馈", {"id": fid})
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception:
-        from log_utils import log_quiet; log_quiet(__name__)
-        return _envelope(False, "反馈暂存失败（不影响质控结果）", {})
+# 医生反馈端点（/api/v1/feedback/*）已于 2026-09-30 拆分至
+# server/routes/route_feedback.py（存储为独立的 feedback.db，见 src/badcase_store.py）。
 
-
-@app.get("/api/v1/feedback/stats")
-def feedback_stats(emp: str = Depends(require_emp_local)):
-    """反馈计数(驾驶舱展示用)。"""
-    try:
-        from badcase_store import stats
-        return _envelope(True, "OK", stats())
-    except Exception:
-        from log_utils import log_quiet; log_quiet(__name__)
-        return _envelope(True, "OK", {"total": 0, "by_type": {}, "last_7d": 0})
-
-
-@app.get("/api/v1/feedback/export")
-def feedback_export(limit: int = 1000,
-                    emp: str = Depends(require_emp_local)):
-    """导出最近反馈(JSONL), 供 tools/export_badcase_training.py 精调管线消费。"""
-    from badcase_store import list_recent
-    import json as _json
-    rows = list_recent(limit=limit)
-    body = "\n".join(_json.dumps(r, ensure_ascii=False) for r in rows)
-    return JSONResponse(content=body or "", media_type="application/x-ndjson")
 
 
 # 质控计算与规则/错字表端点（/api/v1/qc/*）已于 2026-09-30 拆分至
@@ -390,121 +356,8 @@ except Exception:
 
 
 # ----------------------------- 账号（责任到人） -----------------------------
-@app.post("/api/v1/accounts")
-def account_create(req: AccountCreate, request: Request,
-                   authorization: Optional[str] = Header(None),
-                   x_emp_id: Optional[str] = Header(None)):
-    # 首个账号免鉴权引导（boot）；已存在账号则必须登录后才能创建（防滥用）。
-    # X-Emp-Id 头仅限本机（127.0.0.1）兜底：内网 --host 0.0.0.0 部署时，
-    # 任意客户端伪造 X-Emp-Id 即可批量创建账号（2026-08-18 修复）。
-    emp = None
-    if accounts.count_accounts() > 0:
-        emp = _emp_from_auth(authorization)
-        if not emp:
-            _local = request.client and request.client.host in ("127.0.0.1", "::1", "localhost")
-            if _local:
-                emp = (x_emp_id or "").strip()
-        if not emp:
-            raise HTTPException(401, "创建账号需登录：Authorization: Bearer <token>")
-        if accounts.get_role(emp) != "admin":
-            raise HTTPException(403, "仅管理员可创建账号")
-    _client_ip = request.client.host if request.client else ""
-    _operator = emp or "boot"
-    ok, msg = accounts.create_account(req.emp_id, req.password, req.name)
-    if not ok:
-        return _envelope(False, "ERR", {}, msg)
-    log_audit(_operator, "account_created",
-              {"target": req.emp_id}, _client_ip)
-    # 首账号自动 admin 已在 create_account 的 INSERT 事务内原子判定（BEGIN IMMEDIATE），
-    # 无需在此二次 count+set_role（旧实现有并发竞态，两个并发首账号可都成 admin）
-    token = make_token(req.emp_id)   # 首个账号创建即登录，免去二次登录
-    return _envelope(True, "OK",
-                     {"token": token, "emp_id": req.emp_id, "name": req.name,
-                      "role": accounts.get_role(req.emp_id)}, msg)
-
-
-# 登录失败限速：统一走 server.deps 的 emp_id 内存限流（测试可直接重置 main._LOGIN_FAIL）
-from server import deps as _deps_auth  # noqa: E402
-
-_LOGIN_FAIL = _deps_auth._LOGIN_FAIL
-LOGIN_LOCK_SECONDS = _deps_auth._LOGIN_LOCK_DURATION
-
-
-@app.post("/api/v1/accounts/login")
-def account_login(req: LoginReq, request: Request):
-    emp_id = (req.emp_id or "").strip()
-    _client_ip = request.client.host if request.client else ""
-    if _login_locked(emp_id):
-        log_audit(emp_id, "login_locked", {}, _client_ip)
-        return _envelope(False, "ERR", {}, "登录失败次数过多，请稍后再试")
-    if not accounts.verify_account(emp_id, req.password):
-        _record_login_failure(emp_id)
-        rec = _deps_auth._LOGIN_FAIL.get(emp_id, [0, 0, None])
-        log_audit(emp_id, "login_failed", {"attempts": rec[0]}, _client_ip)
-        return _envelope(False, "ERR", {}, "工号或密码错误")
-    _clear_login_failures(emp_id)
-    token = make_token(emp_id)
-    log_audit(emp_id, "login_success", {}, _client_ip)
-    return _envelope(True, "OK",
-                      {"token": token, "emp_id": emp_id,
-                       "name": accounts.get_name(emp_id),
-                       "role": accounts.get_role(emp_id)})
-
-
-@app.get("/api/v1/accounts/me")
-def account_me(emp: str = Depends(require_emp)):
-    return _envelope(True, "OK",
-                     {"emp_id": emp, "name": accounts.get_name(emp), "role": accounts.get_role(emp)})
-
-
-@app.get("/api/v1/accounts")
-def account_list(emp: str = Depends(require_emp)):
-    # 管理员看全部（含角色/科室），普通用户只看自己
-    if accounts.get_role(emp) == "admin":
-        return _envelope(True, "OK", accounts.list_accounts_full())
-    return _envelope(True, "OK",
-                     [{"emp_id": emp, "name": accounts.get_name(emp), "role": accounts.get_role(emp)}])
-
-
-
-
-@app.post("/api/v1/accounts/{emp_id}/role")
-def account_set_role(request: Request, emp_id: str, req: RoleReq,
-                    admin: str = Depends(require_admin)):
-    _ip = request.client.host if request.client else ""
-    if req.role not in ("admin", "doctor"):
-        return _envelope(False, "ERR", {}, "角色只能是 admin 或 doctor")
-    if not accounts.set_role(emp_id, req.role):
-        return _envelope(False, "ERR", {}, "账号不存在")
-    log_audit(admin, "role_changed",
-              {"target": emp_id, "new_role": req.role}, _ip)
-    return _envelope(True, "OK", {}, "角色已更新")
-
-
-
-
-@app.post("/api/v1/accounts/{emp_id}/password")
-def account_reset_password(request: Request, emp_id: str, req: PwdReq,
-                           admin: str = Depends(require_admin)):
-    _ip = request.client.host if request.client else ""
-    if len(req.password or "") < 6:
-        return _envelope(False, "ERR", {}, "密码至少 6 位")
-    if not accounts.reset_password(emp_id, req.password):
-        return _envelope(False, "ERR", {}, "账号不存在")
-    log_audit(admin, "password_reset", {"target": emp_id}, _ip)
-    return _envelope(True, "OK", {}, "密码已重置")
-
-
-
-
-@app.post("/api/v1/accounts/{emp_id}/dept")
-def account_set_dept(request: Request, emp_id: str, req: DeptReq, admin: str = Depends(require_admin)):
-    _ip = request.client.host if request.client else ""
-    if not accounts.set_dept(emp_id, req.dept_id):
-        return _envelope(False, "ERR", {}, "账号不存在")
-    log_audit(admin, "dept_changed", {"target": emp_id, "dept_id": req.dept_id}, _ip)
-    return _envelope(True, "OK", {}, "科室已更新")
-
+# 账号/登录/科室端点（/api/v1/accounts/*）已于 2026-09-30 拆分至
+# server/routes/route_accounts.py（依赖 security/deps/accounts 共享层，无自有状态）。
 
 @app.get("/api/v1/departments")
 def department_list(admin: str = Depends(require_admin)):
@@ -1036,6 +889,8 @@ from server.routes.route_screen import router as _router_screen
 from server.routes.route_ocr import router as _router_ocr
 from server.routes.route_ris import router as _router_ris
 from server.routes.route_qc import router as _router_qc
+from server.routes.route_accounts import router as _router_accounts
+from server.routes.route_feedback import router as _router_feedback
 app.include_router(_router_push)
 app.include_router(_router_queue)
 app.include_router(_router_stats)
@@ -1044,6 +899,8 @@ app.include_router(_router_screen)
 app.include_router(_router_ocr)
 app.include_router(_router_ris)
 app.include_router(_router_qc)
+app.include_router(_router_accounts)
+app.include_router(_router_feedback)
 
 # ── 审计日志查询（2026-09-09 新增）────────────────────────────────────
 @app.get("/api/v1/admin/audit-logs")
