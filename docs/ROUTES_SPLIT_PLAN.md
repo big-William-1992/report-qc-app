@@ -1,6 +1,6 @@
 # server/main.py 拆分计划（89 个端点 → server/routes/）
 
-> 状态：**S1 已完成（2026-09-30）**；S2–S6 待执行。
+> 状态：**S1、S2 已完成（2026-09-30）**；S3–S6 待执行。
 > 执行按"一次一个切片"推进 —— 半拆状态比不拆更危险。
 
 ## 已完成：S1（前置改造 + queue + stats）
@@ -29,6 +29,27 @@
   `include_router` 注册的端点（防止将来又变回"空跑"）；
 - 反向验证：故意在 `route_stats.py` 里重复注册 `/api/v1/stats/trend` → 守卫**报错**；
   修复前该场景会静默通过。
+
+## 已完成：S2（license 5 端点）
+
+| 内容 | 结果 |
+|---|---|
+| 拆出授权路由 | `server/routes/route_license.py`：`/api/v1/license/{status,disclaimer,machine-code,activate}`（5 端点，**公开端点**——登录/激活本身是闸门流程，要求先登录会死锁） |
+| main.py | 删除原实现；注册新模块；2568 → 2428 行 |
+| 顺带改进 | `license_status_get` 合并扩展信息的 `except Exception: pass` 改为 `log_quiet`（按"降级必须留痕"规约；静默会让"授权信息显示不全"无从排查） |
+| 验证 | 5 个端点冒烟全 200（无效激活码返回 `ok=false` 而非 500）、全量 pytest 绿、e2e 2/2、OpenAPI 78 路径无重复 |
+
+### S2 的取舍：为什么 `screen` 没跟着做
+
+原计划 S2 是 `license`(5) + `screen`(4)。动手前查依赖发现 **screen 与 ocr 共用一个锁**：
+`_OCR_LOCK` 同时保护 `/api/v1/screen/ocr` 与 `/api/v1/ocr/base64`（2026-08-18 加固：
+RapidOCR 单次峰值约 610MB，并发推理会让医院低配桌面 OOM）。
+此外 screen 还依赖模块级状态 `_SHOT`（原图缓存）/`_OCR_CACHE`/`_SHOT_MAX_W` 与
+`_grab_fullscreen()`。
+
+**结论：screen 不是"小且独立"的切片**。强行只搬 screen 会把共享锁与状态留成跨文件引用，
+反而制造新的耦合。正确做法是 **screen + ocr 合并为一片**，并抽出一个
+`server/ocr_runtime.py` 存放共享锁与截图/缓存状态。→ 已调整为 **S3 = screen + ocr**。
 
 ### S1 的经验（给后续切片）
 

@@ -103,7 +103,6 @@ import engine
 import ris
 import accounts
 import samplelib
-from server import license_web
 import ocr_provider  # noqa: F401 (副作用导入: 确保 PyInstaller 收集 OCR 引擎)
 from version import APP_VERSION
 from server import db  # SQLAlchemy 统一数据层（users/departments/queue/settings）
@@ -1078,49 +1077,8 @@ def department_create(request: Request, req: DeptCreateReq, admin: str = Depends
 # 以下端点均为公开（无需登录），因为登录/激活本身就是闸门流程的一部分。
 
 
-@app.get("/api/v1/license/status")
-def license_status_get():
-    """前端闸门用：免责/激活/试用剩余天数/机器码/账号数 + 扩展信息。"""
-    base = license_web.license_status(_appdata_dir(), accounts.count_accounts())
-    # 合并扩展信息（试用告警/到期日期/授权类型）
-    try:
-        ext = _lu.get_license_info()
-        for k in ("trial_days_remaining", "trial_warning", "license_type",
-                  "expires_at", "licensed_to", "seat_count"):
-            if k not in base and k in ext:
-                base[k] = ext[k]
-    except Exception:
-        pass
-    return _envelope(True, "OK", base)
-
-
-@app.get("/api/v1/license/disclaimer")
-def license_disclaimer_text():
-    return _envelope(True, "OK", {"text": license_web.disclaimer_text()})
-
-
-@app.post("/api/v1/license/disclaimer")
-def license_disclaimer_accept():
-    license_web.accept_disclaimer(_appdata_dir())
-    return _envelope(True, "OK", {"disclaimer_accepted": True})
-
-
-@app.get("/api/v1/license/machine-code")
-def license_machine_code():
-    return _envelope(True, "OK", {"machine_id": license_web.machine_id()})
-
-
-@app.post("/api/v1/license/activate")
-def license_activate(req: ActivateReq):
-    ok = license_web.activate(_appdata_dir(), req.code)
-    if not ok:
-        return _envelope(False, "ERR",
-                         license_web.license_status(_appdata_dir(), accounts.count_accounts()),
-                         "激活码无效，请检查后重试")
-    return _envelope(True, "OK",
-                      license_web.license_status(_appdata_dir(), accounts.count_accounts()),
-                      "激活成功")
-
+# 授权/试用/免责端点（/api/v1/license/*）已于 2026-09-30 拆分至
+# server/routes/route_license.py，并经 app.include_router 注册（见文件末尾）。
 
 # ----------------------------- 样本库（持久化 + 统计） -----------------------------
 @app.post("/api/v1/samples")
@@ -1992,9 +1950,11 @@ class _NoCacheStaticFiles(StaticFiles):
 from server.routes.route_push import router as _router_push
 from server.routes.route_queue import router as _router_queue
 from server.routes.route_stats import router as _router_stats
+from server.routes.route_license import router as _router_license
 app.include_router(_router_push)
 app.include_router(_router_queue)
 app.include_router(_router_stats)
+app.include_router(_router_license)
 
 # ── 审计日志查询（2026-09-09 新增）────────────────────────────────────
 @app.get("/api/v1/admin/audit-logs")

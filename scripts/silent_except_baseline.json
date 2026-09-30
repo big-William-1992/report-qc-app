@@ -1,7 +1,7 @@
 {
   "by_file": {
     "server/core.py": {
-      "log_quiet": 3,
+      "log_quiet": 4,
       "pass": 0,
       "swallow": 0
     },
@@ -21,9 +21,14 @@
       "swallow": 6
     },
     "server/main.py": {
-      "log_quiet": 21,
-      "pass": 3,
+      "log_quiet": 20,
+      "pass": 2,
       "swallow": 8
+    },
+    "server/routes/route_license.py": {
+      "log_quiet": 1,
+      "pass": 0,
+      "swallow": 0
     },
     "server/security.py": {
       "log_quiet": 1,

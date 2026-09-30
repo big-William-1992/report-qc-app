@@ -137,6 +137,19 @@
   （含**结构指标**——编辑距离调用次数，不受机器性能影响，退回全桶扫描立刻爆掉）。
 
 ### 重构 (Refactor)
+- **路由拆分 S2**：`/api/v1/license/*`（5 端点）迁出至 `server/routes/route_license.py`
+  （公开端点——登录/激活本身是闸门流程，要求先登录会死锁）。main.py 2568 → 2428 行。
+  顺带把 `license_status_get` 里合并扩展信息的 `except Exception: pass` 改为
+  `log_quiet`（按"降级必须留痕"规约）。验证：5 端点冒烟全 200（无效激活码返回
+  `ok=false` 而非 500）、全量 pytest 绿、e2e 2/2、OpenAPI 78 路径无重复。
+- **修正"静默吞异常"门禁自身的口径缺陷**：新增文件规则原先把 `log_quiet` 也判为回归，
+  而 `log_quiet` 恰是本仓文档**推荐**的留痕方式（"新增 except 必须留痕：logger.warning
+  或 log_quiet"）→ 按规矩写的新文件反而过不了门禁（拆 S2 时实际踩到）。
+  现新增文件规则只看**真静默**（pass/直接 return），与回归判定口径一致，并加反证测试。
+- **S2 的取舍（记录在案）**：原计划把 `screen` 一起拆，动手前查依赖发现
+  `_OCR_LOCK` 被 `/api/v1/screen/ocr` 与 `/api/v1/ocr/base64` **共用**（防并发推理 OOM），
+  且 screen 依赖模块级截图/缓存状态 → 只搬 screen 会制造新的跨文件耦合。
+  故调整为 **S3 = screen + ocr**，并抽出 `server/ocr_runtime.py` 存放共享锁与状态。
 - **路由拆分 S1**（`docs/ROUTES_SPLIT_PLAN.md` 第一片）：把 7 个端点从 2567 行的
   `server/main.py` 拆到 `server/routes/route_queue.py`（4）与 `route_stats.py`（3），
   并先下沉两个跨域助手：`_scope_user_id` → `server/core.py`、

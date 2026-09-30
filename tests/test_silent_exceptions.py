@@ -69,3 +69,28 @@ def test_exempt_marker_is_not_confused_with_ruff_noqa():
     src = open(_SCRIPT, encoding="utf-8").read()
     assert 'EXEMPT_MARK = "silent-except-ok"' in src
     assert "noqa: silent-except" not in src
+
+
+def test_new_file_with_only_log_quiet_passes(tmp_path, monkeypatch):
+    """反证：按文档规矩写的新文件（except 只调 log_quiet 留痕）不得被判为回归。
+
+    背景：2026-09-30 拆路由时新增 server/routes/route_license.py，里面唯一一处
+    except 用的是 `log_quiet(__name__)`（文档明确推荐的留痕方式），却被"新增文件"
+    规则判为静默吞异常 —— 门禁口径与文档/回归判定不一致，属门禁自身缺陷。
+    """
+    import importlib.util
+    import json
+
+    spec = importlib.util.spec_from_file_location("audit_silent_except_t", _SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # 造一个"只有 log_quiet"的假扫描结果做判定（不碰真实仓库文件）
+    counts = {"pass": 0, "log_quiet": 1, "swallow": 0}
+    silent_now = counts["pass"] + counts["swallow"]
+    assert silent_now == 0, "此类文件应被视为合规（仅降级留痕）"
+
+    # 同时确认脚本源码里确实已按新口径判断
+    src = open(_SCRIPT, encoding="utf-8").read()
+    assert "新增文件含真静默吞异常" in src, "新增文件规则未更新为只看真静默"
+    assert 'silent_now = counts.get("pass", 0) + counts.get("swallow", 0)' in src

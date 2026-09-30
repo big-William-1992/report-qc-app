@@ -152,8 +152,17 @@ def main():
     problems = []
     for rel, counts in summary["by_file"].items():
         old = base.get("by_file", {}).get(rel)
+        # 新增文件：只看**真静默**（pass/swallow）。
+        # 2026-09-30 修正：原规则把 `log_quiet` 也算作回归，而 log_quiet 正是本仓
+        # 文档推荐的做法（"新增 except 分支必须留痕：logger.warning 或 log_quiet"）
+        # —— 于是"按规矩写的新文件"反而过不了门禁。这与回归判定口径（忽略 log_quiet）
+        # 也不一致，属于门禁自身的缺陷。
         if old is None:
-            problems.append(f"新增文件含静默吞异常：{rel} {counts}")
+            silent_now = counts.get("pass", 0) + counts.get("swallow", 0)
+            if silent_now:
+                problems.append(
+                    f"新增文件含真静默吞异常：{rel}（pass={counts.get('pass',0)}, "
+                    f"swallow={counts.get('swallow',0)}）")
             continue
         # 只看真静默的两类；log_quiet 是合规的降级留痕，不参与回归判定
         for kind in ("pass", "swallow"):
