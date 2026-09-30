@@ -16,7 +16,7 @@
 | **D8** | **是否提供无头服务模式**（影响 Windows 服务化方式） | 打包 exe 目前是桌面壳；做服务需要单独的启动入口 | 创始人 | DELIVERY_HARDENING 附录 A |
 | **D9** | **PostgreSQL 切换阈值**：单库 SQLite 能撑多少并发/多大规模 | 多科室并发写入时 SQLite 会成为瓶颈；切换需要数据迁移与运维支持 | 创始人 + 院内信息科 | DELIVERY_HARDENING §10 |
 | **D10** | **`server/main.py` 拆分是否按计划执行** | 89 个端点、2567 行；不定则并行开发继续互相踩 | 创始人（排期） | [ROUTES_SPLIT_PLAN.md](ROUTES_SPLIT_PLAN.md) |
-| **D11** | **医院/公立机构为何仍需付费？**（PolyForm 的「Noncommercial Organizations」把 *public safety or health organization* 与 *government institution* 列为免费档，**不论经费来源** → 公立医院可能据此主张免费使用） | 这直接决定商业许可的**正当性写法**：不能主张"医院商用即侵权"，只能改为"订阅 = 书面商业授权 + 更新 + 支持 + 可入账凭证"。**须律师确认**：① 该写法是否足够；② 是否需在 `NOTICE.md`/协议中声明"诊疗活动中的使用视为商业用途"及其在 PolyForm 下的效力 | 律师（优先） | [COMMERCIAL_LICENSE_TERMS.md](COMMERCIAL_LICENSE_TERMS.md) §0 Q1、[LICENSE_OPTIONS.md](LICENSE_OPTIONS.md) |
+| **D11** | **医院/公立机构为何仍需付费？** → **✅ 路线已定（2026-09-30）：路线 A —— 维持 PolyForm，靠"服务 + 正式授权"收费**（不改为自订许可） | 背景：PolyForm 的「Noncommercial Organizations」把 *public safety or health organization* 与 *government institution* 列为免费档（**不论经费来源**）→ 公立医院可能据此主张免费使用，故**不能**主张"医院商用即侵权"。已按路线 A 写成拟稿：订阅 = 书面商业授权（排除口径争议）+ 正式版本更新与安全修复 + 支持/实施/验收材料 + 可入账可审计凭证。**仍须律师确认**：① 该写法是否足够；② 是否需在 `NOTICE.md`/协议中声明"诊疗活动中的使用视为商业用途"及其在 PolyForm 下的效力。**未采用路线 B**（自订许可/保留所有权利：能硬性排除医院免费档，但失去标准文本，且需重写 LICENSE 与全部对外文案） | 创始人已定路线 A；措辞待律师 | [COMMERCIAL_LICENSE_TERMS.md](COMMERCIAL_LICENSE_TERMS.md) §0 Q1、[LICENSE_OPTIONS.md](LICENSE_OPTIONS.md) |
 
 ## 已完成的决策（留档）
 
@@ -24,6 +24,8 @@
   若进真实临床工作流须重新评估监管定性。
 - **D2 = 选项 A（PolyForm Noncommercial 1.0.0）**（2026-09-30）：
   非商业免费、商业需授权，与激活码/订阅制自洽；旧版本 MIT 永久有效（已留档）。
+- **D11 = 路线 A（维持 PolyForm，靠"服务 + 正式授权"收费）**（2026-09-30）：
+  不改为自订许可；拟稿见 `COMMERCIAL_LICENSE_TERMS.md`，措辞待律师。
 
 ## 工程侧已就绪、只等决定的支撑
 
