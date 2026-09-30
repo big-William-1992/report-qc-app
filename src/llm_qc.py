@@ -7,19 +7,67 @@ from __future__ import annotations
 
 from typing import Optional, List
 
+import logging
+
 from llm_client import LLMClient, get_llm_client, load_llm_config
 from llm_prompt import build_qc_prompt, build_qc_prompt_ft
 from rag import Retriever, get_retriever
 from llm_fusion import fuse
 
+logger = logging.getLogger(__name__)
+
+
+# ── error_type 白名单 ────────────────────────────────────────
+# 背景(2026-09-30)：微调模型在分布外输入上会**拼造**不存在的错误码
+# （实测造出 "R1-CONSISTENCY"/"R2-CONSISTENCY"，而 R1 是 R1-GENDER、
+# R2 是 R2-LATERALITY、一致性是 R5-CONSISTENCY）。
+# `_normalize` 原先把 rule_id 合成 "L1-" + error_type，等于把模型编的字符串
+# 直接当成规则编号往下游传，绕过了 llm_engine 里已有的 ALLOWED_RULE_IDS 校验。
+# 这里做**出口校验**：不在白名单内的码一律丢弃并留痕，避免幻觉编码流进结果。
+#
+# 白名单 = 规则引擎真实产出的规则号 ∪ ft 训练分布里的码 ∪ L1-OTHER(逃生舱)。
+# 与 src/engine/ 的规则号保持同步；新增规则时同步更新此处。
+ALLOWED_LLM_ERROR_TYPES: frozenset = frozenset({
+    # 患者基本信息
+    "R1-GENDER", "R21-GENDER-SITE", "R21-GENDER",
+    # 部位/方位
+    "R2-LATERALITY", "R6-SITE", "R18-COVERAGE",
+    # 评分系统
+    "R3-SCORE",
+    # 单位与尺寸
+    "R4-UNIT", "R22-UNIT", "R22-SIZE", "R22-SIZE-MISSING", "R22-QUAL",
+    # 描述-结论一致性
+    "R5-CONSISTENCY", "R17-PERREGION", "R14-NATURE", "R14-COUNT",
+    "R14-NORMAL", "R15-NORMAL", "R15-PRESENCE",
+    # 句内逻辑
+    "R12-SENTENCE", "R9-CONFLICT", "R7-INTERNAL",
+    # 定性与处置/随访
+    "R24-ADVICE", "R25-TEMPORAL", "R16-FOLLOWUP",
+    # 术语/错别字
+    "R8-TYPO", "R19-HOMOPHONE", "R23-TRADITIONAL", "R19-WHITELIST",
+    # 模板与要素
+    "R10-TEMPLATE", "R11-ABNORMAL", "R20-TEMPLATE",
+    # 逃生舱：模型认定属全新类型时使用（要求 rationale 说明）
+    "L1-OTHER",
+})
+
 
 # ⚠️ 已知限制(2026-08-25): 微调模型 confidence 几乎恒为 1.0 (训练标注全是 1.0),
 # 融合层的置信度分级对 LLM 来源发现实际不产生区分度。校准需真实 badcase
 # 数据驱动(见 P1-badcase 回流), 勿硬编码折扣系数。
-def _normalize(item: dict) -> dict:
+def _normalize(item: dict) -> Optional[dict]:
+    """把模型返回的一条发现规整为内部结构；error_type 不合法时返回 None。"""
+    error_type = str(item.get("error_type") or "").strip()
+    if error_type not in ALLOWED_LLM_ERROR_TYPES:
+        logger.warning(
+            "丢弃 LLM 返回的非法 error_type=%r（不在白名单，疑似幻觉编码）；"
+            "location=%r rationale=%r",
+            error_type, item.get("location"), item.get("rationale"),
+        )
+        return None
     return {
-        "rule_id": "L1-" + str(item.get("error_type", "UNKNOWN")),
-        "error_type": item.get("error_type"),
+        "rule_id": "L1-" + error_type,
+        "error_type": error_type,
         "location": item.get("location"),
         "severity": item.get("severity", "low"),
         "confidence": item.get("confidence"),
@@ -56,14 +104,17 @@ def run_llm_qc(text: str, meta: Optional[dict] = None, *,
     findings: List[dict] = []
     parsed = resp.parsed
     if isinstance(parsed, list):
-        findings = [_normalize(it) for it in parsed]
+        findings = [n for n in (_normalize(it) for it in parsed) if n]
     elif isinstance(parsed, dict):
         if "findings" in parsed:
             for it in (parsed.get("findings") or []):
-                findings.append(_normalize(it))
+                n = _normalize(it)
+                if n:
+                    findings.append(n)
         elif parsed:
             # 模型直接返回单条发现（未包成数组）；空对象 {} 视为无发现
-            findings = [_normalize(parsed)]
+            n = _normalize(parsed)
+            findings = [n] if n else []
     return {"available": True, "model": resp.model, "error": None,
             "rag_contexts": ctx, "findings": findings, "raw": resp.text}
 

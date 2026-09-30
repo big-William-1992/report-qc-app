@@ -134,6 +134,49 @@ python3 tools/semantic_eval.py score data/semantic_eval/labeled.jsonl --llm \
 
 ---
 
+## 5.5 本地微调模型 qc-qwen3 的**能力边界**（2026-09-30 实测，必读）
+
+用留出集 `data/mlx_data/valid.jsonl`（59 条，模型训练时没见过），
+走**线上真实路径** `run_llm_qc(config={"provider":"ollama","model":"qc-qwen3","prompt_mode":"ft"})`：
+
+| 指标 | 结果 |
+|---|---|
+| recall（错误样本检出率） | **95.5%**（21/22） |
+| specificity（正常样本零误报） | **100.0%**（37/37） |
+
+**但必须连同下面这条边界一起引用，否则会严重高估：**
+
+该 adapter 的训练分布里**只有 3 种错误码**，样本数极度不均：
+
+| 训练集中出现的 error_type | 样本数 |
+|---|---|
+| `R8-TYPO`（错别字） | 235 |
+| `R19-HOMOPHONE`（同音字） | 8 |
+| `R5-CONSISTENCY`（描述-结论矛盾） | **1** |
+
+实测结论：**模型只会检出错别字/同音字这类字符级错误**；对训练里几乎没见过的
+语义级错误（左右侧矛盾、性别-器官矛盾、描述-结论矛盾）在分布外输入上**静默返回 `[]`**。
+上面 95.5% 的 recall 是在"与训练分布同构"的留出集上取得的，
+**不能外推到真实临床报告**。
+
+> 复现：`R5-CONSISTENCY` 在 train 里只有 1 条，模型学不会；
+> 用真实矛盾报告（如"描述考虑肝囊肿 / 结论考虑肝癌"）实测返回 `[]`。
+
+### 两个已加的门禁（防止此类问题再次静默发生）
+
+| 测试 | 守什么 |
+|---|---|
+| `tests/test_llm_prompt_alignment.py` | ft prompt 必须与 adapter 训练集逐字对齐；不一致即失败（否则线上静默退化） |
+| `tests/test_llm_error_type_whitelist.py` | LLM 返回的 error_type 必须在白名单内，幻觉编码（实测出现过 `R1-CONSISTENCY`/`R2-CONSISTENCY` 这类**不存在**的码）一律丢弃并告警 |
+
+### 引用指标时的三条硬规矩
+
+1. 报 recall 必须**同时**报 `prompt_mode`、模型名、adapter、留出集来源；
+2. 留出集必须与训练集**同构但不相交**，否则数字无意义；
+3. **不要**把该 adapter 的指标写成"语义质控 recall"——它目前只覆盖字符级错误。
+
+---
+
 ## 6. 与精调数据的关系
 
 同一份标注数据可以两用：
