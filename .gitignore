@@ -42,6 +42,8 @@ Thumbs.db
 keys/private_key.pem
 # 运行时授权状态（含本机免责声明接受标记/激活状态），由软件生成，不入库
 assets/license.dat
+# 试用起点冗余锚点（2026-09-30 防「删 license.dat 重置试用」）：用户本机状态，不入库
+**/.license_trial_anchor
 # 运行时登录会话（当前账号工号，由软件生成，不入库）
 assets/session.json
 # 整个 keys/ 目录不入库：私钥仅本地发卡用、公钥已内嵌客户端（license_utils.py）

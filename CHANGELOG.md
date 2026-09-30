@@ -11,6 +11,54 @@
 > 修复了 4 个此前会静默损坏数据/交付物的问题 + 1 类「两套实现」隐患。
 
 ### 修复 (Fixed)
+- **前端 bundle 语法错误导致整个界面失效**（**本轮最严重**）：`index.html` 以
+  **经典脚本**方式加载 `js/app.bundle.js`（要兼容 file:// 与 http:// 两条路径），
+  但 v4.3.6 的 `d73e2b9` 重新生成 bundle 时忘了剥掉顶层 `import/export` →
+  浏览器直接 `SyntaxError: Unexpected token 'export'`，**SPA 的 JS 一行都不执行**
+  （登录闸门/按钮/渲染全废），而 HTTP 仍 200、pytest 全绿、无人察觉。
+  修复：新增 `tools/build_bundle.py`（剥 import/export 后按依赖顺序拼接）并重新生成；
+  `tests/test_frontend_bundle.py` 守着「无顶层 import/export + 与 modules/ 同步 +
+  `node --check` 可解析」。已用 Chromium 实测：修复前 `pageerror: SyntaxError`
+  且 `window.APP_SETTINGS` 等全部缺失；修复后零错误、界面正常渲染。
+- **PACS 推送的报告在队列里看不到**（功能缺陷）：`route_push.py` 从 `server/deps.py`
+  导入的 `_queue_add_text` 把队列写进 `qc_queue.json`，而队列端点
+  `GET /api/v1/queue` 读的是 qc.db 的 `QueueItem` 表 → 推送入队的报告永远看不到
+  （RIS 轮询那条路径当时已改用 ORM，只有推送踩坑）。修复：入队收敛到
+  `core.queue_add_text()`，main / deps / route_push 全部转调；新增
+  `tests/test_queue_ingest_paths.py` 从 HTTP 入口验证「推送 → 队列端点可见」。
+- **app 数据目录两套解析**：`core._appdata_dir()`（非 Windows 落 `~/.medical_report_qc`）
+  与 `deps._appdata_dir()`（用户数据目录）不一致 → 同一个 `qc_queue.json` /
+  `web_settings.json` 被写在两个地方、读写互相看不见。修复：统一为
+  `paths.user_data_dir()`（并使其平台正确：macOS → Application Support、
+  Windows → `%APPDATA%`、Linux → XDG），三方一致性由测试断言。
+- **`server/deps.py` 里的第二套（更弱的）鉴权栈**：`SECRET/TOKEN_TTL/make_token/
+  verify_token/_emp_from_auth/require_emp/require_emp_local/require_admin`。
+  三处实证危害：① 缺省密钥是字面量 `change-me-in-prod`（security.py 用随机持久化
+  密钥）→ 可伪造 token 且两套互不通用；② `require_emp` 的工号存在性校验写成
+  `import src.accounts`，而 src 不是包 → ImportError 被吞、校验是死代码
+  （任意填 X-Emp-Id 即可冒充）；③ 本地来源不校验账号。三者当前无人引用，但
+  `ARCHITECTURE.md` 恰把 deps.py 描述为「依赖注入（require_emp/require_admin…）」。
+  修复：deps.py 只从 security.py **再导出**，并加同一性守卫测试。
+- **试用期可"删文件重置"**：`check_trial` 在 `first_run` 缺失时直接给满 90 天，
+  HMAC 只防改日期不防删文件 → `rm license.dat` 即可无限续期。修复：试用起点冗余写到
+  同目录 `.license_trial_anchor`（+ Windows 注册表 + 用户数据目录），取**最早**的
+  有效签名日期为准；新增 `tests/test_trial_anchor.py`。
+- **自动更新的完整性校验形同虚设**：客户端取 `<下载URL>.sha256` 强制校验，但发布
+  流程**从不生成**该文件 → 永远走「无校验文件：跳过（宽容）」分支。修复：发布流程为
+  每个产物生成同名 `.sha256` 一并发布，并加测试把「客户端要校验」与「流水线会产出」钉死。
+- **诊断包里的 `feedback.db` 从来没进去**：该写入落在 `with ZipFile(...)` **块外**
+  （归档已关闭 → 必然抛 ValueError 又被吞）。修复：移入块内，并改为默认**不含**
+  患者正文（显式 `--include-patient-data` 才纳入），包内附 `README_诊断包.txt` 说明。
+- **错误日志脱敏口径不一致（隐私）**：`report_exception` 只按 key 名剔除
+  `patient/report_text`，`report_info` **一个都不剔**；而 `/api/v1/user-feedback`
+  把用户反馈正文写进 `report_info` → 患者内容可能落盘。修复：两入口共用
+  「白名单键 + 去标识擦洗」（未知键一律丢弃），并如实标注 `QC_ERROR_REPORT_URL`
+  **未实现**（此前文档把它说成可用的上传地址）。
+- **规则配置路径在 POSIX 打包态落到野路径**：`engine/config_store._rules_config_path()`
+  硬编码 `%APPDATA%` 且缺 `os.path.isabs()` 守卫 → 得到相对路径
+  `%APPDATA%/MedicalReportQC/`（在启动目录建目录），而 `backup` 用
+  `paths.rules_config_path()` 备份/恢复 → 用户错别字表既进不了备份也恢复不回去。
+  修复：委托 `paths.rules_config_path()`（单一来源、带守卫）。
 - **Windows 安装包的 OCR 模型是 LFS 指针**（发布级）：`assets/ocr_models/*.onnx`
   自 `8fd4e75` 起以 Git LFS 指针入库，而所有 workflow 都没开 `lfs:`，
   `actions/checkout` 只取到 131~133 字节的指针文本 → PyInstaller 把指针当模型
@@ -78,7 +126,7 @@
   已验证：把 LFS 过滤器替换为 `cat` 后浅克隆，三个模型字节数完全正确。
 
 ### 新增 (Added)
-- **回归守卫测试**（+32 用例，均为此前完全没有覆盖的路径）：
+- **回归守卫测试**（+67 用例，均为此前完全没有覆盖的路径）：
   - `tests/test_single_implementation.py`：引擎必须命中包、旧模块不得复活、
     `server/routes/` 每个模块必须真被注册、同一路径+方法不得注册两次。
   - `tests/test_data_layer_unified.py`：样本库与 ORM 必须同库、schema 只有一个
@@ -115,7 +163,7 @@
   `qwen2.5:3b` 且缺 `prompt_mode`，照抄会诱导幻觉。
 
 ### 测试 (Test)
-- 全量 **422 passed / 7 skipped**（新增 32 用例零回归）；ruff 致命规则全绿。
+- 全量 **457 passed / 7 skipped**（新增 67 用例零回归）；ruff 致命规则全绿。
   （受限沙箱下另有 2 项因被禁止写用户目录而失败，属环境限制非缺陷。）
 
 ---
@@ -143,6 +191,7 @@
 ### 环境变量新增
 - `QC_ERROR_REPORT_ENABLED`：是否启用错误报告（默认 true）
 - `QC_ERROR_REPORT_URL`：错误报告上传地址（空则仅本地存储）
+  > ⚠️ 2026-09-30 更正：**该上传从未实现**（`error_reporter` 只写本地，不联网）；该变量仅被读出显示，`get_stats()` 现返回 `remote_upload: not_implemented`。
 
 ### 测试 (Test)
 - 全项目 389 测试通过，ruff 致命规则全绿

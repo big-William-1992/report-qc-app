@@ -497,6 +497,30 @@ jobs:
             cat DIAG.md 2>/dev/null || echo "(无诊断信息)"
           } > RELEASE_BODY.md
 
+      - name: Generate checksums (.sha256) for release assets
+        # 2026-09-30 修复（供应链）：src/auto_updater.py 的 _verify_download_sha256()
+        # 会去取「<下载URL>.sha256」（Windows 便携包 = report-qc-portable.zip.sha256），
+        # 但本工作流此前**从不生成**该文件 → 客户端永远走「无校验文件：跳过（宽容）」
+        # 分支，2026-08-18 那次"防供应链投毒"加固实际等于没生效。
+        # 这里为每个发布产物生成同名 .sha256 并一起发布（客户端只取前 64 位 hex）。
+        # 注：Ed25519 的 .sig 校验代码同样已就绪，但需要仓库 Secret 里的私钥，
+        #     当前未配置；配置后可在此追加 openssl pkeyutl -sign 生成 .sig。
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra arr <<< "${RELEASE_FILES}"
+          extra=""
+          for f in "${arr[@]}"; do
+            [ -f "$f" ] || continue
+            sha256sum "$f" | awk '{print $1}' > "$f.sha256"
+            echo "  $f.sha256 <- $(cat "$f.sha256")"
+            extra="$extra,$f.sha256"
+          done
+          if [ -z "$extra" ]; then
+            echo "::error::未生成任何 .sha256（发布产物缺失？）"; exit 1
+          fi
+          echo "RELEASE_FILES=${RELEASE_FILES}${extra}" >> "$GITHUB_ENV"
+
       - name: Publish latest Release
         uses: softprops/action-gh-release@v3
         with:

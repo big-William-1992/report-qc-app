@@ -209,7 +209,7 @@ sha256sum latest.zip > latest.zip.sha256
 | `QC_BACKUP_ENABLED` | `true` | 是否启用自动备份 |
 | `QC_BACKUP_INTERVAL_DAYS` | `1` | 备份间隔（天） |
 | `QC_BACKUP_KEEP_DAYS` | `7,30,90` | 保留策略（三级轮转） |
-| `QC_BACKUP_DIR` | `~/.local/share/xingyan_qc/backups` | 备份目录 |
+| `QC_BACKUP_DIR` | `<日志目录>/backups`（见文末「日志位置」表；macOS 为 `~/Library/Application Support/星衍放射质控软件/backups`） | 备份目录 |
 
 ### 5.2 备份内容
 
@@ -381,13 +381,19 @@ curl http://localhost:8377/api/v1/admin/license/status
 | 浮动授权座位已满 | 共享目录心跳文件过多 | 清理过期心跳或删除不用的 workstation |
 | 离线更新包找不到 | QC_UPDATE_LOCAL_DIR 路径错误 | 确认目录中有 latest.zip / latest.tar.gz |
 | 自动备份未执行 | QC_BACKUP_ENABLED=false | 检查环境变量 |
-| 日志文件为空 | 路径权限问题 | 检查 ~/.local/share/xingyan_qc/logs/ 可写 |
+| 日志文件为空 | 路径权限问题 | 检查文末「日志位置」表对应目录可写 |
 
 ### 诊断包导出
 
 ```bash
-# 生成诊断包（包含日志 + 系统信息 + 授权状态）
-python -m src.log_utils   # 或直接调用 API
+# 生成诊断包（日志 + 系统信息 + 授权状态）；默认**不含**患者数据
+python src/log_utils.py --dest ~/Desktop
+# 确需连 feedback.db（内含报告正文）一起打包时：
+python src/log_utils.py --dest ~/Desktop --include-patient-data
+
+# 说明：此前文档写的是 `-m src.log_utils` 形式——src/ 不是包（无 __init__.py）
+#       且该模块当时没有 CLI 入口，命令必然失败；2026-09-30 已加 __main__ 并更正。
+#       包内会附 README_诊断包.txt 说明所含内容与隐私提示。
 ```
 
 ### 日志位置
@@ -405,8 +411,9 @@ python -m src.log_utils   # 或直接调用 API
 kill <pid>   # macOS/Linux
 taskkill /PID <pid> /F   # Windows
 
-# 2. 从备份恢复数据库
-cp ~/.local/share/xingyan_qc/backups/qc.db.20260912_* assets/qc.db
+# 2. 从备份恢复数据库（备份目录 = <日志目录>/backups，见上文「日志位置」）
+cp "~/Library/Application Support/星衍放射质控软件/backups/qc.db.<时间戳>" assets/qc.db
+# 也可在软件内用「设置 → 备份/恢复」（管理员），它会按真实运行位置写回
 
 # 3. 重新启动
 ```

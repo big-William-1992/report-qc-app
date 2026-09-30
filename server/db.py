@@ -38,10 +38,10 @@ else:
 #
 # 2026-09-30 修正（源码态库位置分裂）：
 # 此处此前写的是 os.path.join(_PROJECT_ROOT, "qc.db")，漏了 "assets" 段——
-# 与本文件顶部的声明、src/paths.qc_db_path()、src/samplelib.db_path() 三处
-# 「应为 <root>/assets/qc.db」的口径全部不一致。后果：源码运行时账号/科室/
-# 队列/设置落 <root>/qc.db，样本落 <root>/assets/qc.db，多用户的数据归属
-# 无法靠同库约束保证（打包态两者恰好同目录，所以问题一直没暴露）。
+# 与本文件顶部的声明、src/samplelib.db_path()、以及历史上的 paths.qc_db_path()
+# （已删除的死解析器）三处「应为 <root>/assets/qc.db」的口径全部不一致。
+# 后果：源码运行时账号/科室/队列/设置落 <root>/qc.db，样本落 <root>/assets/qc.db，
+# 多用户的数据归属无法靠同库约束保证（打包态两者恰好同目录，所以问题一直没暴露）。
 _DEFAULT_DB_FILE = os.path.abspath(os.path.join(_PROJECT_ROOT, "assets", "qc.db"))
 _DEFAULT_DB = "sqlite:///" + _urlquote(_DEFAULT_DB_FILE.replace("\\", "/"), safe="/:")
 

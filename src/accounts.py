@@ -315,32 +315,50 @@ def list_departments() -> list:
 
 
 # ---------------- 会话（当前登录工号） ----------------
-def set_session(emp_id: str) -> None:
+def _warn(msg: str, *args) -> None:
+    """结构化告警（拿不到 logger 时静默）。"""
     try:
-        with open(_session_path(), "w", encoding="utf-8") as fh:
-            json.dump({"emp_id": emp_id or ""}, fh)
-    except Exception:
         try:
-            from .log_utils import log_quiet
+            from .log_utils import get_logger
         except ImportError:
-            from log_utils import log_quiet
-        log_quiet(__name__)
+            from log_utils import get_logger
+        get_logger().warning(msg, *args)
+    except Exception:
+        pass
+
+
+def set_session(emp_id: str) -> None:
+    """写会话文件（供重启后预填登录工号）。
+
+    2026-09-30：失败时必须留痕。此前只调 log_quiet（信息量为零），
+    于是"目录不可写导致会话预填失效"这类问题在日志里完全看不出来
+    （tests/test_accounts.py::test_session 在受限环境下失败就是这条路径）。
+    """
+    path = _session_path()
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"emp_id": emp_id or ""}, fh)
+    except Exception as e:
+        _warn("session 写入失败（登录工号预填将失效）path=%s: %s", path, e)
 
 
 def get_session() -> str:
+    path = _session_path()
     try:
-        with open(_session_path(), encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             return json.load(fh).get("emp_id", "") or ""
-    except Exception:
+    except FileNotFoundError:
+        return ""          # 首次运行：正常
+    except Exception as e:
+        _warn("session 读取失败（文件存在但损坏？）path=%s: %s", path, e)
         return ""
 
 
 def clear_session() -> None:
+    path = _session_path()
     try:
-        os.remove(_session_path())
-    except Exception:
-        try:
-            from .log_utils import log_quiet
-        except ImportError:
-            from log_utils import log_quiet
-        log_quiet(__name__)
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        _warn("session 删除失败 path=%s: %s", path, e)

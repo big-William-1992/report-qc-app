@@ -2,84 +2,40 @@
 
 import os
 import time
-import hmac
 import hashlib
-import base64
 import json
 import threading
-import uuid as _uuid
-from typing import Optional, Dict, Any
-from fastapi import Header, HTTPException, Request
+from typing import Dict, Any
 
 import engine
 import ris
-import accounts
 import samplelib
 
 # LLM 引擎模式（环境变量控制）
 QC_ENGINE = os.environ.get("QC_ENGINE", "rule")  # rule | api | local
 
 
-SECRET = os.environ.get("QC_API_SECRET", "change-me-in-prod")
-TOKEN_TTL = int(os.environ.get("QC_API_TTL", "86400"))  # 默认 24h
-def make_token(emp_id: str, ttl: int = TOKEN_TTL) -> str:
-    exp = int(time.time()) + ttl
-    payload = f"{emp_id}.{exp}"
-    sig = hmac.new(SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
-    return base64.urlsafe_b64encode(f"{payload}.{sig}".encode()).decode()
-def verify_token(tok: str) -> Optional[str]:
-    try:
-        raw = base64.urlsafe_b64decode(tok.encode()).decode()
-        payload, sig = raw.rsplit(".", 1)
-        emp_id, exp = payload.rsplit(".", 1)
-        if int(exp) < time.time():
-            return None
-        expect = hmac.new(SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
-        if hmac.compare_digest(expect, sig):
-            return emp_id
-    except Exception:
-        return None
-    return None
-def _emp_from_auth(authorization: Optional[str]) -> Optional[str]:
-    if not authorization:
-        return None
-    tok = authorization
-    if tok.lower().startswith("bearer "):
-        tok = tok[7:]
-    return verify_token(tok)
-def require_emp(authorization: Optional[str] = Header(None),
-                 x_emp_id: Optional[str] = Header(None)) -> str:
-    """写操作鉴权：Bearer token 或内网 X-Emp-Id 头，二选一。
-    回退到 X-Emp-Id 时必须校验工号真实存在，防止远程任意填头冒充他人。"""
-    emp = _emp_from_auth(authorization) or (x_emp_id or "").strip()
-    if not emp:
-        raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token> 或 X-Emp-Id 头")
-    if not _emp_from_auth(authorization):
-        # 仅当来自 X-Emp-Id 头（非 Bearer token）时校验工号存在性
-        try:
-            import src.accounts as _acct
-            if not _acct.account_exists(emp):
-                raise HTTPException(401, "X-Emp-Id 工号不存在")
-        except HTTPException:
-            raise
-        except Exception:
-            pass
-    return emp
-def require_emp_local(request: Request,
-                      authorization: Optional[str] = Header(None),
-                      x_emp_id: Optional[str] = Header(None)) -> str:
-    """写操作鉴权（本地优先）：
+# ── 鉴权与令牌：单一来源 = server/security.py（2026-09-30 去重）─────────────
+# 本文件里曾另有一整套**更弱**的并行鉴权栈：SECRET/TOKEN_TTL/make_token/
+# verify_token/_emp_from_auth/require_emp/require_emp_local/require_admin。
+# 三处具体危害（都已实测确认）：
+#   1) deps.SECRET 缺省值是字面量 "change-me-in-prod"，而 security.SECRET 缺省
+#      是**随机生成并持久化**的密钥 → 用 deps 签发的 token 可被猜测密钥伪造，
+#      且两套互不通用；
+#   2) deps.require_emp 里的工号存在性校验写成 `import src.accounts`，但 src/
+#      不是包（无 __init__.py）→ 该 ImportError 被 except 吞掉，校验实际是死代码，
+#      于是"任意填 X-Emp-Id 即可冒充他人"；
+#   3) deps.require_emp_local 对本地来源直接 `return x_emp_id or "local"`，
+#      不校验账号是否存在，弱于 security 版本。
+# 这三者当前**无人引用**，但 ARCHITECTURE.md 恰把 deps.py 描述为"依赖注入
+# （require_emp / require_admin…）"——按文档 import 就会静默拿到弱鉴权。
+# 现统一从 security 再导出，并由 tests/test_single_implementation.py 断言
+# 两边是**同一个对象**（防止再次分叉）。
+from server.security import (  # noqa: F401  (re-export，兼容旧引用路径)
+    SECRET, TOKEN_TTL, make_token, verify_token, _emp_from_auth,
+    require_emp, require_emp_local, require_admin,
+)
 
-    - 来自 127.0.0.1/::1 的调用（桌面端 WebView、浏览器同源 localhost）自动放行，
-      避免 SPA 必须携带鉴权头，保持本地"双击即用"体验；
-    - 公网/远程部署仍强制 Bearer token 或 X-Emp-Id，保持责任到人追溯。
-    """
-    if request.client and request.client.host in ("127.0.0.1", "::1", "localhost"):
-        return (x_emp_id or "local").strip() or "local"
-    emp = _emp_from_auth(authorization) or (x_emp_id or "").strip()
-    if not emp:
-        raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token> 或 X-Emp-Id 头")
-    return emp
 def _envelope(ok: bool, code: str, data: Any, message: str = ""):
     return {"ok": ok, "code": code, "data": data, "message": message}
 _SCORE_EN = {"准确性": "accuracy", "完整性": "completeness",
@@ -233,53 +189,27 @@ def datetime_now_iso() -> str:
     import datetime as _dt
     return _dt.datetime.now().isoformat(timespec="seconds")
 def _queue_add_text(text: str, meta: dict, source: str = "RIS轮询"):
-    """复用 queue 去重逻辑（正文 MD5）。返回条目 id 或 None。"""
-    norm = "".join((text or "").split())
-    if not norm:
-        return None
-    h = hashlib.md5(norm.encode("utf-8", "ignore")).hexdigest()
-    items = _load_queue()
-    for it in items:
-        if it.get("hash") == h:
-            return it.get("id")
-    m = meta or {}
-    item = {
-        "id": _uuid.uuid4().hex[:8], "hash": h,
-        "patient": (m.get("patient", "") or "").strip(),
-        "site": (m.get("applied_site", "") or "").strip(),
-        "findings_desc": (m.get("findings_desc", "") or "").strip(),
-        "diagnosis": (m.get("diagnosis", "") or "").strip(),
-        "text": text, "source": source,
-        "ts": time.strftime("%Y-%m-%d %H:%M"), "meta": m,
-    }
-    items.append(item)
-    _save_queue(items)
-    return item["id"]
-def require_admin(authorization: Optional[str] = Header(None)) -> str:
-    """管理员操作依赖：强制 Bearer token（不享受 localhost 放行，防止伪造 X-Emp-Id 提权）。"""
-    emp = _emp_from_auth(authorization)
-    if not emp:
-        raise HTTPException(401, "管理员操作需登录（Bearer token）")
-    if accounts.get_role(emp) != "admin":
-        raise HTTPException(403, "需要管理员权限")
-    return emp
-def _appdata_dir() -> str:
-    """跨平台数据目录（统一由 paths.user_data_dir 解析，实现队列互通）。
+    """入队（转调 core.queue_add_text —— 唯一实现）。返回条目 id 或 None。
 
-    QC_APPDATA 环境变量可覆盖数据目录（E2E 测试隔离用，生产不设置则用默认路径）。"""
-    import paths
-    return paths.user_data_dir()
-def _queue_path() -> str:
-    return os.path.join(_appdata_dir(), "qc_queue.json")
-def _load_queue() -> list:
-    try:
-        with open(_queue_path(), encoding="utf-8") as fh:
-            return json.load(fh) or []
-    except Exception:
-        return []
-def _save_queue(items: list) -> None:
-    with open(_queue_path(), "w", encoding="utf-8") as fh:
-        json.dump(items, fh, ensure_ascii=False, indent=2)
+    2026-09-30 修复（功能缺陷）：本函数过去把队列写进 `qc_queue.json`，而队列端点
+    `GET /api/v1/queue` 读的是 qc.db 的 QueueItem 表 → 经 route_push（PACS 推送）
+    入队的报告在界面队列里**永远看不到**（RIS 轮询那条路径当时已改用 ORM，
+    只有推送走的是本文件的旧实现）。
+    """
+    from server import core as _core
+    return _core.queue_add_text(text, meta, source=source)
+
+
+def _appdata_dir() -> str:
+    """跨平台数据目录（**单一来源**：server/core._appdata_dir → paths.user_data_dir）。
+
+    2026-09-30 修复：本函数此前直接取 paths.user_data_dir()，而 server/core.py
+    另有一套（非 Windows 落 ~/.medical_report_qc）→ 同一个 qc_queue.json 会被
+    写在两个不同目录，读写互相看不见。现全部收敛到 core 的实现。
+    """
+    from server import core as _core
+    return _core._appdata_dir()
+
 _SHOT: Dict[str, Any] = {"img": None, "w": 0, "h": 0, "ts": 0.0}
 _SHOT_MAX_W = 1600          # 传给前端的缩略图最大宽度（省带宽，不影响识别精度）
 _OCR_CACHE: Dict[str, Any] = {}     # region_key -> {"sig": tuple, "text": str}

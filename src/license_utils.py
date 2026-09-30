@@ -170,6 +170,101 @@ def _trial_verify(date_str: str, sig: str) -> bool:
     return hmac.compare_digest(_trial_sign(date_str), (sig or "").lower())
 
 
+# ── 试用起点冗余锚点（2026-09-30 修复「删文件即重置试用」）──────────────────
+# 问题：试用起点只存在 license.dat 里，而该文件在用户可写目录 →
+#       `rm license.dat` 后 check_trial 认为"首次运行"，白送满 TRIAL_DAYS，
+#       HMAC 只防"改日期"，完全不防"删文件"。
+# 对策：把同一份带签名的起点日期冗余写到**多个锚点**，取其中**最早的有效日期**
+#       作为真实起点；任一锚点还在，试用就不会被重置。
+# 锚点位置：
+#   ① <license.dat 同目录>/.license_trial_anchor   —— 与主文件同生共死，但也最易被一起删
+#   ② <用户数据目录>/.license_trial_anchor          —— 换目录，仍在用户可写区
+#   ③ Windows 注册表 HKCU\Software\MedicalReportQC  —— 换个存储介质（尽力而为）
+# ②③ 仅在**未覆盖**默认许可路径时启用，保证测试（monkeypatch _LICENSE_FILE）完全隔离。
+_DEFAULT_LICENSE_FILE = _LICENSE_FILE
+_ANCHOR_NAME = ".license_trial_anchor"
+_REG_PATH = r"Software\MedicalReportQC"
+_REG_VALUE = "trial_first_run"
+
+
+def _anchor_files() -> list:
+    """返回可用的锚点文件路径列表（①总是，②仅默认许可路径时）。"""
+    out = [os.path.join(os.path.dirname(os.path.abspath(_LICENSE_FILE)), _ANCHOR_NAME)]
+    if os.path.abspath(_LICENSE_FILE) == os.path.abspath(_DEFAULT_LICENSE_FILE):
+        try:
+            import paths
+            out.append(os.path.join(paths.user_data_dir(), _ANCHOR_NAME))
+        except Exception:
+            pass
+    return out
+
+
+def _using_default_license() -> bool:
+    return os.path.abspath(_LICENSE_FILE) == os.path.abspath(_DEFAULT_LICENSE_FILE)
+
+
+def _read_anchor_dates() -> list:
+    """读所有锚点里**验签通过**的日期（不合法的一律忽略）。"""
+    dates = []
+    for p in _anchor_files():
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            date = (d or {}).get("date", "")
+            if date and _trial_verify(date, (d or {}).get("sig", "")):
+                dates.append(date)
+        except Exception:
+            continue
+    if _using_default_license() and platform.system() == "Windows":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _REG_PATH) as k:
+                raw = winreg.QueryValueEx(k, _REG_VALUE)[0]
+            date, sig = str(raw).split("|", 1)
+            if _trial_verify(date, sig):
+                dates.append(date)
+        except Exception:
+            pass
+    return dates
+
+
+def _write_anchors(date: str) -> None:
+    """把起点日期写入所有锚点（尽力而为，失败不影响主流程）。"""
+    payload = {"date": date, "sig": _trial_sign(date)}
+    for p in _anchor_files():
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            tmp = p + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.replace(tmp, p)
+            try:
+                os.chmod(p, 0o600)
+            except Exception:
+                pass
+        except Exception:
+            continue
+    if _using_default_license() and platform.system() == "Windows":
+        try:
+            import winreg
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _REG_PATH) as k:
+                winreg.SetValueEx(k, _REG_VALUE, 0, winreg.REG_SZ,
+                                  f"{date}|{payload['sig']}")
+        except Exception:
+            pass
+
+
+def _earliest_anchor_date():
+    """所有锚点中最小的有效日期（ISO 字符串）；无可用锚点时返回 None。"""
+    valid = []
+    for d in _read_anchor_dates():
+        try:
+            valid.append(datetime.date.fromisoformat(d))
+        except Exception:
+            continue
+    return min(valid).isoformat() if valid else None
+
+
 def _activated_valid(lic: dict) -> bool:
     """激活状态真实性校验。
     单机模式（2026-08-18 防绕过）：
@@ -220,12 +315,21 @@ def check_trial():
         return ("activated", "")
 
     first_run_raw = lic.get("first_run")
+    anchor = _earliest_anchor_date()      # 冗余锚点里的最早有效起点（可能为 None）
     if not first_run_raw:
-        # 首次运行，记录日期（带 HMAC 防篡改）
-        today = datetime.date.today().isoformat()
-        lic["first_run"] = {"date": today, "sig": _trial_sign(today)}
+        # 首次运行——或者有人删掉了 license.dat。
+        # 锚点还在时以锚点为准，避免「删文件即重置试用」（2026-09-30 修复）。
+        first_run = anchor or datetime.date.today().isoformat()
+        lic["first_run"] = {"date": first_run, "sig": _trial_sign(first_run)}
         _write_license(lic)
-        return ("trial", TRIAL_DAYS)
+        _write_anchors(first_run)
+        try:
+            used = (datetime.date.today() - datetime.date.fromisoformat(first_run)).days
+        except Exception:
+            return ("expired", 0)
+        if used >= TRIAL_DAYS or used < 0:
+            return ("expired", 0)
+        return ("trial", TRIAL_DAYS - used)
 
     # 2026-08-18 M7 防绕过：新格式 {date,sig} 验签；旧格式（纯日期串）校验合法性后迁移补签。
     # 签名不匹配 / 日期非法 / 起点在未来 / 一年前开始却仍在试用 → 一律视为篡改，拒绝续期。
@@ -244,6 +348,13 @@ def check_trial():
             return ("expired", 0)  # 回拨痕迹：未来起点 或 一年前开始却仍在试用期
         lic["first_run"] = {"date": first_run, "sig": _trial_sign(first_run)}
         _write_license(lic)
+
+    # 锚点比 license.dat 里的起点更早 → 以更早者为准（说明 license.dat 被重置/替换过）
+    if anchor and anchor < first_run:
+        first_run = anchor
+        lic["first_run"] = {"date": first_run, "sig": _trial_sign(first_run)}
+        _write_license(lic)
+    _write_anchors(first_run)
 
     # 计算已用天数
     try:

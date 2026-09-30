@@ -95,3 +95,43 @@ def test_no_duplicate_registered_routes():
             seen[(path, method)] += 1
     dups = {f"{m} {p}": n for (p, m), n in seen.items() if n > 1}
     assert not dups, f"同一路径+方法被注册多次（隐式覆盖，后者永不生效）：{dups}"
+
+
+def test_auth_deps_have_single_source():
+    """鉴权依赖与令牌逻辑只能有 security.py 一份实现（deps.py 只再导出）。
+
+    历史问题：deps.py 里另有一整套更弱的并行鉴权栈——缺省密钥是字面量
+    "change-me-in-prod"、工号存在性校验写成 `import src.accounts`（src 不是包，
+    该 ImportError 被吞掉 → 校验是死代码）、本地来源不校验账号。而
+    ARCHITECTURE.md 恰把 deps.py 描述为"依赖注入"，按文档 import 就拿到弱鉴权。
+    """
+    from server import deps, security
+
+    for name in ("require_emp", "require_emp_local", "require_admin",
+                 "make_token", "verify_token", "_emp_from_auth", "SECRET"):
+        assert getattr(deps, name) is getattr(security, name), (
+            f"server/deps.{name} 与 server/security.{name} 不是同一个对象——"
+            "鉴权/令牌逻辑又分叉了（deps 只能 re-export）")
+
+
+def test_no_guessable_default_secret():
+    """不允许再出现可猜测的默认 API 密钥（只看代码，不看注释）。"""
+    for rel in ("server/security.py", "server/deps.py", "server/main.py"):
+        src = open(os.path.join(_ROOT, rel), encoding="utf-8").read()
+        code = "\n".join(line.split("#", 1)[0] for line in src.splitlines())
+        assert "change-me-in-prod" not in code, (
+            f"{rel} 出现可猜测的默认密钥；缺省必须走 _load_or_create_secret()")
+
+
+def test_token_logic_defined_in_one_place():
+    """make_token / verify_token 只允许在 server/security.py 里定义。"""
+    offenders = []
+    for rel in ("server/deps.py", "server/main.py", "server/core.py",
+                "server/routes/route_push.py"):
+        p = os.path.join(_ROOT, rel)
+        if not os.path.exists(p):
+            continue
+        src = open(p, encoding="utf-8").read()
+        if re.search(r"^def\s+(make_token|verify_token)\b", src, re.M):
+            offenders.append(rel)
+    assert not offenders, f"以下文件重复定义了令牌逻辑：{offenders}"

@@ -188,10 +188,18 @@ def _system_info():
     return info
 
 
-def export_diagnostic_bundle(dest_dir=None):
-    """打包「所有日志 + 系统信息 + 授权状态」为一个 zip，返回 zip 绝对路径。
+def export_diagnostic_bundle(dest_dir=None, include_patient_data: bool = False):
+    """打包「日志 + 系统信息 + 授权状态」为 zip，返回 zip 绝对路径。
 
     dest_dir 为 None 时默认存到桌面（无桌面则用户主目录）。
+
+    2026-09-30 修复：
+    1) `feedback.db` 的写入原本写在 `with ZipFile(...)` **块外** → 归档已关闭，
+       必然抛 ValueError 且被 except 吞掉 —— 也就是 CHANGELOG 里"诊断包纳入
+       feedback.db"从来没有真正生效。现改到块内。
+    2) 该库含 report_text（完整报告正文），属患者数据。现默认**不入包**，
+       需显式 `include_patient_data=True` 才纳入；包内附 README 说明所含内容，
+       避免"以为不含患者数据就发出去了"。
     """
     logger = get_logger()
     logger.info("开始导出诊断包")
@@ -204,6 +212,7 @@ def export_diagnostic_bundle(dest_dir=None):
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     zip_path = os.path.join(dest_dir, f"星衍质控_诊断包_{ts}.zip")
 
+    included_fb = False
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("system_info.json",
                     json.dumps(_system_info(), ensure_ascii=False, indent=2))
@@ -214,18 +223,50 @@ def export_diagnostic_bundle(dest_dir=None):
                 if os.path.isfile(fp):
                     zf.write(fp, os.path.join("logs", fn))
 
-    # badcase 反馈库一并入包 (2026-08-25): 它是增量精调的唯一数据源。
-    # ⚠️ 注意: report_text 字段含患者报告内容, 发送前请知悉/脱敏。
-    try:
-        from samplelib import db_path as _sdb_path
-        _fb = os.path.join(os.path.dirname(_sdb_path()), "feedback.db")
-        if os.path.isfile(_fb):
-            zf.write(_fb, "feedback.db")
-            if _logger:
-                _logger.info("diagnostic bundle: feedback.db included (%d bytes)",
-                             os.path.getsize(_fb))
-    except Exception:
-        pass  # 样本库定位失败时跳过, 不阻断诊断包
+        if include_patient_data:
+            # badcase 反馈库：增量精调的数据源，但 report_text 含患者报告正文。
+            try:
+                from samplelib import db_path as _sdb_path
+                _fb = os.path.join(os.path.dirname(_sdb_path()), "feedback.db")
+                if os.path.isfile(_fb):
+                    zf.write(_fb, "feedback.db")
+                    included_fb = True
+            except Exception:
+                pass  # 定位失败不阻断诊断包
 
+        zf.writestr("README_诊断包.txt", _BUNDLE_README.format(
+            fb=("已包含 feedback.db（含患者报告正文）" if included_fb
+                else "未包含 feedback.db（默认排除含患者正文的数据）")))
+
+    if included_fb:
+        logger.info("diagnostic bundle: feedback.db included")
     logger.info("诊断包已导出: %s", zip_path)
     return zip_path
+
+
+_BUNDLE_README = """星衍放射质控软件 · 诊断包说明
+================================
+
+本包内容：
+- system_info.json  运行环境、版本、授权状态
+- logs/             应用日志（含错误/信息条目，写入前已做去标识擦洗，但不保证无患者信息）
+- {fb}
+
+⚠️ 隐私提示：
+本包可能含有患者相关信息。**仅在本机排障使用**；如需发回开发者，请先确认
+院内数据合规要求并取得授权，必要时人工删除含患者内容的部分。
+"""
+
+
+if __name__ == "__main__":  # pragma: no cover - 手工排障入口
+    # 用法：python src/log_utils.py [--dest DIR] [--include-patient-data]
+    # 2026-09-30 新增：DEPLOYMENT.md 一直写着 `python -m src.log_utils`，
+    # 但 src/ 不是包（无 __init__.py）且本文件没有入口 → 该命令必然失败。
+    import argparse
+    _ap = argparse.ArgumentParser(description="导出星衍质控诊断包")
+    _ap.add_argument("--dest", default=None, help="输出目录（默认桌面）")
+    _ap.add_argument("--include-patient-data", action="store_true",
+                     help="连同 feedback.db（含患者报告正文）一起打包，谨慎使用")
+    _a = _ap.parse_args()
+    print(export_diagnostic_bundle(_a.dest, include_patient_data=_a.include_patient_data))
+

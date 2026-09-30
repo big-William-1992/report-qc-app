@@ -54,16 +54,30 @@ def assets_dir() -> str:
 
 
 def user_data_dir() -> str:
-    """用户可写数据目录（自动创建）。QC_APPDATA 环境变量可覆盖（E2E 隔离）。"""
+    """用户可写数据目录（自动创建）。QC_APPDATA 环境变量可覆盖（E2E 隔离）。
+
+    2026-09-30：改为**平台正确**且与 server/db.py / accounts._assets_dir /
+    samplelib._appdata_db 同一个根（Windows: %APPDATA%/MedicalReportQC；
+    macOS: ~/Library/Application Support/MedicalReportQC；
+    Linux: $XDG_DATA_HOME|~/.local/share/MedicalReportQC）。
+    此前非 Windows 一律落 ~/.medical_report_qc，与数据库所在目录不是同一个，
+    于是 frozen 打包态"规则配置/会话在一个目录、数据库在另一个目录"。
+    """
     override = os.environ.get("QC_APPDATA", "").strip()
     if override:
         base = os.path.abspath(override)
     else:
         ap = os.path.expandvars("%APPDATA%")
-        if ap and os.path.isabs(ap):
+        if platform.system() == "Windows" and ap and os.path.isabs(ap):
             base = os.path.join(ap, APPDATA_NAME)
+        elif platform.system() == "Darwin":
+            base = os.path.join(os.path.expanduser("~"),
+                                "Library", "Application Support", APPDATA_NAME)
         else:
-            base = os.path.join(os.path.expanduser("~"), ".medical_report_qc")
+            base = os.path.join(
+                os.environ.get("XDG_DATA_HOME") or os.path.join(
+                    os.path.expanduser("~"), ".local", "share"),
+                APPDATA_NAME)
     os.makedirs(base, exist_ok=True)
     return base
 
@@ -84,14 +98,22 @@ def log_user_dir() -> str:
 
 
 def ocr_config_path() -> str:
-    """OCR 区域配置（与历史 server/deps._ocr_config_path 同路径，桌面/Web 互通）。"""
-    ap = os.path.expandvars("%APPDATA%")
-    if ap and os.path.isabs(ap):
-        d = os.path.join(ap, APPDATA_NAME)
-    else:
-        d = os.path.join(os.path.expanduser("~"), ".config", APPDATA_NAME)
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, "ocr_config.json")
+    """OCR 区域配置（与历史 server/deps._ocr_config_path 同路径，桌面/Web 互通）。
+
+    2026-09-30：统一到 user_data_dir()（与数据库同一个根）；此前非 Windows 落
+    ~/.config/MedicalReportQC，与其它数据目录不一致。若旧位置已有配置且新位置
+    没有，则一次性搬过来，避免用户画好的区域框"消失"。
+    """
+    new = os.path.join(user_data_dir(), "ocr_config.json")
+    if not os.path.exists(new):
+        legacy = os.path.join(os.path.expanduser("~"), ".config", APPDATA_NAME,
+                              "ocr_config.json")
+        if os.path.isfile(legacy):
+            try:
+                shutil.copyfile(legacy, new)
+            except Exception:
+                pass
+    return new
 
 
 def rules_config_path() -> str:
@@ -109,26 +131,6 @@ def rules_config_path() -> str:
     return os.path.join(assets_dir(), "rules_config.json")
 
 
-def samples_db_path() -> str:
-    """样本库：打包后放用户可写目录（首次从 assets 复制），源码用 assets/。"""
-    if getattr(sys, "frozen", False):
-        user_db = os.path.join(user_data_dir(), "samples.db")
-        if not os.path.exists(user_db):
-            src = os.path.join(assets_dir(), "samples.db")
-            try:
-                if os.path.exists(src):
-                    shutil.copyfile(src, user_db)
-            except Exception:
-                return src
-        return user_db
-    return os.path.join(assets_dir(), "samples.db")
-
-
-def qc_db_path() -> str:
-    """账号/科室/权限库（默认 SQLite 落盘位置）。"""
-    return os.path.join(assets_dir(), "qc.db")
-
-
 def license_path() -> str:
     """许可证数据文件。frozen 时位于 exe 同级 assets/（自动更新器的备份/恢复对象）。"""
     return os.path.join(install_root(), "assets", "license.dat")
@@ -137,15 +139,6 @@ def license_path() -> str:
 def ris_config_path() -> str:
     """RIS 连接配置持久化路径。"""
     return os.path.join(assets_dir(), "ris_config.json")
-
-
-def session_path() -> str:
-    """登录工号会话文件：源码用 assets/（现状），frozen 用用户数据目录（assets 只读）。"""
-    if getattr(sys, "frozen", False):
-        return os.path.join(user_data_dir(), "session.json")
-    d = assets_dir()
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, "session.json")
 
 
 def user_lexicon_path() -> str:

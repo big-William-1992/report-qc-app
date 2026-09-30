@@ -77,18 +77,26 @@ def _eng_scores(cn: dict) -> dict:
 
 # ----------------------------- 数据目录 / 原子写 -----------------------------
 def _appdata_dir() -> str:
-    """跨平台数据目录（QC_APPDATA 可覆盖，E2E 测试隔离用）。"""
-    override = os.environ.get("QC_APPDATA", "").strip()
-    if override:
-        base = os.path.abspath(override)
-    else:
-        ap = os.path.expandvars("%APPDATA%")
-        if ap and os.path.isabs(ap):
-            base = os.path.join(ap, "MedicalReportQC")
+    """配置态数据目录（**单一来源** = paths.user_data_dir()；QC_APPDATA 可覆盖）。
+
+    2026-09-30 修复：此处此前自带一套解析（非 Windows 落 ~/.medical_report_qc），
+    与 src/paths.user_data_dir()（平台正确目录）不一致 —— deps.py 用后者，
+    core/main 用前者，于是同一个 qc_queue.json / web_settings.json
+    会被写在两个目录里，读写互相看不见。现统一委托 paths。
+    注：**导出产物与写权限探测**用的是「数据库所在目录」（见 main._APPDATA_DIR），
+    与这里是两个不同角色，故不在此合并。
+    """
+    try:
+        import paths
+        return paths.user_data_dir()
+    except Exception:  # pragma: no cover - paths 随包分发
+        override = os.environ.get("QC_APPDATA", "").strip()
+        if override:
+            base = os.path.abspath(override)
         else:
             base = os.path.join(os.path.expanduser("~"), ".medical_report_qc")
-    os.makedirs(base, exist_ok=True)
-    return base
+        os.makedirs(base, exist_ok=True)
+        return base
 
 
 _JSON_IO_LOCK = threading.Lock()
@@ -193,6 +201,28 @@ def _queue_orm_clear() -> None:
 def _load_queue() -> list:
     """兼容旧接口名：RIS 轮询去重等仍按 dict 列表消费。"""
     return _queue_orm_all()
+
+
+def queue_add_text(text: str, meta: dict, source: str = "RIS轮询",
+                   emp_default: str = "ris-poll"):
+    """入队（ORM + 正文 MD5 去重）——**唯一实现**，main.py 与 deps.py 都转调这里。
+
+    2026-09-30 修复（功能缺陷）：server/deps.py 里曾另有一份 _queue_add_text，
+    把队列写进 `qc_queue.json`；而队列端点 `GET /api/v1/queue` 读的是 qc.db 的
+    QueueItem 表（core._queue_orm_all）→ **route_push（PACS 推送）入队的报告
+    在界面队列里永远看不到**，RIS 轮询那份当时已改成 ORM，只有推送这条路径踩坑。
+
+    emp_default：入队项的归属标记，写入 meta["_emp"]。队列列表对非 admin 只显示
+    `meta._emp in (本人, "ris-poll")` 的条目，因此自动入队（RIS 轮询 / PACS 推送）
+    统一标 "ris-poll" 作为公共复核队列，否则医生看不到。
+    返回条目 id（str）或 None（正文为空）。
+    """
+    m = dict(meta or {})
+    m.setdefault("source", source)
+    if emp_default:
+        m.setdefault("_emp", emp_default)
+    _id, _dup = _queue_orm_add_dedup(text, m)
+    return str(_id) if _id else None
 
 
 def _migrate_queue_to_db() -> None:

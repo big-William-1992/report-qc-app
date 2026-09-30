@@ -247,15 +247,19 @@ function escapeHtml(text) {
 ```
 1. 在 web/static/js/modules/ 创建或修改模块源文件
 2. 在模块末尾用 Object.assign(window, {...}) 导出函数
-3. 用 Python 脚本重新打包 app.bundle.js
+3. 运行 python3 tools/build_bundle.py 重新生成 app.bundle.js（必须！）
 4. 在 index.html 中更新 ?v= 缓存版本号
 5. 验证 file:// 和 http:// 两种协议下均正常
 ```
 
-**打包脚本**：
+**打包脚本**（2026-09-30 新增；此前文档里的 `tools/rebuild_bundle.py` **并不存在**，
+bundle 靠手工拼接，于是 v4.3.6 忘了剥掉 import/export，前端直接白屏）：
 ```bash
-python tools/rebuild_bundle.py
+python3 tools/build_bundle.py          # 生成
+python3 tools/build_bundle.py --check  # 自检是否同步（tests/test_frontend_bundle.py 会跑）
 ```
+> 生成的 bundle 必须是**合法经典脚本**：顶层不得有 import/export，
+> 因为 index.html 用 `<script src="js/app.bundle.js">` 加载（file:// 下 ES 模块会被 CORS 拦）。
 
 ### 3.3 CSS
 
@@ -381,7 +385,7 @@ grep -r "患者姓名" --include="*.py" src/ server/  # 应为空（脱敏逻辑
 
 ```
 1. 修改 web/static/js/modules/*.js
-2. 重新打包：python tools/rebuild_bundle.py
+2. 重新打包：python3 tools/build_bundle.py --check（不一致就再跑不带 --check 的生成）
 3. 更新 index.html 缓存版本号：?v=YYYYMMDD
 4. 验证两种加载模式：
    - file:// 双击 index.html

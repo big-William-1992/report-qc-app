@@ -188,13 +188,10 @@ function comboEquals(sc, evt) {
   return k === evt.key;
 }
 
-export { apiFetch, toast, confirmAction, confirmModalResolve, escapeHtml, setVal, fmtShortcut, comboFromEvent, comboEquals, animateNumber, easeOutCubic, toggleTheme, APP_SETTINGS, AUTH, PAGE_TITLES };
 
 Object.assign(window, { confirmModalResolve, toggleTheme, APP_SETTINGS, AUTH });
 
 // ====== module: shell.js ======
-
-import { toast, confirmAction, escapeHtml, APP_SETTINGS, AUTH, PAGE_TITLES } from "./core.js";
 
 // 严重度元数据：图标 + 文字（色盲可用）
 const SEV_META = {
@@ -403,14 +400,10 @@ function gotoPage(pageName) {
   switchPage(pageName, document.querySelector(`.nav-cell[data-page="${pageName}"]`));
 }
 
-export { SEV_META, switchPage, gotoPage, loadUsers, loadAudit };
 
 Object.assign(window, { switchPage, closeSidebar, toggleSidebar, loadUsers, changeUserRole, changeUserDept, resetUserPwd, addDepartment, loadAudit, gotoPage });
 
 // ====== module: qc.js ======
-
-import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH, setVal, fmtShortcut, comboFromEvent, comboEquals } from "./core.js";
-import { SEV_META } from "./shell.js";
 
 // ==================== 字数统计 ====================
 document.getElementById('findingsText').addEventListener('input', function() {
@@ -973,14 +966,10 @@ function syncClipWatchUI() {
   } catch (e) { /* 忽略 */ }
 }
 
-export { effectiveLaterality, splitReportSections, runQC, saveToLibrary, _qcAllFindings };
 
 Object.assign(window, { runQC, clearInput, pasteAndSplit, saveToLibrary, showQcTab, setSevFilter, toggleClipWatch, syncClipWatchUI, onClipboardCopy });
 
 // ====== module: rules.js ======
-
-import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH } from "./core.js";
-import { _qcAllFindings } from "./qc.js";
 
 // ==================== 规则词表维护（R8 错别字 / R9 矛盾对 / 忽略词 / R10 模板） ====================
 
@@ -1446,16 +1435,10 @@ async function loadRules() {
   } catch(e) { console.error(e); }
 }
 
-export { currentQcMeta, applyFindingFix, applyAllFixes };
 
 Object.assign(window, { applyAllFixes, applyFindingFix, learnTypoFromFinding, loadRules, loadRulesConfig, updateCfgStats, revertRulesConfig, saveRulesConfig, resetRulesConfig, renderTypoTable, openTypoAddModal, closeTypoAddModal, addTypoItem, toggleTypoItem, deleteTypoItem, openTypoImportModal, closeTypoImportModal, importTypoItems, scanReportsForTypos, adoptScanCandidate });
 
 // ====== module: data.js ======
-
-import { toast, apiFetch, confirmAction, escapeHtml, APP_SETTINGS, AUTH, animateNumber, setVal } from "./core.js";
-import { SEV_META, gotoPage } from "./shell.js";
-import { effectiveLaterality, splitReportSections, _qcAllFindings } from "./qc.js";
-import { currentQcMeta } from "./rules.js";
 
 // ==================== 待质控队列 ====================
 let QUEUE_ITEMS = [];
@@ -2157,14 +2140,10 @@ async function importSamples() {
   inp.click();
 }
 
-export { loadQueue, enqueueCurrent, enqueueText };
 
 Object.assign(window, { loadQueue, queueRunAll, queueClear, queueLoad, queueRemove, enqueueCurrent, loadSamples, loadStatsReport, viewSample, closeSampleModal, deleteSample, exportSamples, importSamples, closeExportFmtModal, pickExportFmt, exportQcReport, loadDashboard, exportSampleReport, downloadExportedFile, loadErrorTypes, loadTrend, loadSampleToWorkspace, renderStatsReport, renderModalityChart, renderRecentTable });
 
 // ====== module: ocr.js ======
-
-import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH, setVal } from "./core.js";
-import { splitReportSections } from "./qc.js";
 
 // ==================== 框选 OCR（三段识别） ====================
 // 三区对应 PACS：basic=病人基础信息 / findings=影像描述 / impression=影像诊断
@@ -2695,13 +2674,10 @@ function ocrHotkey() {
   else ocrOneClick();
 }
 
-export { ocrOneClick, ocrPipeline };
 
 Object.assign(window, { openOcrModal, closeOcrModal, ocrLoadFile, ocrGrabScreen, ocrSaveRegions, ocrRecognize, ocrResetBoxes, ocrPipeline, ocrOneClick, ocrHotkey });
 
 // ====== module: settings.js ======
-
-import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH, fmtShortcut, comboFromEvent, comboEquals } from "./core.js";
 
 // ==================== 系统设置（真实持久化） ====================
 async function loadSettings(applyUI = true) {
@@ -2898,11 +2874,6 @@ Object.assign(window, { openSettings, closeSettings, saveSettings, resetShortcut
 
 // ====== module: ris.js ======
 
-import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH, setVal } from "./core.js";
-import { gotoPage } from "./shell.js";
-import { splitReportSections, runQC } from "./qc.js";
-import { enqueueCurrent } from "./data.js";
-
 // ==================== 数据接入 ====================
 // 数据接入页加载：显示推送配置信息（轮询已移除，改用 PACS 推送模式）
 async function loadRisPage() {
@@ -3081,13 +3052,10 @@ async function risEnqueueAll() {
   toast(`已将 ${n} 份报告加入待质控队列`, n ? 'success' : 'info');
 }
 
-export { loadRisPage };
 
 Object.assign(window, { testRisConnection, fetchRisReports, cancelRis, risEnqueueAll, sendToQC, batchQC, loadRisPage });
 
 // ====== module: feedback.js ======
-
-import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH } from "./core.js";
 
 // ===================== 反馈审核（R19 闭环） =====================
 function escHtml(s) {
@@ -3188,9 +3156,6 @@ async function refreshFeedbackBadge() {
 Object.assign(window, { loadFeedback, applyFeedbackDelta, reviewFeedback });
 
 // ====== module: auth.js ======
-
-import { toast, apiFetch, escapeHtml, APP_SETTINGS, AUTH } from "./core.js";
-import { switchPage, loadUsers } from "./shell.js";
 
 // ==================== 账号 / 授权（启动闸门） ====================
 function showGate(v) {
@@ -3676,7 +3641,6 @@ async function loadChangelog() {
   }
 }
 
-export { bootstrapGate };
 
 Object.assign(window, { gateAccept, gateReject, gateCreate, gateToLogin, gateToRegister, gateToPwd, gateChangePwd, gateLogin, gateActivate, toggleUserMenu, logout, copyMachineId, openActivateFromSettings, openOnboardingFromSettings, showGate, gateShow, refreshUserUI, updateTrialBanner, populateLicenseSettings, bootstrapGate, maybeShowOnboarding, showOnboarding, closeOnboarding, openFeedback, closeFeedback, submitFeedback, checkForUpdate, refreshLicenseInfo, loadChangelog });
 

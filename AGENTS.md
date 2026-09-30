@@ -12,8 +12,16 @@
 
 **正确做法**：
 - 所有前端 JS 保持 **经典脚本**（无 `import`/`export`），合并为单个 `app.bundle.js`
-- 模块源文件（`modules/*.js`）保留作代码组织参考，不直接加载
-- 用 `split_modules.py` 做一次提取后，集成到 bundle 中
+- 模块源文件（`modules/*.js`）是**源**，bundle 是**产物**；改完模块必须重新打包：
+  ```bash
+  python3 tools/build_bundle.py          # 生成 app.bundle.js
+  python3 tools/build_bundle.py --check  # 自检（tests/test_frontend_bundle.py 会跑）
+  ```
+- ⚠️ **2026-09-30 事故**：v4.3.6 重新生成 bundle 时忘了剥掉顶层 `import/export`，
+  浏览器直接 `SyntaxError: Unexpected token 'export'` → **整个 SPA 的 JS 一行都不执行**
+  （登录闸门、按钮、渲染全废），而 HTTP 仍 200、pytest 全绿，无人察觉。
+  `tests/test_frontend_bundle.py` 现在守着：bundle 无顶层 import/export、
+  与 modules/ 同步、`node --check` 可解析。
 
 ## 2. 静态资源路径：绝对路径 vs 相对路径
 
@@ -86,6 +94,14 @@
   而打包态真实位置在用户目录 → 「恢复成功」却不生效）。
 - 改动数据层后至少跑：`tests/test_data_layer_unified.py`、
   `tests/test_sample_user.py`、`tests/test_export_import.py`。
+- **app 数据目录只有一个来源**：`paths.user_data_dir()`（`core._appdata_dir()` 与
+  `deps._appdata_dir()` 都转调它）。曾出现 core 用 `~/.medical_report_qc`、deps 用
+  用户数据目录 → 同一个 `qc_queue.json`/`web_settings.json` 写在两个地方、读写互相看不见。
+  注意角色区分：**导出产物与写权限探测**用「数据库所在目录」（`main._APPDATA_DIR`），
+  不在这里合并。
+- **队列只有一个写入口**：`core.queue_add_text()`（main / deps / route_push 都转调）。
+  曾出现 deps 版把队列写进 `qc_queue.json`，而队列端点读 qc.db 的 QueueItem 表 →
+  **PACS 推送入队的报告在界面队列里永远看不到**。
 - **刻意保留的裸 sqlite3（不要"顺手统一"掉）**：
   - `src/badcase_store.py` —— 它用**独立的 `feedback.db`**（不与 qc.db 同库，
     便于诊断包单独导出/精调管线消费），不是"同库双轨"；
@@ -116,3 +132,19 @@
 - 沙箱/受限环境下会有两个已知的环境性失败（写 `~/.config`、session 断言），
   与代码无关；判断回归要看「除这 2 个之外是否全绿」。
 
+
+## 11. 隐私与授权：几处有意为之的约束
+
+- **错误/信息日志（`src/error_reporter.py`）**：context 只接受白名单键（未知键丢弃），
+  字符串值统一去标识擦洗。擦洗是"降低风险"不是"保证无 PHI"——**不要把报告正文塞进
+  context**。`QC_ERROR_REPORT_URL` **未实现**（本模块不联网），`get_stats()` 会标明
+  `remote_upload: not_implemented`。
+- **诊断包（`src/log_utils.py::export_diagnostic_bundle`）**：默认**不含** `feedback.db`
+  （里面有完整报告正文）；要打包须显式 `--include-patient-data`，包内会附
+  `README_诊断包.txt` 说明所含内容与隐私提示。
+- **试用起点（`src/license_utils.py`）**：除 `license.dat` 外还冗余写在同目录
+  `.license_trial_anchor`（+ Windows 注册表 + 用户数据目录），取**最早**的有效日期 ——
+  这样 `rm license.dat` 不能重置试用。新增锚点位置请沿用 `_trial_sign/_trial_verify` 签名。
+- **鉴权/令牌只有 `server/security.py` 一份**：`server/deps.py` 只负责再导出
+  （`tests/test_single_implementation.py` 断言两边是同一个对象）。默认密钥必须是
+  `_load_or_create_secret()` 生成的随机值，**禁止**再写 `change-me-in-prod` 这类可猜默认值。

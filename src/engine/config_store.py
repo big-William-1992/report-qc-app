@@ -40,21 +40,41 @@ def _assets_dir() -> str:
 
 
 def _rules_config_path() -> str:
-    """定位规则配置：打包后优先用用户可写目录(%APPDATA%/MedicalReportQC)，
-    不存在则从 exe 同级 assets 复制初始文件，避免安装到 Program Files 后只读。"""
-    if getattr(sys, "frozen", False):
-        user_dir = os.path.join(os.path.expandvars("%APPDATA%"), "MedicalReportQC")
-        user_path = os.path.join(user_dir, "rules_config.json")
-        if not os.path.exists(user_path):
-            src = app_paths.frozen_resource_dir("assets", "rules_config.json")
-            try:
-                os.makedirs(user_dir, exist_ok=True)
-                if os.path.exists(src):
-                    shutil.copyfile(src, user_path)
-            except Exception:
-                return src
-        return user_path
-    return os.path.join(_assets_dir(), "rules_config.json")
+    """定位规则配置（**单一来源**：src/paths.rules_config_path()）。
+
+    2026-09-30 修复：本函数此前自己算路径，frozen 分支硬编码 `%APPDATA%` 且缺
+    `os.path.isabs()` 守卫 —— 在 POSIX 上 `os.path.expandvars("%APPDATA%")` 既不
+    展开也不是绝对路径，于是会落到**相对路径** `%APPDATA%/MedicalReportQC/`，
+    即在进程启动目录建出一个字面 `%APPDATA%` 目录，规则配置写到野路径；
+    而 src/backup.py 用的是 paths.rules_config_path() → 用户维护的错别字/规则
+    既进不了备份、恢复也写不回真正生效的位置。
+    同仓库的 paths.ocr_config_path()/user_data_dir() 都带 isabs 守卫，只有这里漏了。
+    """
+    try:
+        import paths as _paths
+        return _paths.rules_config_path()
+    except Exception:  # pragma: no cover - paths 随包分发，几乎不可达
+        if getattr(sys, "frozen", False):
+            import platform as _plt
+            if _plt.system() == "Windows":
+                base = os.path.expandvars("%APPDATA%")
+            elif _plt.system() == "Darwin":
+                base = os.path.join(os.path.expanduser("~"),
+                                    "Library", "Application Support")
+            else:
+                base = os.path.expanduser("~")
+            user_dir = os.path.join(base, "MedicalReportQC")
+            user_path = os.path.join(user_dir, "rules_config.json")
+            if not os.path.exists(user_path):
+                src = app_paths.frozen_resource_dir("assets", "rules_config.json")
+                try:
+                    os.makedirs(user_dir, exist_ok=True)
+                    if os.path.exists(src):
+                        shutil.copyfile(src, user_path)
+                except Exception:
+                    return src
+            return user_path
+        return os.path.join(_assets_dir(), "rules_config.json")
 
 
 RULES_CONFIG_PATH = _rules_config_path()

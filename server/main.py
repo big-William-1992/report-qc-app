@@ -115,6 +115,7 @@ from server.core import (  # 共享层（2026-08-18 拆分）：日志/响应封
     _queue_orm_all, _queue_orm_add,  # noqa: F401 (re-export)
     _queue_orm_add_dedup, _queue_orm_remove,
     _queue_orm_clear, _load_queue,  # noqa: F401 (部分符号 re-export 给旧引用)
+    queue_add_text,  # 入队的唯一实现（main/deps 共用，2026-09-30）
     _migrate_queue_to_db, _settings_orm_all, _settings_orm_save, _migrate_settings_to_db,
 )
 from server.security import (  # noqa: F401 (re-export 给旧引用)
@@ -806,12 +807,8 @@ def datetime_now_iso() -> str:
 
 
 def _queue_add_text(text: str, meta: dict, source: str = "RIS轮询"):
-    """复用 queue 去重逻辑（正文 MD5，数据库层原子去重）。返回条目 id 或 None。"""
-    m = dict(meta or {})
-    m.setdefault("source", source)
-    m.setdefault("_emp", "ris-poll")  # RIS 自动入队：公共复核队列（医生可见，2026-08-18）
-    _id, _dup = _queue_orm_add_dedup(text, m)
-    return str(_id) if _id else None
+    """入队（转调 core.queue_add_text —— 唯一实现）。返回条目 id 或 None。"""
+    return queue_add_text(text, meta, source=source)
 
 
 def _ris_poll_loop(stop_event: threading.Event):
@@ -2402,14 +2399,17 @@ def submit_user_feedback(req: Dict[str, Any], emp: str = Depends(require_emp_loc
     contact = (req.get("contact") or "").strip()
     if not message:
         raise HTTPException(400, "反馈内容不能为空")
-    # 写入本地反馈日志
+    # 写入本地信息日志（用户反馈）
+    # 2026-09-30：字段名由 message_full 改为 feedback_text（在 error_reporter 的
+    # 白名单内），长度收到 500 —— 用户可能在此粘贴报告正文，写入前会经统一擦洗；
+    # 该文件仅存本机，且诊断包默认不再收纳 errors/ 目录（见 log_utils）。
     try:
         import error_reporter as _er
         _er.report_info(
-            f"[反馈] {category}: {message[:200]}",
+            f"[反馈] {category}",
             where="feedback.submit",
             emp_id=emp, category=category, contact=contact,
-            message_full=message[:1000])
+            feedback_text=message[:500])
     except Exception:
         pass
     return _envelope(True, "OK", {"received": True}, "反馈已收到，谢谢！")
