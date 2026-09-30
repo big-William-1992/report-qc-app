@@ -144,7 +144,7 @@ EOF
 
 | 字段 | 说明 |
 |------|------|
-| `prompt_mode: "ft"` | **微调模型必设**。使用与训练分布对齐的简洁 prompt；不设会用完整 taxonomy prompt，会诱导幻觉（凑错误类型）。<br>2026-09-30 实测对照（同 20 例、同一微调模型）：`ft` → recall 18.2% / **specificity 100%**（15/20 例零输出，保守但不误报）；`full` → recall 0% / **specificity 0%**（对每份报告都报，含全部正常报告，且编造出不在允许清单里的 error_type）。完整基线与解读见 `benchmarks/README.md`。 |
+| `prompt_mode: "ft"` | **微调模型必设**。使用与训练分布对齐的简洁 prompt；不设会用完整 taxonomy prompt，会诱导幻觉（凑错误类型）。<br>2026-09-30 复测（留出集 `data/mlx_data/valid.jsonl` 59 条，走线上真实路径）：`ft` → recall **95.5%** / **specificity 100%**；`full` → **不要用**（长 taxonomy prompt 与训练分布不符，会编造不存在的 error_type）。模型能力边界见第九节，引用指标前**务必先读**。 |
 | `provider` | `ollama` / `mlx` / `cloud` 三选一 |
 | `timeout` | MLX 冷启动首次加载约 10~30s，建议 ≥180 |
 
@@ -157,3 +157,71 @@ EOF
 | 首次调用超时 | MLX 冷加载属正常，调大 timeout 或预热一次 |
 | GGUF 回答乱码 | Modelfile 的 TEMPLATE/stop 必须保留 Qwen3 ChatML 结构 |
 | confidence 恒为 1.0 | 已知限制: 训练标注全 1.0 所致; 待 badcase 回流后增量精调校准 |
+| **对语义级错误静默返回 `[]`** | **预期行为**，非故障 —— 该 adapter 只学过 3 种错误码。见第九节 |
+
+---
+
+## 九、能力边界与排查结论（2026-09-30 实测）
+
+> 本节记录一次完整排查的**结论**。目的是防止后续再花时间怀疑模型/prompt，
+> 以及防止把下面这个 recall 数字**外推**到真实临床报告。
+
+### 9.1 实测成绩（留出集，走线上真实路径）
+
+留出集 `data/mlx_data/valid.jsonl`（59 条，训练时未见过），
+调用 `run_llm_qc(config={"provider":"ollama","model":"qc-qwen3","prompt_mode":"ft"})`：
+
+| 指标 | 结果 |
+|---|---|
+| recall（错误样本检出率） | **95.5%**（21/22） |
+| specificity（正常样本零误报） | **100.0%**（37/37） |
+
+**但这个数字不可外推到真实报告**，原因见下。
+
+### 9.2 根因：adapter 的训练分布极窄
+
+`adapter_config.json` 的 `data` 字段指明 lora-v2 实际训练集是 `data/mlx_data`
+（593 条，由 `tools/gen_v2_robust_dataset.py` 生成）。
+该训练集里**只出现过 3 种错误码**，且极度不均：
+
+| 训练集中出现的 error_type | 样本数 |
+|---|---|
+| `R8-TYPO`（错别字） | 235 |
+| `R19-HOMOPHONE`（同音字） | 8 |
+| `R5-CONSISTENCY`（描述-结论矛盾） | **1** |
+
+结论：**模型只会检出字符级错误（错别字/同音字）**。
+对语义级错误（左右侧矛盾、性别-器官矛盾、描述-结论矛盾），
+在分布外输入上**静默返回 `[]`**（0.5s、6 token、无报错）——这是训练分布太窄
+的必然结果，不是配置问题。`R5-CONSISTENCY` 仅 1 条训练样本，学不会属正常。
+
+### 9.3 排查中容易踩的三个坑（都实际发生过）
+
+1. **认错训练集**：`data/` 下有 `mlx`(1800条)、`mlx_data`(593条)、`mlx50`(50条)
+   三个目录。**只有 `adapter_config.json` 里 `data` 指向的那个**才是该 adapter
+   的训练集；用别的目录的 system prompt 去比对，会得出「prompt 没对齐」的错误结论。
+2. **把 taxonomy 喂给 ft 模型再测**：往 prompt 里加完整「错误分类法」会**诱导**
+   模型拼造错误码（实测造出 `R1-CONSISTENCY`/`R2-CONSISTENCY`——R1 是
+   `R1-GENDER`、R2 是 `R2-LATERALITY`、一致性是 `R5-CONSISTENCY`，
+   这两个码**根本不存在**）。这是「用错 prompt 测出来的幻觉」，不是模型本身的缺陷。
+3. **手写用例与训练分布不同构**：训练样本的 user 侧是**纯报告原文**
+   （无 taxonomy、无 RAG 注入）。用带附加内容的 prompt 测，结果无意义。
+
+### 9.4 两个已加的门禁
+
+| 测试 | 守什么 |
+|---|---|
+| `tests/test_llm_prompt_alignment.py` | ft prompt 必须与 adapter 训练集逐字对齐（从 `adapter_config.json` 反查真实训练集）；不一致即失败 —— 改了 prompt 不重训会**静默失效**，此前 pytest 仍全绿 |
+| `tests/test_llm_error_type_whitelist.py` | LLM 返回的 `error_type` 必须在白名单内，幻觉编码一律丢弃 + 告警<br>（修的是一个**真 bug**：`llm_qc._normalize` 原先把 rule_id 合成 `"L1-" + error_type`，等于把模型编的字符串当规则号传给下游，**绕过**了 `llm_engine` 已有的 `ALLOWED_RULE_IDS` 校验） |
+
+### 9.5 引用指标时的三条硬规矩
+
+1. 报 recall 必须**同时**报 `prompt_mode`、模型名、adapter、留出集来源；
+2. 留出集必须与训练集**同构但不相交**，否则数字无意义；
+3. **不要**把这个 adapter 的指标写成「语义质控 recall」——它目前只覆盖字符级错误。
+
+### 9.6 后续方向
+
+瓶颈在**训练数据**，不在代码。要覆盖语义级错误，需要补充对应类型的标注样本
+（描述-结论矛盾、左右侧矛盾等），再增量精调。
+评估集建设流程见 `docs/EVAL_SET_GUIDE.md`（含 §5.5 同一份边界说明）。
