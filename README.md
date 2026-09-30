@@ -2,7 +2,11 @@
 
 > 面向放射科医生的影像报告智能质控助手：粘贴即查、复制即控、后台快捷键一键质控、离线 OCR 自动回填、按错误严重度红/橙/蓝高亮、样本沉淀、科室报表、责任到人。
 
-> ⚠️ **合规与免责**：本软件为报告质量**辅助核查**工具，**不替代医师诊断**。涉及二类医疗器械与等保三级相关合规要求，请在正式临床使用前完成相应注册与测评。所有报告数据**仅存本机 / 院内内网，不出域**。
+> ⚠️ **合规与免责**：本软件为报告质量**辅助核查**工具，**不提供诊断结论、不替代医师判断**。
+> **当前尚未取得医疗器械注册证，也未完成等保测评**；是否构成第二类医疗器械、对外如何定性，
+> 需专业机构确认（见 [docs/OPEN_DECISIONS.md](docs/OPEN_DECISIONS.md) D1，与
+> [docs/DISCLAIMER.md](docs/DISCLAIMER.md) 口径一致）。默认配置下报告数据**仅存本机 / 院内内网**；
+> 联网行为（RIS/PACS 直连、浮动授权心跳、自动更新、可选的云端 LLM）已在免责声明中逐条列明。
 
 ---
 
@@ -27,6 +31,16 @@
 | [docs/接口文档_程序化API.md](docs/接口文档_程序化API.md) | 程序化 API 调用规范 |
 | [docs/INSTALL.md](docs/INSTALL.md) | 安装与权限配置 |
 | [docs/ACTIVATION.md](docs/ACTIVATION.md) | 授权、试用期与激活码流程 |
+| [AGENTS.md](AGENTS.md) | **给 AI/新人的硬约定**（前端经典脚本、单一实现、数据层、迁移、测试隔离、门禁） |
+| [docs/OPEN_DECISIONS.md](docs/OPEN_DECISIONS.md) | **待决策清单**（监管定性/许可模式/定价/等保/备份加密等 10 项，需人拍板） |
+| [docs/DISCLAIMER.md](docs/DISCLAIMER.md) | 免责声明与合规说明（与 README 口径一致） |
+| [docs/COMPLIANCE_GAP_ANALYSIS.md](docs/COMPLIANCE_GAP_ANALYSIS.md) | 合规差距分析——法规清单、定性判定、等保逐控制点、PHI 分级、里程碑 |
+| [docs/CLINICAL_VALIDATION_PLAN.md](docs/CLINICAL_VALIDATION_PLAN.md) | 临床验证方案——双人盲法+仲裁、样本量、统计方法、图表清单 |
+| [docs/EVAL_SET_GUIDE.md](docs/EVAL_SET_GUIDE.md) | 语义评测集标注与打分指南（研究 A/B 分开，拒收银标） |
+| [docs/DELIVERY_HARDENING.md](docs/DELIVERY_HARDENING.md) | 交付硬化——反代/TLS/服务化/备份灾备/离线签名/上线清单 |
+| [docs/PRICING_AND_PACKAGING.md](docs/PRICING_AND_PACKAGING.md) | 定价与打包建议——分层套餐、价格带、报价单模板、红线话术 |
+| [docs/ROUTES_SPLIT_PLAN.md](docs/ROUTES_SPLIT_PLAN.md) | `server/main.py` 拆分计划（89 端点的分阶段方案与验收条件） |
+| [docs/reviews/](docs/reviews/) | 历史审查/修复报告归档（活文档见上表，历史报告放这里） |
 
 ---
 
@@ -313,6 +327,6 @@ ruff check --select E9,F63,F7,F821,F822,F811,F401,F702,B018 src/ server/
 
 > 完整测试策略见 [TESTING_STRATEGY.md](TESTING_STRATEGY.md)。
 
-- 单元测试：459 收集 / 457 通过 / 7 跳过（pytest；受限沙箱下另有 2 项因禁止写用户目录而失败，非缺陷）
+- 单元测试：496 收集 / 494 通过 / 7 跳过（pytest；受限沙箱下另有 2 项因禁止写用户目录而失败，非缺陷）
 - E2E 测试：Playwright
 - CI 门禁：pytest 全量 + ruff 致命规则

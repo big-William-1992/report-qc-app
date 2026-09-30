@@ -104,12 +104,42 @@ def _emp_from_auth(authorization: Optional[str]) -> Optional[str]:
     return verify_token(tok)
 
 
+# ── 「本机免令牌」便利通道的可信判定（2026-09-30 安全加固）──────────────
+# 背景（真实绕过路径）：应用绑定 127.0.0.1、反向代理与它同机部署时，
+# **所有内网用户的 request.client.host 都是 127.0.0.1** —— 于是任何人只要带
+# `X-Emp-Id: <任意工号>` 就被当成可信本机，可免令牌冒充他人；审计日志里
+# 记录的来源 IP 也全是 127.0.0.1，事后无法追溯。
+# 加固：本机通道额外要求「请求不带任何代理转发头」——
+#   · 真实的本机桌面端/本机脚本直连不会带 X-Forwarded-For / X-Real-IP / Forwarded；
+#   · 经反向代理来的请求会带（deploy/nginx-report-qc.conf 就是这么配的）。
+# 该判定是单调保守的：代理头只会**关闭**本机通道，永远不会开启它，
+# 因此内网客户端伪造 XFF 也无法借此提权（它的 host 本来就不是回环）。
+# 需要彻底关闭该通道（例如多机部署、或本机也存在不受信用户）时设
+# `QC_LOCAL_TRUST=0`。
+_PROXY_HEADERS = ("x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host")
+
+
+def _proxy_headers_present(request: Request) -> bool:
+    return any(request.headers.get(h) for h in _PROXY_HEADERS)
+
+
+def _is_loopback(request: Request) -> bool:
+    return bool(request.client and request.client.host in ("127.0.0.1", "::1", "localhost"))
+
+
+def local_trust_allowed(request: Request) -> bool:
+    """是否允许走"本机免令牌"通道（须同时满足：非禁用 + 回环 + 无代理头）。"""
+    if (os.environ.get("QC_LOCAL_TRUST", "") or "").strip() == "0":
+        return False
+    return _is_loopback(request) and not _proxy_headers_present(request)
+
+
 def require_emp(request: Request,
                 authorization: Optional[str] = Header(None),
                 x_emp_id: Optional[str] = Header(None)) -> str:
     import accounts
     emp = _emp_from_auth(authorization)
-    if not emp and request.client and request.client.host in ("127.0.0.1", "::1", "localhost"):
+    if not emp and local_trust_allowed(request):
         emp = (x_emp_id or "").strip()
     if not emp:
         raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token>（远程访问不接受 X-Emp-Id 头）")
@@ -122,7 +152,7 @@ def require_emp_local(request: Request,
                       authorization: Optional[str] = Header(None),
                       x_emp_id: Optional[str] = Header(None)) -> str:
     import accounts
-    if request.client and request.client.host in ("127.0.0.1", "::1", "localhost"):
+    if local_trust_allowed(request):
         emp = (x_emp_id or "").strip()
         if emp and accounts.account_exists(emp):
             return emp
@@ -130,7 +160,10 @@ def require_emp_local(request: Request,
             return "local"
         if emp:
             raise HTTPException(401, f"账号 '{emp}' 不存在或已注销")
-        raise HTTPException(401, "缺少鉴权：请通过 X-Emp-Id 头指定有效账号，或使用 Bearer token")
+        raise HTTPException(
+            401, "缺少鉴权：请通过 X-Emp-Id 头指定有效账号，或使用 Bearer token"
+                 "（经反向代理访问时不接受 X-Emp-Id；如确需本机通道请设 QC_LOCAL_TRUST=1 "
+                 "并确保只有本机可直连）")
     emp = _emp_from_auth(authorization)
     if not emp:
         raise HTTPException(401, "缺少鉴权：Authorization: Bearer <token>（远程访问不接受 X-Emp-Id 头）")

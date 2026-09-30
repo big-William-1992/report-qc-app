@@ -184,31 +184,75 @@ def init_db() -> None:
         if _dir:
             os.makedirs(_dir, exist_ok=True)
     Base.metadata.create_all(bind=engine)
+    # 2026-09-30：schema 变更纳入版本化管理（server/migrations.py）。
+    # 之前 _migrate_* 每次启动无条件跑、没有任何版本记录，出问题无法判断库升到第几版；
+    # 现在：迁移前自动快照 + 只跑未应用的版本 + 失败留痕且不写版本号（下次重试）。
+    # 注：老的 _migrate_queue_hash / _migrate_settings_uk 仍保留为函数体，
+    # 由 migrations 0002/0003 转调（避免逻辑双写）；_migrate_legacy_root_db 是
+    # **文件级**数据迁移（把误落在仓库根的 qc.db 并回 assets/），带自身守卫，
+    # 保持每次启动无条件调用。
+    try:
+        from server import migrations as _mig
+        _applied = _mig.run_migrations(engine)
+        if _applied:
+            try:
+                from server.log_utils import get_logger
+                get_logger().info("数据库迁移完成：%s", ", ".join(_applied))
+            except Exception:       # silent-except-ok: 仅仅是补一条日志，失败不能影响启动
+                pass
+    except Exception:
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet("server.db.migrations")
     _migrate_legacy_root_db(engine)
-    _migrate_queue_hash(engine)
-    _migrate_settings_uk(engine)
 
 
 def _migrate_settings_uk(eng) -> None:
-    """幂等迁移（2026-08-18 D13）：settings.key 单列唯一 → (key, user_id) 复合唯一。
+    """幂等迁移（2026-08-18 D13）：settings 的唯一性由 key 单列 → (key, user_id) 复合。
 
-    旧模型 key 声明 unique=True，SQLite 生成 sqlite_autoindex_settings_1，
-    会阻止同一 key 的「全局 + 用户级」两条记录并存。create_all 不会改已存在表，
-    这里手工 DROP 旧自动索引并重建复合唯一索引。"""
+    背景：旧模型 `key` 声明 unique=True，SQLite 生成隐式索引 sqlite_autoindex_settings_1。
+    它会让「同一 key 的全局值 + 用户级覆盖」两条记录**无法并存**，与
+    「NULL=全局 / 非 NULL=用户级」的设计直接冲突。
+
+    ⚠️ 2026-09-30 两处修复：
+    1) **静默失效**：本函数此前用 `conn.execute("PRAGMA ...")` 字符串 SQL，
+       SQLAlchemy 2.0 会抛 ObjectNotExecutableError，而异常被自身 except 吞掉
+       → 自 2026-08-18 起这个迁移**从未真正执行**。
+    2) **方案本身不可行**：即便 SQL 写对，SQLite **不允许 DROP 由 UNIQUE 约束隐式
+       创建的自动索引**（sqlite_autoindex_*）→ 原 `DROP INDEX` 必然失败，
+       复合索引也就永远建不上。正确做法是**重建表**（见下）。
+    """
     try:
-        with eng.connect() as c:
-            idx = [r[1] for r in c.execute("PRAGMA index_list(settings)").fetchall()]
-            for _name in idx:
-                if _name.startswith("sqlite_autoindex_settings"):
-                    cols = [r[2] for r in c.execute(
-                        "PRAGMA index_info('%s')" % _name).fetchall()]
-                    if cols == ["key"]:
-                        # 安全说明: _name 来自本函数内硬编码索引名清单, 非外部输入
-                        c.execute("DROP INDEX %s" % _name)
-                        c.execute("COMMIT")
-            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_settings_key_user "
-                      "ON settings(key, user_id)")
-            c.execute("COMMIT")
+        with eng.begin() as c:
+            names = [r[1] for r in c.exec_driver_sql(
+                "PRAGMA index_list(settings)").fetchall()]
+            if not names:
+                return                      # 表不存在：交给 create_all
+            legacy = False
+            for name in names:
+                cols = [r[2] for r in c.exec_driver_sql(
+                    "PRAGMA index_info('%s')" % name).fetchall()]
+                if name.startswith("sqlite_autoindex_settings") and cols == ["key"]:
+                    legacy = True
+            if not legacy:
+                return                      # 已经是 (key, user_id) 复合唯一
+            # 整表重建（SQLite 唯一可行路径）。全程在**同一个事务**内：
+            # 任一步失败都会回滚，原 settings 表名与数据保持原样。
+            old_cols = [r[1] for r in c.exec_driver_sql(
+                "PRAGMA table_info(settings)").fetchall()]
+            c.exec_driver_sql("ALTER TABLE settings RENAME TO settings_legacy_uk")
+            from server import models
+            models.Setting.__table__.create(bind=c)   # 新表自带 (key,user_id) 复合唯一
+            common = [col.name for col in models.Setting.__table__.columns
+                      if col.name in old_cols]
+            if common:
+                cc = ",".join(common)
+                c.exec_driver_sql(
+                    f"INSERT OR IGNORE INTO settings ({cc}) "
+                    f"SELECT {cc} FROM settings_legacy_uk")
+            c.exec_driver_sql("DROP TABLE settings_legacy_uk")
     except Exception:
         try:
             from .log_utils import log_quiet
@@ -223,13 +267,19 @@ def _migrate_queue_hash(eng) -> None:
     create_all 对已存在的表不会加新列，需手工 ALTER；SQLite 索引名全局唯一，
     已存在时跳过（幂等）。补列后回填存量行的 hash（与 _queue_orm_all 同口径 MD5，
     去空格后计算），重复 hash 只保留最早一条。
+
+    ⚠️ 2026-09-30 修复（静默失效）：同 _migrate_settings_uk —— 字符串 SQL 在
+    SQLAlchemy 2.0 下必然抛 ObjectNotExecutableError 且被自身 except 吞掉，
+    使本迁移从未生效。后果：**老库的 queue 表没有 report_hash 列**，而
+    models.QueueItem 一直带该列 → 老库升级后入队 INSERT 会因"表中无此列"失败，
+    "数据库层并发去重"也从未存在。
     """
     try:
-        with eng.connect() as c:
-            cols = [r[1] for r in c.execute("PRAGMA table_info(queue)").fetchall()]
+        with eng.begin() as c:
+            cols = [r[1] for r in c.exec_driver_sql(
+                "PRAGMA table_info(queue)").fetchall()]
             if "report_hash" not in cols:
-                c.execute("ALTER TABLE queue ADD COLUMN report_hash VARCHAR(32)")
-                c.execute("COMMIT")
+                c.exec_driver_sql("ALTER TABLE queue ADD COLUMN report_hash VARCHAR(32)")
             else:
                 # 新库：models.QueueItem.report_hash unique=True 已由 create_all 生成
                 # 唯一约束 autoindex，无需再手工建索引/清理（2026-08-18 双索引冗余修复）
@@ -237,23 +287,21 @@ def _migrate_queue_hash(eng) -> None:
     except Exception:
         return  # 表不存在等：由 create_all 兜底
     try:
-        with eng.connect() as c:
-            rows = c.execute(
+        with eng.begin() as c:
+            rows = c.exec_driver_sql(
                 "SELECT id, report_text FROM queue "
                 "WHERE report_hash IS NULL OR report_hash = ''").fetchall()
             for rid, rt in rows:
                 h = hashlib.md5("".join((rt or "").split()).encode("utf-8", "ignore")).hexdigest() \
                     if (rt or "").strip() else None
                 if h:
-                    c.execute("UPDATE queue SET report_hash=? WHERE id=?", (h, rid))
-            c.execute("COMMIT")
-        with eng.begin() as c:
+                    c.exec_driver_sql("UPDATE queue SET report_hash=? WHERE id=?", (h, rid))
             # 唯一索引冲突防御（仅旧库补列时执行一次）：重复 hash 只保留最早一条
-            c.execute(
+            c.exec_driver_sql(
                 "DELETE FROM queue WHERE id NOT IN "
                 "(SELECT MIN(id) FROM queue GROUP BY report_hash) "
                 "AND report_hash IS NOT NULL AND report_hash != ''")
-            c.execute(
+            c.exec_driver_sql(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_queue_hash ON queue(report_hash)")
     except Exception:
         try:

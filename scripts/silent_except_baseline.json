@@ -1,0 +1,155 @@
+{
+  "by_file": {
+    "server/core.py": {
+      "log_quiet": 3,
+      "pass": 0,
+      "swallow": 0
+    },
+    "server/db.py": {
+      "log_quiet": 4,
+      "pass": 2,
+      "swallow": 2
+    },
+    "server/deps.py": {
+      "log_quiet": 0,
+      "pass": 4,
+      "swallow": 2
+    },
+    "server/license_web.py": {
+      "log_quiet": 2,
+      "pass": 0,
+      "swallow": 6
+    },
+    "server/main.py": {
+      "log_quiet": 21,
+      "pass": 3,
+      "swallow": 8
+    },
+    "server/security.py": {
+      "log_quiet": 1,
+      "pass": 0,
+      "swallow": 1
+    },
+    "src/accounts.py": {
+      "log_quiet": 1,
+      "pass": 2,
+      "swallow": 1
+    },
+    "src/anatomy_lexicon.py": {
+      "log_quiet": 1,
+      "pass": 0,
+      "swallow": 0
+    },
+    "src/auto_updater.py": {
+      "log_quiet": 5,
+      "pass": 3,
+      "swallow": 3
+    },
+    "src/backup.py": {
+      "log_quiet": 0,
+      "pass": 2,
+      "swallow": 1
+    },
+    "src/engine/config_store.py": {
+      "log_quiet": 0,
+      "pass": 0,
+      "swallow": 4
+    },
+    "src/engine/textsplit.py": {
+      "log_quiet": 0,
+      "pass": 0,
+      "swallow": 1
+    },
+    "src/error_reporter.py": {
+      "log_quiet": 0,
+      "pass": 5,
+      "swallow": 0
+    },
+    "src/feedback_collector.py": {
+      "log_quiet": 0,
+      "pass": 1,
+      "swallow": 0
+    },
+    "src/highfreq_lexicon.py": {
+      "log_quiet": 0,
+      "pass": 0,
+      "swallow": 1
+    },
+    "src/license_utils.py": {
+      "log_quiet": 7,
+      "pass": 6,
+      "swallow": 11
+    },
+    "src/llm_client.py": {
+      "log_quiet": 2,
+      "pass": 0,
+      "swallow": 6
+    },
+    "src/llm_engine.py": {
+      "log_quiet": 0,
+      "pass": 0,
+      "swallow": 2
+    },
+    "src/log_utils.py": {
+      "log_quiet": 3,
+      "pass": 3,
+      "swallow": 0
+    },
+    "src/logger.py": {
+      "log_quiet": 0,
+      "pass": 7,
+      "swallow": 1
+    },
+    "src/medical_whitelist.py": {
+      "log_quiet": 0,
+      "pass": 7,
+      "swallow": 0
+    },
+    "src/ocr_provider.py": {
+      "log_quiet": 0,
+      "pass": 0,
+      "swallow": 2
+    },
+    "src/paths.py": {
+      "log_quiet": 0,
+      "pass": 1,
+      "swallow": 1
+    },
+    "src/rag.py": {
+      "log_quiet": 2,
+      "pass": 0,
+      "swallow": 0
+    },
+    "src/ris.py": {
+      "log_quiet": 5,
+      "pass": 0,
+      "swallow": 1
+    },
+    "src/sample_export.py": {
+      "log_quiet": 0,
+      "pass": 0,
+      "swallow": 1
+    },
+    "src/samplelib.py": {
+      "log_quiet": 4,
+      "pass": 1,
+      "swallow": 3
+    },
+    "src/update_check.py": {
+      "log_quiet": 1,
+      "pass": 0,
+      "swallow": 2
+    },
+    "src/version.py": {
+      "log_quiet": 0,
+      "pass": 0,
+      "swallow": 1
+    },
+    "src/zh_radiology_synonyms.py": {
+      "log_quiet": 1,
+      "pass": 0,
+      "swallow": 0
+    }
+  },
+  "total": 171
+}

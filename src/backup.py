@@ -33,6 +33,22 @@ def _enabled() -> bool:
     return os.environ.get("QC_BACKUP_ENABLED", "true").lower() not in ("0", "false", "no")
 
 
+def _lg(where: str) -> None:
+    """降级点留痕（局部导入，避免模块级依赖循环）。
+
+    2026-09-30：备份链路上的"静默 return/跳过"改为调用它 —— log_quiet 现在会带上
+    异常类型、消息与调用位置（见 src/logger.py::_context），所以这一行就足够定位问题。
+    """
+    try:
+        try:
+            from .log_utils import log_quiet
+        except ImportError:
+            from log_utils import log_quiet
+        log_quiet(where)
+    except Exception:
+        pass
+
+
 def _interval_days() -> int:
     try:
         return max(1, int(os.environ.get("QC_BACKUP_INTERVAL_DAYS", "1")))
@@ -48,7 +64,7 @@ def _keep_days() -> list[int]:
         if part:
             try:
                 days.append(max(1, int(part)))
-            except ValueError:
+            except ValueError:      # silent-except-ok: 保留策略里的非法条目直接跳过
                 pass
     return sorted(days) or [7]
 
@@ -88,7 +104,7 @@ def _resolve_known(fname: str) -> str:
               "license.dat": _p.license_path}.get(fname)
         if callable(fn):
             return fn()
-    except Exception:
+    except Exception:               # silent-except-ok: 解析失败即走下方 <assets>/ 回退
         pass
     # 回退：<assets>/<name>
     try:
@@ -152,13 +168,16 @@ def _vacuum_into(src_path: str, dest_path: str) -> bool:
             _lm.log_error("backup._vacuum_into",
                            f"VACUUM INTO failed: {src_path} -> {dest_path}",
                            exc=None)
-        except Exception:
+        except Exception:           # silent-except-ok: 上报失败信息本身失败，不能影响回退
             pass
         # 回退：直接文件复制
         try:
             shutil.copy2(src_path, dest_path)
             return os.path.isfile(dest_path)
         except Exception:
+            # 2026-09-30：备份文件复制失败必须留痕（此前静默 return False，
+            # 用户只看到"备份失败"却不知原因）
+            _lg(__name__)
             return False
 
 
@@ -201,7 +220,7 @@ def run_backup() -> dict[str, Any]:
         with open(status_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
     except Exception:
-        pass
+        _lg(__name__)   # 2026-09-30：状态写不进去会让界面显示过期状态，必须留痕
 
     try:
         import logger as _lm
@@ -209,7 +228,7 @@ def run_backup() -> dict[str, Any]:
                      f"备份完成: {len(result['files'])} 文件, {len(result['errors'])} 错误",
                      files_count=len(result["files"]),
                      errors_count=len(result["errors"]))
-    except Exception:
+    except Exception:               # silent-except-ok: 日志上报失败不影响备份结果
         pass
 
     return result
@@ -231,7 +250,7 @@ def prune_backups() -> int:
 
         try:
             mtime = datetime.datetime.fromtimestamp(os.path.getmtime(fpath))
-        except (OSError, ValueError):
+        except (OSError, ValueError):   # silent-except-ok: 读不到 mtime 就跳过该文件
             continue
 
         age_days = (now - mtime).days
@@ -248,7 +267,8 @@ def prune_backups() -> int:
                 os.remove(fpath)
                 removed += 1
             except OSError:
-                pass
+                # 2026-09-30：删除旧备份失败必须留痕——保留策略静默失效会撑满磁盘
+                _lg(__name__)
 
     return removed
 
@@ -264,7 +284,7 @@ def get_backup_status() -> dict[str, Any]:
             with open(status_path, "r", encoding="utf-8") as f:
                 last_backup = json.load(f)
         except Exception:
-            pass
+            _lg(__name__)   # 2026-09-30：状态文件损坏要留痕（界面会显示"无备份记录"）
 
     # 统计现有备份
     backup_files: list[dict[str, Any]] = []
@@ -282,7 +302,7 @@ def get_backup_status() -> dict[str, Any]:
                     "mtime": datetime.datetime.fromtimestamp(mtime).isoformat(timespec="seconds"),
                 })
             except OSError:
-                pass
+                _lg(__name__)   # 2026-09-30：列备份时 stat 失败要留痕（文件可能已被外部删除）
 
     return {
         "enabled": _enabled(),
@@ -382,7 +402,7 @@ def start_scheduler() -> None:
         import logger as _lm
         _lm.log_info("backup.start_scheduler",
                      f"自动备份调度器已启动，间隔 {_interval_days()} 天")
-    except Exception:
+    except Exception:               # silent-except-ok: 日志失败不影响调度器启动
         pass
 
 

@@ -1,0 +1,98 @@
+<!--
+  ============================================================================
+  星衍放射质控软件 —— Windows 服务模板（WinSW）
+  ============================================================================
+  用途：把「一台服务器 + 多医生浏览器访问」的院内服务端做成开机自启的
+        Windows 服务（无需人工登录、崩溃自动重启）。
+
+  前置：
+    - 服务端以 **Python 源码 + venv** 方式部署（推荐，便于升级与排障）。
+    - 打包版 exe（pywebview 桌面壳）默认只绑定 127.0.0.1 并弹出窗口，
+      不具备官方"无头服务"模式 —— 若要服务化打包 exe，
+      **需向研发确认**是否存在无头启动方式（如可指定监听地址的 host 参数；
+      截至本文件编写未见官方步骤）。
+
+  使用步骤：
+    1) 下载 WinSW（x64）（需院内允许的开源组件，版本需信息科确认），
+       重命名为 report-qc-service.exe，与本文件同目录；
+    2) 本文件重命名为 report-qc-service.xml（**必须与 exe 同名**，仅扩展名不同）；
+    3) 按下方 <占位符> 替换为真实路径/密钥；
+    4) 管理员 PowerShell：
+         .\report-qc-service.exe install
+         .\report-qc-service.exe start
+         .\report-qc-service.exe status
+       卸载：.\report-qc-service.exe stop ; .\report-qc-service.exe uninstall
+
+  安全要点：
+    - 使用**专用低权限域/本地账号**运行（不要用 Administrator / SYSTEM 跑对外服务）。
+    - QC_API_SECRET / PUSH_API_KEY 等密钥不要硬编码进 XML 提交到仓库；
+      推荐在服务账号用户环境下用 setx 预置，或改用 <env> 从受保护文件读取
+      （WinSW 支持 value 直接内联；投产时请用信息科认可的密钥保管方式）。
+    - <onfailure> 自动重启；<log> 建议开 roll-by-size 防日志打满磁盘。
+  ============================================================================
+-->
+<service>
+  <!-- 服务内部标识（安装名，不含空格） -->
+  <id>ReportQC</id>
+  <!-- 服务在「服务」管理器里显示的名称与描述 -->
+  <name>星衍放射质控服务</name>
+  <description>星衍放射质控软件后端（FastAPI/uvicorn，供院内浏览器访问）。停止将导致医生端无法访问。</description>
+
+  <!-- 可执行文件：venv 里的 python.exe（不要用系统全局 python） -->
+  <executable>C:\ReportQC\app\.venv\Scripts\python.exe</executable>
+
+  <!-- 启动参数：绑定内网/回环并按需信任反代头（下方 arguments 已按推荐策略写好）
+       host 取 127.0.0.1 → 仅反代可访问（推荐，配合 nginx/IIS 反代）
+       host 取 0.0.0.0   → 直接对内网开放（此时必须设 QC_API_SECRET，且建议只用防火墙放行医生网段）
+       端口与项目交付基线一致：8500
+       说明：proxy-headers 与 forwarded-allow-ips 仅在「反代与应用同机」时才这样写；
+             反代在另一台机器时，forwarded-allow-ips 填反代内网 IP。 -->
+  <arguments>-m uvicorn server.main:app --host 127.0.0.1 --port 8500 --proxy-headers --forwarded-allow-ips "127.0.0.1"</arguments>
+
+  <!-- 工作目录：必须是项目根（server/ 与 src/ 的上一级），否则模块导入失败 -->
+  <workingdirectory>C:\ReportQC\app</workingdirectory>
+
+  <!-- 环境变量：按项目真实变量清单填写（.env.example / DEPLOYMENT.md 有对应项） -->
+  <env name="QC_HOST" value="127.0.0.1"/>
+  <env name="QC_PORT" value="8500"/>
+  <!-- 非本机监听必填，多节点需一致；请勿提交真实值到仓库 -->
+  <env name="QC_API_SECRET" value="&lt;请替换为强随机串，64+ 字符&gt;"/>
+  <!-- PACS/RIS 主动推送鉴权（X-API-Key 头），启用推送时才需要 -->
+  <env name="PUSH_API_KEY" value="&lt;请替换为强随机串&gt;"/>
+  <!-- 数据目录覆盖（默认 %APPDATA%\MedicalReportQC）；集中存放/便于备份时设置 -->
+  <env name="QC_APPDATA" value="D:\ReportQC\data"/>
+  <!-- 备份策略（内置备份，配合 deploy/backup.sh 或共享目录异地） -->
+  <env name="QC_BACKUP_ENABLED" value="true"/>
+  <env name="QC_BACKUP_INTERVAL_DAYS" value="1"/>
+  <env name="QC_BACKUP_KEEP_DAYS" value="7,30,90"/>
+  <env name="QC_BACKUP_DIR" value="D:\ReportQC\backup"/>
+  <!-- 离线升级包目录（内网无外网时指向共享盘/U盘挂载点） -->
+  <env name="QC_UPDATE_LOCAL_DIR" value="\\fileserver\ReportQC\updates"/>
+  <!-- 质控引擎：rule=纯规则离线；api/local=LLM（按院内审批决定） -->
+  <env name="QC_ENGINE" value="rule"/>
+
+  <!-- 日志重定向：不要用 <log mode="none">，否则排障无据可查 -->
+  <log mode="roll-by-size-time">
+    <sizeThreshold>10485760</sizeThreshold>   <!-- 单文件 10MB -->
+    <keepFiles>20</keepFiles>
+    <pattern>yyyyMMdd</pattern>
+  </log>
+
+  <!-- 崩溃/异常退出自动重启（含退避，避免疯狂重启打满日志） -->
+  <onfailure action="restart" delay="10 sec"/>
+  <resetfailure>1 hour</resetfailure>
+
+  <!-- 专用低权限账号：域账号或本地专用账号（不要 Administrator / LocalSystem）
+       留空 <serviceaccount> 则默认 LocalSystem —— 不推荐用于对外服务 -->
+  <serviceaccount>
+    <username>DOMAIN\svc_reportqc</username>       <!-- ← 替换为专用服务账号 -->
+    <password>&lt;服务账号密码——请用信息科认可的密钥托管方式，勿明文入库&gt;</password>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
+
+  <!-- 依赖：反代若以系统服务方式提供，可设依赖顺序（IIS=W3SVC；nginx 通常无需） -->
+  <!-- <depend>W3SVC</depend> -->
+
+  <!-- 停止时先优雅终止，超时强杀 -->
+  <stoptimeout>30sec</stoptimeout>
+</service>

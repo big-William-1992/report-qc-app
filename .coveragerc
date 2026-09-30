@@ -52,7 +52,9 @@ exclude_lines =
     except ImportError:
     except ModuleNotFoundError:
     # 可选规则（R16/R19 默认关闭）
-    if not self.rules_config.get("enable_
+    # 2026-09-30 修复：原为 `if not self.rules_config.get("enable_` —— 未闭合的
+    # 正则（缺 `)`）会让 coverage 直接抛 ConfigError，`--cov` 从来没跑起来过。
+    if not self\.rules_config\.get\("enable_
 
 [html]
 directory = coverage_html

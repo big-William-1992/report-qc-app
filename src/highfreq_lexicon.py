@@ -268,6 +268,104 @@ def _pinyin_build_index() -> Dict[int, Dict[str, List[str]]]:
 # 长度 → {拼音: [词组]}
 _INDEX = _pinyin_build_index()
 
+
+def _build_derived_indexes():
+    """在 _INDEX 之上建两个「签名索引」，把"每个滑窗线性扫描整个分桶"改成 O(len) 查表。
+
+    2026-09-30 性能修复（R19 占引擎耗时约 92%，527 字报告实测 977ms）：
+      旧实现对每个 2~4 字滑窗遍历同长分桶里的**全部拼音键**并逐个算编辑距离
+      —— 79 字报告约 1 万次 `_edit_distance`。
+    数学等价（这正是能做到"结果完全不变"的原因）：
+      ① 等长两串编辑距离≤1 ⇔ 汉明距离≤1 ⇔ 删掉同一位后两串相同；
+      ② 长度差 1 且编辑距离≤1 ⇔ 长串删掉某个字后等于短串。
+    于是用「删一字签名」反查表即可枚举出与旧逻辑**完全相同**的候选集；
+    形近字同理用「掩码签名」（把某一位替换成 \\x00）反查，替代对桶内每个词做
+    `_shape_similar_word`。
+    两个索引的桶内顺序都与 _INDEX 插入顺序一致，保证候选枚举顺序（进而 top_k
+    的平票取舍）与旧实现逐字一致。
+    """
+    index_sig: Dict[int, Dict[str, List[str]]] = {}
+    shape_sig: Dict[int, Dict[str, List[str]]] = {}
+    for n, bucket in _INDEX.items():
+        for py in bucket:
+            for i in range(len(py)):
+                index_sig.setdefault(n, {}).setdefault(py[:i] + py[i + 1:], []).append(py)
+        for words in bucket.values():
+            for w in words:
+                for i in range(len(w)):
+                    shape_sig.setdefault(n, {}).setdefault(
+                        w[:i] + "\x00" + w[i + 1:], []).append(w)
+    return index_sig, shape_sig
+
+
+_INDEX_SIG, _SHAPE_SIG = _build_derived_indexes()
+
+# 拼音键 → 桶内序号（把签名索引的命中按旧实现的枚举顺序还原）
+_INDEX_ORDER: Dict[str, int] = {}
+for _n, _bucket in _INDEX.items():
+    for _seq, _py in enumerate(_bucket):
+        _INDEX_ORDER[_py] = _seq
+
+# 词库集合（segment_candidates 里"本身即正确词"的判定，原为 O(432) 线性扫描）
+_HF_WORD_SET: Set[str] = {w for w, _c in _HIGHFREQ_WORDS}
+
+
+def _similar_pinyin_keys(seg_py: str, word_len: int) -> List[Tuple[int, str]]:
+    """枚举与 seg_py 读音相似（同音或拼音编辑距离≤1）的**全部**拼音键。
+
+    与旧实现
+        for ln in (word_len, word_len-1, word_len+1):
+            for py in _INDEX[ln]:
+                if _pinyin_similar(seg_py, py): ...
+    的候选集合与顺序完全一致，但每个滑窗只需 O(len) 次查表。
+    返回 [(词长, 拼音键)] —— 词长不能丢：取词必须查 `_INDEX[词长][拼音键]`，
+    而 `len(拼音键)` 是拼音字母数（两者一般不等）。
+
+    ⚠️ 必须区分两个长度：
+      - `word_len` = **汉字个数** = len(segment)：决定查哪个分桶（哪个词长的词）；
+      - `len(seg_py)` = **拼音字母数**：`_word_pinyin` 返回整词拼音串
+        （如 姐姐 → "jiejie"，6 个字母对应 2 个汉字），编辑距离在拼音串上算。
+    踩坑记录（2026-09-30）：
+      ① 最初误把 len(seg_py) 当分桶键 → 2 字词去查 6 字母桶，R19 大面积漏检；
+      ② 只做了「等长替换」一种情形，漏掉「同词长但拼音串差 1 个字母」
+         （如 个接 gejie ↔ 个几 geji），仍会漏检。
+    现在对**每个词长分组**统一枚举三种等价情形（覆盖 edit distance ≤1 全部可能）：
+      精确相等 / 等长替换（签名同长） / 候选少一个字母 / 候选多一个字母。
+    """
+    sigs = [seg_py[:i] + seg_py[i + 1:] for i in range(len(seg_py))]
+    out: List[Tuple[int, str]] = []
+    for ln in (word_len, word_len - 1, word_len + 1):
+        if ln < 2 or ln > 6:
+            continue
+        bucket = _INDEX.get(ln)
+        if not bucket:
+            continue
+        sig_idx = _INDEX_SIG.get(ln, {})
+        hits: Set[str] = set()
+        if seg_py in bucket:
+            hits.add(seg_py)                       # 精确同音
+        for s in sigs:
+            hits.update(sig_idx.get(s, ()))        # 等长替换（删同一位后相同）
+            if s in bucket:
+                hits.add(s)                        # 候选拼音串比 seg 少一个字母
+        hits.update(sig_idx.get(seg_py, ()))       # 候选拼音串比 seg 多一个字母
+        # 按桶序输出，以复现旧实现的候选枚举顺序（影响 top_k 平票取舍）
+        out.extend((ln, k) for k in sorted(hits, key=lambda k: _INDEX_ORDER.get(k, 1 << 30)))
+    # 按 (词长, 拼音键) 去重且保序
+    return list(dict.fromkeys(out))
+
+
+def _shape_candidates(word: str) -> List[str]:
+    """返回与 word 形近的候选词（同长、恰好一位是形近字），顺序同旧实现。"""
+    bucket = _SHAPE_SIG.get(len(word))
+    if not bucket:
+        return []
+    hits: List[str] = []
+    for i in range(len(word)):
+        hits.extend(bucket.get(word[:i] + "\x00" + word[i + 1:], ()))
+    return list(dict.fromkeys(hits))
+
+
 # 2026-08-24 性能优化：预构建 word→category 映射，避免 O(n) 重复扫描
 _WORD_CATEGORY: Dict[str, str] = {word: cat for word, cat in _HIGHFREQ_WORDS}
 
@@ -322,32 +420,32 @@ def find_homophone_suggestions(segment: str,
         return []
     n = len(segment)
     cand: List[Tuple[str, str, float, str]] = []
-    # 同长优先；也允许 ±1 长（少一字/多一字）
-    for ln in (n, n - 1, n + 1):
-        if ln < 2 or ln > 6:
+    # 同长优先；也允许 ±1 长（少一字/多一字）。
+    # 2026-09-30：用 _similar_pinyin_keys 做等价裁剪（原来遍历整个分桶逐个算编辑距离）。
+    for _ln, py in _similar_pinyin_keys(seg_py, n):
+        if abs(len(seg_py) - len(py)) > 1 or not _pinyin_similar(seg_py, py):
+            continue          # 双重保险：与旧逻辑同一判据
+        # 必须用 _ln（词长 = 汉字数）取词：len(py) 是拼音字母数，二者一般不等。
+        # 2026-09-30 踩坑：写成 _INDEX.get(len(py)) → 2 字词去查 5 字母桶，R19 漏检。
+        words = _INDEX.get(_ln, {}).get(py)
+        if not words:
             continue
-        bucket = _INDEX.get(ln, {})
-        for py, words in bucket.items():
-            if not _pinyin_similar(seg_py, py):
-                continue
-            dist = _edit_distance(seg_py, py)
-            sim = 1.0 - dist / max(len(seg_py), len(py), 1)
-            kind = "exact" if dist == 0 else "near"  # 同音/近音（2026-08-18 加类型标记）
-            for w in words:
-                cat = _WORD_CATEGORY.get(w, "")  # O(1) 查找替代 O(n) 扫描
-                cand.append((w, cat, round(sim, 3), kind))
+        dist = _edit_distance(seg_py, py)
+        sim = 1.0 - dist / max(len(seg_py), len(py), 1)
+        kind = "exact" if dist == 0 else "near"  # 同音/近音（2026-08-18 加类型标记）
+        for w in words:
+            cat = _WORD_CATEGORY.get(w, "")  # O(1) 查找替代 O(n) 扫描
+            cand.append((w, cat, round(sim, 3), kind))
     # P1 形近字补充：读音不相似但形近（五笔/形码/OCR 误识）的候选也纳入，
     # 相似度记 0.9（低于同音 1.0 / 近音 0.98，但高于 R19 触发阈值时仍可检出）
     cand_words = {x for x, _, _, _ in cand}  # 2026-08-24: 用 set 替代 list 查找
-    for ln in (n,):
-        bucket = _INDEX.get(ln, {})
-        for py, words in bucket.items():
-            for w in words:
-                if _shape_similar_word(segment, w):
-                    if w not in cand_words:
-                        cat = _WORD_CATEGORY.get(w, "")  # O(1) 查找
-                        cand.append((w, cat, 0.9, "shape"))
-                        cand_words.add(w)
+    for w in _shape_candidates(segment):      # 2026-09-30: 掩码签名反查替代全桶扫描
+        if w in cand_words:
+            continue
+        if _shape_similar_word(segment, w):
+            cat = _WORD_CATEGORY.get(w, "")  # O(1) 查找
+            cand.append((w, cat, 0.9, "shape"))
+            cand_words.add(w)
     cand.sort(key=lambda t: -t[2])
     # 去重（同词多类别只留一个）
     seen: Set[str] = set()
@@ -471,10 +569,9 @@ def segment_candidates(seg: str,
     # 上下文敏感排除表：读音虽相似但是「核心词+动词/虚词」的合法组合，不报
     if seg in _HF_IGNORE:
         return False, []
-    # 本身就是正确词，不报
-    for w, _c in _HIGHFREQ_WORDS:
-        if w == seg:
-            return False, []
+    # 本身就是正确词，不报（2026-09-30：改用集合 O(1)，原为 O(432) 线性扫描）
+    if seg in _HF_WORD_SET:
+        return False, []
     # 档位按候选类型过滤（2026-08-18 修复）：候选带 kind 标记
     #   exact=同音 / near=近音(编辑距离≤1) / shape=形近(人工表,sim 0.9)
     # 此前用单一 sim 阈值（medium=0.98），近音相似度(0.83~0.92)永远达不到，

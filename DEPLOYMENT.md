@@ -60,7 +60,7 @@ cd report-qc-app
 # 2. 启动
 ./启动星衍质控软件.command
 
-# 3. 浏览器自动打开 http://localhost:8377
+# 3. 浏览器自动打开 http://localhost:8500
 ```
 
 ### Windows
@@ -73,12 +73,12 @@ cd report-qc-app
 # 2. 启动
 .\报告质控软件.exe
 
-# 3. 浏览器自动打开 http://localhost:8377
+# 3. 浏览器自动打开 http://localhost:8500
 ```
 
 ### 首次启动检查清单
 
-- [ ] 端口 8377 未被占用（`lsof -i :8377` / `netstat -ano | findstr 8377`）
+- [ ] 端口 8500 未被占用（`lsof -i :8500` / `netstat -ano | findstr 8500`）
 - [ ] 试用期 90 天内可正常使用
 - [ ] 管理员账号已创建（自助注册，强制 doctor 角色）
 - [ ] 自动备份已启动（`/api/v1/admin/backup/status`）
@@ -220,17 +220,17 @@ sha256sum latest.zip > latest.zip.sha256
 
 ```bash
 # 查看备份状态
-curl http://localhost:8377/api/v1/admin/backup/status
+curl http://localhost:8500/api/v1/admin/backup/status
 
 # 手动触发备份
-curl -X POST http://localhost:8377/api/v1/admin/backup/run
+curl -X POST http://localhost:8500/api/v1/admin/backup/run
 
 # 查看备份列表并恢复
-curl http://localhost:8377/api/v1/admin/backup/status | jq '.backup_files'
+curl http://localhost:8500/api/v1/admin/backup/status | jq '.backup_files'
 
 # 恢复指定备份（需登录管理员）
 curl -X POST -d '{"name":"samples.db.20260912_103000"}' \
-  http://localhost:8377/api/v1/admin/backup/restore
+  http://localhost:8500/api/v1/admin/backup/restore
 ```
 
 ### 5.4 集中备份策略（多机）
@@ -248,11 +248,11 @@ export QC_BACKUP_DIR="/Volumes/RIS_Backup/xingyan_qc"
 
 ```bash
 # JSON 格式导出（全量）
-curl "http://localhost:8377/api/v1/admin/audit-logs/export?format=json" \
+curl "http://localhost:8500/api/v1/admin/audit-logs/export?format=json" \
   -o audit_$(date +%Y%m%d).json
 
 # CSV 格式导出（带筛选）
-curl "http://localhost:8377/api/v1/admin/audit-logs/export?format=csv&action=login_success&start=2026-09-01T00:00:00" \
+curl "http://localhost:8500/api/v1/admin/audit-logs/export?format=csv&action=login_success&start=2026-09-01T00:00:00" \
   -o audit_login_$(date +%Y%m%d).csv
 ```
 
@@ -261,7 +261,7 @@ curl "http://localhost:8377/api/v1/admin/audit-logs/export?format=csv&action=log
 ```bash
 # 各工作站分别导出 → 上传到中心服务器
 for host in ws1 ws2 ws3 ws4 ws5; do
-  curl "http://${host}:8377/api/v1/admin/audit-logs/export?format=json" \
+  curl "http://${host}:8500/api/v1/admin/audit-logs/export?format=json" \
     -o "audit_${host}_$(date +%Y%m%d).json"
 done
 
@@ -287,7 +287,7 @@ jq -s 'sort_by(.ts) | .items[]' audit_*.json > audit_merged.json
 ### 7.1 健康检查端点
 
 ```bash
-curl http://localhost:8377/api/v1/health
+curl http://localhost:8500/api/v1/health
 ```
 
 返回结构：
@@ -309,7 +309,7 @@ curl http://localhost:8377/api/v1/health
 ```bash
 # /usr/local/bin/qc-healthcheck.sh
 #!/bin/bash
-URL="http://localhost:8377/api/v1/health"
+URL="http://localhost:8500/api/v1/health"
 RESP=$(curl -s --max-time 5 "$URL")
 STATUS=$(echo "$RESP" | jq -r '.status')
 if [ "$STATUS" != "ok" ]; then
@@ -326,7 +326,7 @@ fi
 ### 7.3 授权状态查询
 
 ```bash
-curl http://localhost:8377/api/v1/admin/license/status
+curl http://localhost:8500/api/v1/admin/license/status
 ```
 
 返回浮动授权座位使用情况。
@@ -341,7 +341,7 @@ curl http://localhost:8377/api/v1/admin/license/status
 |----------|--------|------|
 | `DATABASE_URL` | (空) | PostgreSQL 连接串，空则使用 SQLite |
 | `QC_API_SECRET` | (自动生成) | 非本机监听必须显式设置 |
-| `PORT` | `8377` | 服务监听端口 |
+| `PORT` | `8500` | 服务监听端口 |
 
 ### 授权配置
 
@@ -369,13 +369,17 @@ curl http://localhost:8377/api/v1/admin/license/status
 
 ---
 
+> **端口口径**（2026-09-30 更正）：本文示例统一按 **8500** 写（桌面端默认端口，
+> 可用 `XY_QC_PORT` 覆盖）。**手工启动 uvicorn 时默认是 8000**（`QC_PORT` 或 `--port` 可改），
+> 服务端读取的是 `QC_HOST` / `QC_PORT`，**不读裸 `PORT`**。原文写的 8377 在任何启动方式下都不成立。
+
 ## 9. 故障排查
 
 ### 常见问题
 
 | 问题 | 原因 | 解决方案 |
 |------|------|----------|
-| 端口占用 | 8377 已被使用 | 修改 PORT 或 kill 占用进程 |
+| 端口占用 | 8500 已被使用 | 修改 PORT 或 kill 占用进程 |
 | 数据库连接失败 | DATABASE_URL 配置错误 | 检查 pg 服务器地址/端口/密码 |
 | 授权过期 | 试用期 90 天用完 | 输入激活码激活 |
 | 浮动授权座位已满 | 共享目录心跳文件过多 | 清理过期心跳或删除不用的 workstation |

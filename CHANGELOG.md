@@ -106,6 +106,54 @@
   修复：从 `723531b` 恢复为独立文档 `docs/LLM_MODEL_DEPLOYMENT.md`
   （并在 `prompt_mode` 行补入实测对照），README 文档导航补一行。
 
+### 性能 (Performance)
+- **R19（同音/近音/形近错字）提速 8–28 倍，行为逐条不变**：它此前对**每个 2~4 字滑窗**
+  遍历同长度分桶里的**全部拼音键**逐个算编辑距离（527 字报告 ≈10 万次 `_edit_distance`，
+  实测 **977ms**；RIS 一次拉 200 份长报告约 **195s**，批量质控事实上不可用）。
+  改用「删一字签名」反查表做**数学等价裁剪**（等长编辑距离≤1 ⇔ 汉明≤1 ⇔ 删同一位后相同），
+  形近字同理用「掩码签名」反查。结果：527 字报告 977ms → **34.5ms（28x）**，
+  短报告 121.8ms → **15.1ms（8x）**，`_edit_distance` 调用约 10 万 → **146 次**；
+  200 份长报告 195s → **6.9s**。等价性用 2 万余探针逐条比对旧实现（集合/顺序/评分/类型全一致），
+  且评测基线保持 100%/100%。守卫：`tests/test_r19_performance.py`
+  （含**结构指标**——编辑距离调用次数，不受机器性能影响，退回全桶扫描立刻爆掉）。
+
+### 工程 (Engineering)
+- **数据库迁移框架**（`server/migrations.py`）：`schema_migrations` 表 + 编号迁移 +
+  **迁移前自动快照** + 失败留痕且不写版本号（下次重试）。此前 schema 变更散落在
+  `db.init_db()` 里无条件重跑、**没有任何版本记录**，医院就地升级出问题无法判断库升到第几版。
+- **静默吞异常治理**：AST 审计脚本 `scripts/audit_silent_except.py` + 基线
+  `scripts/silent_except_baseline.json` + "不得新增"守卫（`tests/test_silent_exceptions.py`），
+  支持 `# silent-except-ok: <原因>` 显式豁免（刻意不用 `# noqa:` 前缀以免与 ruff 指令冲突）。
+  同时**降级日志自动带异常类型/消息/调用位置**（`src/logger.py::_context`）——
+  全仓 71 个降级调用点无需改动即获得可诊断信息。
+- **前端 e2e 接入 CI**（`.github/workflows/web-e2e.yml`）：真实拉起 uvicorn + Chromium 点界面。
+  此前 Playwright 用例与配置都在仓库里却**从未接进任何 workflow**，这正是本轮 P0 白屏
+  能一路合进 main 且全绿的原因；`tests/test_repo_hygiene.py` 现在断言"必须有 workflow 跑
+  `playwright test`"。
+- **统一自检入口** `scripts/check_all.sh`（pytest + ruff + bundle 同步性 + node 解析 +
+  引擎基线；可选 `WITH_E2E=1` / `WITH_COVERAGE=1`）。
+- **覆盖率门禁**（`scripts/coverage_gate.py`，基线 60.1%，只判"不得下降"）。
+  顺带修掉 `.coveragerc` 里**未闭合的排除正则**——它会让 coverage 直接抛 ConfigError，
+  所以 `--cov` 从来没有真正跑起来过。
+- **测试隔离**：`tests/conftest.py` 新增全局"库绑定快照/还原"自动夹具与 `temp_db()` 工具，
+  并归一化 `QC_DB_OVERRIDE` 与当前 engine 的一致性。此前多个测试模块在 import 时各自改绑
+  **全局** engine/环境变量 → 一个模块的改绑会连锁搞挂另外 6 个毫不相干的用例
+  （实测 `data_layer_unified`/`health_endpoint`/`queue_ingest_paths`）。
+- **语义评测集工具链** `tools/semantic_eval.py`（`template`/`validate`/`score`）：
+  把"医生反馈 → 待标注模板 → 校验 → 打分"固化，**拒收银标**（`label_source` 必须为 `human`），
+  且研究 A（规则效能）与研究 B（LLM 增量 Δrecall/ΔFP）**分开输出、禁止合并**；
+  配套 `docs/EVAL_SET_GUIDE.md`。
+- **仓库卫生守卫**（`tests/test_repo_hygiene.py`）：版本号单一来源（`version.py` 与 CHANGELOG/
+  RELEASE_CHECKLIST 一致、安装包版本由 CI 注入）、审查报告不得堆在根目录（归档 `docs/reviews/`）、
+  `check_all.sh` 语法可用、CI 必须有前端 e2e 闸。
+- **交付与准入文档**（本阶段新增）：`docs/COMPLIANCE_GAP_ANALYSIS.md`（法规清单/定性判定/
+  等保逐控制点现状/PHI 分级与红线/里程碑/待问询清单）、`docs/CLINICAL_VALIDATION_PLAN.md`
+  （回顾性双人盲法 + 仲裁、样本量公式与示例、统计方法、图表清单）、
+  `docs/DELIVERY_HARDENING.md` + `deploy/`（nginx/WinSW/systemd/备份脚本模板、上线清单、回滚预案）、
+  `docs/PRICING_AND_PACKAGING.md`（分层打包/价格带/报价单模板/红线话术）、
+  `docs/ROUTES_SPLIT_PLAN.md`（main.py 89 端点分阶段拆分计划）、
+  `docs/OPEN_DECISIONS.md`（**需要人/律师/临床拍板的 10 项待决清单**）。
+
 ### 变更 (Changed)
 - **samplelib 并轨 ORM**：`src/samplelib.py` 不再自建裸 `sqlite3` 连接与手写
   `CREATE TABLE/ALTER`，统一走 `server/db.SessionLocal` + `models.Sample` ——
@@ -163,7 +211,7 @@
   `qwen2.5:3b` 且缺 `prompt_mode`，照抄会诱导幻觉。
 
 ### 测试 (Test)
-- 全量 **457 passed / 7 skipped**（新增 67 用例零回归）；ruff 致命规则全绿。
+- 全量 **494 passed / 7 skipped**（本轮累计新增 104 个守卫用例零回归）；ruff 致命规则全绿。
   （受限沙箱下另有 2 项因被禁止写用户目录而失败，属环境限制非缺陷。）
 
 ---

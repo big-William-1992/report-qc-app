@@ -79,6 +79,27 @@ def _context(where: str, **extra: Any) -> dict:
         "python": sys.version.split()[0],
         "frozen": bool(getattr(sys, "frozen", False)),
     }
+    # 2026-09-30：自动带上"当前正在处理的异常"与其发生位置。
+    # 背景：此前 degraded 日志只有 where+环境，没有异常类型/消息/行号 ——
+    # 于是"功能不生效但没人知道为什么"（健康探针 TypeError、恢复 ImportError、
+    # 反馈表 no such table 等）在日志里都看不出来。全仓 71 个降级调用点
+    # 无需修改，统一在此获得异常上下文。
+    if "exc" not in extra:
+        _e = sys.exc_info()[1]
+        if _e is not None:
+            ctx["exc"] = f"{type(_e).__name__}: {_e}"
+            try:
+                # 向上找到**真正的调用方**（跳过 logger/log_utils 自身的转发帧），
+                # 这样日志里的行号指向业务代码，而不是观测层。
+                _fr = sys._getframe(1)
+                while _fr is not None and os.path.basename(
+                        _fr.f_code.co_filename) in ("logger.py", "log_utils.py"):
+                    _fr = _fr.f_back
+                if _fr is not None:
+                    ctx["at"] = "%s:%d" % (os.path.basename(_fr.f_code.co_filename),
+                                           _fr.f_lineno)
+            except Exception:
+                pass
     ctx.update(extra)
     return ctx
 

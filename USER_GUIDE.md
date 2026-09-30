@@ -12,7 +12,7 @@
 
 **Windows**：双击 `报告质控软件.exe`
 
-浏览器自动打开 `http://localhost:8377`
+浏览器自动打开 `http://localhost:8500`
 
 ### 1.2 首次使用
 
@@ -100,7 +100,7 @@
 ### 4.3 全量数据导出（数据迁移用）
 
 ```
-浏览器访问：http://localhost:8377/api/v1/export/data
+浏览器访问：http://localhost:8500/api/v1/export/data
 ```
 
 ---

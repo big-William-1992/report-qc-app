@@ -148,3 +148,42 @@
 - **鉴权/令牌只有 `server/security.py` 一份**：`server/deps.py` 只负责再导出
   （`tests/test_single_implementation.py` 断言两边是同一个对象）。默认密钥必须是
   `_load_or_create_secret()` 生成的随机值，**禁止**再写 `change-me-in-prod` 这类可猜默认值。
+
+## 12. 数据库变更：走迁移框架，不要再往 init_db 里堆临时函数
+
+- 新 schema 变更一律在 `server/migrations.py` 加一条 `@migration("NNNN_slug", "说明")`，
+  用 `add_column_if_missing()` 等幂等助手；**不要**再写"每次启动无条件跑"的临时函数。
+- 迁移前会自动快照（`<db>.premigrate-<版本>-<时间>.bak`，保留 3 份），失败**不写版本号**、
+  下次启动重试；**已发布的迁移不要修改**（别人已经跑过）。
+- ⚠️ **SQLAlchemy 2.0 不许 `conn.execute("字符串")`**：必须 `exec_driver_sql(...)` 或 `text(...)`。
+  本仓曾因此静默失效两个迁移（`queue.report_hash` 从未补列、`settings` 复合唯一从未建立）——
+  因为异常被函数自己的 `except` 吞掉，表现只是"功能不生效"。
+- ⚠️ **SQLite 不能 DROP 由 UNIQUE 约束隐式创建的 `sqlite_autoindex_*`**（迁移 `0003` 的教训），
+  要改约束只能**整表重建**（改名旧表 → 按模型定义建新表 → 列交集 INSERT OR IGNORE → 删旧表），
+  且必须放在同一个事务里。
+- 改动数据层后至少跑：`tests/test_migrations.py`、`tests/test_backup_upgrade_drill.py`
+  （跨版本：旧库备份 → 新版恢复 → 启动自动升级）、`tests/test_data_layer_unified.py`。
+
+## 13. 测试里改库绑定：必须"用完还原"
+
+仓库的库绑定是**全局单例**（`server/db.py` 的 `engine`/`SessionLocal`），
+`set_test_db()` 还会写 `QC_DB_OVERRIDE`/`DATABASE_URL`/`QC_APPDATA`。历史上一个测试模块
+在 import 或用例里改绑而不还原，会连锁搞挂另外 6 个毫不相干的用例。
+
+- **不要在 import 时改绑**（pytest 会先把所有模块 import 完）。
+- 用具 `conftest.temp_db(...)`（上下文管理器，自动还原对象 + 环境变量），
+  或在 fixture 里用 `snapshot_binding()` / `restore_binding()`。
+- `tests/conftest.py` 已加**每个用例自动快照/还原**的全局夹具 + `env↔engine` 归一化，
+  但新测试仍请遵守上面两条，别依赖它兜底。
+- 改共享模块的属性（如 `backup._resolve_known = ...`）必须用 `monkeypatch.setattr` **并恢复** ——
+  直接赋值会永久污染其它用例（实测让 4 个用例连带失败）。
+
+## 14. 门禁与"静默失效"
+
+- 提交前跑 `bash scripts/check_all.sh`（可选 `WITH_E2E=1` / `WITH_COVERAGE=1`）。
+- 新增 `except` 分支必须留痕：`logger.warning(...)` 或 `log_quiet(__name__)`
+  （后者已自动带异常类型/消息/调用位置）。确实无害时写 `# silent-except-ok: <原因>`；
+  `scripts/audit_silent_except.py` 会拦住"净新增静默吞异常"。
+- 覆盖率基线 60.1%，只允许上升（`scripts/coverage_gate.py`）。
+- 前端改动：改动 `modules/*.js` 后必须 `python3 tools/build_bundle.py`，否则
+  `tests/test_frontend_bundle.py` 与 CI 的 e2e 都会红。

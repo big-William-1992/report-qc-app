@@ -1,0 +1,64 @@
+# 前端端到端（Playwright）—— PR/分支推送的阻断闸
+#
+# 为什么需要它（2026-09-30 事故复盘）：
+#   仓库里早就有 Playwright 用例（tests/e2e/*.spec.js）和 playwright.config.js，
+#   但**从未接进任何 workflow**。于是 d73e2b9（v4.3.6）把 index.html 依赖的
+#   app.bundle.js 换成了带顶层 import/export 的模块拼接版（经典脚本里是语法错误）
+#   → 浏览器 SyntaxError、整个 SPA 的 JS 一行都不执行（登录闸门/按钮/渲染全废），
+#   而 HTTP 仍是 200、pytest 全绿、ruff 全绿，一路合进 main 无人察觉。
+#   pytest 侧现在有 tests/test_frontend_bundle.py 守语法；**界面行为**由本 job 守。
+#
+# 与 build-windows.yml 的分工：
+#   - build-windows.yml 的 unit-tests 只在推 main 时跑，且不含前端；
+#   - 本 job 在 PR 与分支推送时跑，真实拉起 uvicorn + Chromium 点界面。
+name: Web E2E (Playwright)
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main, "fix/**", "feat/**", "audit/**"]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Install Node deps
+        run: npm ci
+
+      - name: Install Chromium (Playwright)
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E (starts uvicorn via playwright.config webServer)
+        # QC_PY 覆盖 playwright.config.js 里默认的托管解释器路径
+        # （那是开发机上的 ~/.workbuddy/... 路径，CI 里不存在）。
+        env:
+          QC_PY: python
+        run: npx playwright test
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14

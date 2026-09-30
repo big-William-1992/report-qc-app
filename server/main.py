@@ -650,12 +650,14 @@ def _poll_config() -> dict:
         for k in _POLL_DEFAULT:
             if k in data:
                 cfg[k] = data[k]
+    except FileNotFoundError:   # silent-except-ok: 首次运行没有轮询状态文件属正常，非降级
+        pass
     except Exception:
         try:
             from .log_utils import log_quiet
         except ImportError:
             from log_utils import log_quiet
-        log_quiet(__name__)
+        log_quiet(__name__)   # 文件存在但损坏 / 无权限：需要留痕
     return cfg
 
 

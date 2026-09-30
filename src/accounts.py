@@ -330,8 +330,8 @@ def _warn(msg: str, *args) -> None:
 def set_session(emp_id: str) -> None:
     """写会话文件（供重启后预填登录工号）。
 
-    2026-09-30：失败时必须留痕。此前只调 log_quiet（信息量为零），
-    于是"目录不可写导致会话预填失效"这类问题在日志里完全看不出来
+    2026-09-30：失败时必须留痕。此前只调 log_quiet（当时它只有 where+环境字段，没有异常类型/位置），
+    于是"目录不可写导致会话预填失效"这类问题在日志里很难定位
     （tests/test_accounts.py::test_session 在受限环境下失败就是这条路径）。
     """
     path = _session_path()

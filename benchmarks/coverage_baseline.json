@@ -1,0 +1,6 @@
+{
+ "percent_covered": 60.1,
+ "num_statements": 7216,
+ "missing_lines": 2880,
+ "note": "由 scripts/coverage_gate.py --update 生成；只允许上升"
+}

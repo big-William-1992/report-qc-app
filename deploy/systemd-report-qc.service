@@ -1,0 +1,94 @@
+# =============================================================================
+# 星衍放射质控软件 —— Linux systemd 服务模板
+# =============================================================================
+# 用途：院内 Linux 服务器上以 systemd 托管 FastAPI/uvicorn，开机自启、崩溃重启。
+# 放置：/etc/systemd/system/report-qc.service
+# 启用：sudo systemctl daemon-reload
+#       sudo systemctl enable --now report-qc
+#       systemctl status report-qc        # 查看状态
+#       journalctl -u report-qc -f        # 跟随日志
+#
+# 前置（务必先做，否则服务起不来或权限不足）：
+#   1) 创建专用低权限系统账号（不要用 root 跑对外服务）：
+#        sudo useradd --system --create-home --home-dir /opt/report-qc \
+#             --shell /usr/sbin/nologin svc-reportqc
+#   2) 代码与 venv 放在 /opt/report-qc/app，属主交给该账号：
+#        sudo chown -R svc-reportqc:svc-reportqc /opt/report-qc
+#   3) 数据目录（默认 ~/.local/share/MedicalReportQC）挂到独立数据盘并授权，例如
+#        /var/lib/report-qc  （本模板用 QC_APPDATA 指向它）
+#   4) 密钥不要写进 unit 文件提交仓库；用 EnvironmentFile（权限 0600）注入，见下。
+#
+# 占位符：<svc-reportqc>、/opt/report-qc/app、/var/lib/report-qc、/etc/report-qc/env
+# =============================================================================
+
+[Unit]
+Description=星衍放射质控软件后端（FastAPI/uvicorn）
+Documentation=file:/opt/report-qc/app/DEPLOYMENT.md
+# 网络就绪后再启动，避免首次绑定失败
+After=network-online.target
+Wants=network-online.target
+# 同一台机器只允许一个实例（SQLite 单写者约束，见 DEPLOYMENT_HARDENING.md §10）
+# 若改用 PostgreSQL 多实例，请自行调整
+
+[Service]
+Type=simple
+# 专用低权限账号（见前置步骤 1）
+User=svc-reportqc
+Group=svc-reportqc
+
+# 工作目录必须是项目根（server/ 与 src/ 的上一级），否则模块导入失败
+WorkingDirectory=/opt/report-qc/app
+
+# 密钥/可变配置放这里，文件权限 0600、属主 svc-reportqc，内容形如：
+#   QC_API_SECRET=<强随机串>
+#   PUSH_API_KEY=<强随机串>
+#   QC_CORS_ORIGINS=https://qc.example.hospital.local
+# 该文件**不入库**（.gitignore），投产时由信息科密钥管理下发。
+EnvironmentFile=-/etc/report-qc/env
+
+# 非敏感运行参数也可直接内联（此处按项目真实变量名）
+Environment=QC_HOST=127.0.0.1
+Environment=QC_PORT=8500
+Environment=QC_APPDATA=/var/lib/report-qc
+Environment=QC_ENGINE=rule
+Environment=QC_BACKUP_ENABLED=true
+Environment=QC_BACKUP_INTERVAL_DAYS=1
+Environment=QC_BACKUP_KEEP_DAYS=7,30,90
+Environment=QC_BACKUP_DIR=/var/lib/report-qc/backups
+Environment=QC_UPDATE_LOCAL_DIR=/srv/report-qc-updates
+
+# 启动命令：venv 内的 uvicorn；--proxy-headers 信任反代头（关键，见 §2）
+# 反代与应用同机时 --forwarded-allow-ips 填 127.0.0.1；异机填反代内网 IP。
+ExecStart=/opt/report-qc/app/.venv/bin/python -m uvicorn server.main:app \
+    --host ${QC_HOST} --port ${QC_PORT} \
+    --proxy-headers --forwarded-allow-ips 127.0.0.1
+
+# 自动重启（崩溃/被杀都拉起），并做退避，避免疯狂重启打满日志
+Restart=always
+RestartSec=5s
+# 连续 5 次、每次 >30s 仍在 5 分钟内失败 → 进入 failed，避免无限重启
+StartLimitIntervalSec=300
+StartLimitBurst=5
+# 给数据库/迁移留出优雅退出时间
+TimeoutStopSec=30
+
+# 日志重定向：交给 journald（不要再自行重定向到文件，避免与内置日志双写）
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=report-qc
+
+# ---- 基础加固（按院内测评要求可加严；加严前请确认应用实际需要的路径/能力）----
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# 应用必须可写：数据目录 + 备份目录 + 更新缓存目录
+ReadWritePaths=/var/lib/report-qc
+# 若启用离线更新且需要写更新缓存，另行追加其路径：
+# ReadWritePaths=/srv/report-qc-updates
+
+[Install]
+WantedBy=multi-user.target
