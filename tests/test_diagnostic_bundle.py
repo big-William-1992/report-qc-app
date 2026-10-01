@@ -80,9 +80,9 @@ def test_cli_is_runnable(tmp_path):
                         "--dest", str(out)],
                        capture_output=True, text=True, timeout=120,
                        env=subprocess_env(QC_APPDATA=str(tmp_path / "appdata")))
-    assert r.returncode == 0, f"CLI 退出码 {r.returncode}: {r.stderr[-500:]}"
+    assert r.returncode == 0, f"CLI 退出码 {r.returncode}: {(r.stderr or '')[-500:]}"
     zips = list(out.glob("*.zip"))
-    assert zips, f"CLI 未产出诊断包：{r.stdout[-300:]}"
+    assert zips, f"CLI 未产出诊断包：{(r.stdout or '')[-300:]}"
 
 
 def test_docs_use_runnable_command():

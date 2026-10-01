@@ -72,7 +72,7 @@ def test_bundle_parses_as_classic_script():
     r = subprocess.run(["node", "--check", _BUNDLE],
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, (
-        f"app.bundle.js 不是合法经典脚本：\n{r.stderr[:600]}\n"
+        f"app.bundle.js 不是合法经典脚本：\n{(r.stderr or '')[:600]}\n"
         "修复：python3 tools/build_bundle.py")
 
 

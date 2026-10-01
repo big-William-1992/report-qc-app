@@ -41,8 +41,12 @@ def test_no_new_silent_exceptions():
     """真静默（pass / 直接 return）不得比基线更多。"""
     assert os.path.isfile(_SCRIPT), "缺少 scripts/audit_silent_except.py"
     r = subprocess.run([sys.executable, _SCRIPT], capture_output=True, text=True, timeout=180, env=subprocess_env())
+    # 断言信息里不要直接下标 stdout/stderr：Windows 上实测 r.stderr 可能为 None
+    # （subprocess 管道读取线程异常时），直接 `r.stderr[-1000:]` 会抛
+    # `TypeError: 'NoneType' object is not subscriptable`，把**真正的原因盖掉**，
+    # CI 只能看到这个次生错误。用 (x or "") 兜底，保证报出原始输出。
     assert r.returncode == 0, (
-        "静默吞异常出现回归：\n" + r.stdout[-3000:] + r.stderr[-1000:])
+        "静默吞异常出现回归：\n" + (r.stdout or "")[-3000:] + (r.stderr or "")[-1000:])
 
 
 def test_degraded_logging_carries_exception_context():

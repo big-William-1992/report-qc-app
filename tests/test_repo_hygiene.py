@@ -92,14 +92,34 @@ def test_no_audit_reports_piling_up_in_root():
         "docs/reviews/ 应存在（历史审查报告归档处）"
 
 
+def _bash_works() -> bool:
+    """`bash` 是否真的可执行（不只是在 PATH 里存在）。
+
+    ⚠️ 2026-10-01 实测：Windows runner 上 `shutil.which("bash")` **能命中**，
+    但那是 WSL 的 App Execution Alias 桩程序，执行时报
+    `...' to install.`（UTF-16 输出，读出来像 "\x00s\x00t\x00r\x00o\x00>"），
+    于是 `bash -n` 必然失败 —— 表现为"check_all.sh 语法错误"这种误导性结论。
+    Git Bash 的 bash 才可用，故这里做一次**真实调用**探测。
+    """
+    try:
+        r = subprocess.run(["bash", "-c", "echo ok"], capture_output=True,
+                           text=True, timeout=30, env=subprocess_env())
+        return r.returncode == 0 and "ok" in (r.stdout or "")
+    except Exception:
+        return False
+
+
 def test_check_all_script_exists_and_parses():
     """统一自检入口必须在且语法正确（否则等于没有门禁）。"""
     sh = os.path.join(_ROOT, "scripts", "check_all.sh")
     assert os.path.isfile(sh), "缺少 scripts/check_all.sh（统一自检入口）"
     if shutil.which("bash") is None:
         pytest.skip("无 bash")
-    r = subprocess.run(["bash", "-n", sh], capture_output=True, text=True, timeout=30)
-    assert r.returncode == 0, f"check_all.sh 语法错误：{r.stderr[:300]}"
+    if not _bash_works():
+        pytest.skip("bash 存在但不可执行（Windows 上多为 WSL 桩程序，非 Git Bash）")
+    r = subprocess.run(["bash", "-n", sh], capture_output=True, text=True, timeout=30,
+                       env=subprocess_env())
+    assert r.returncode == 0, f"check_all.sh 语法错误：{(r.stderr or '')[:300]}"
 
 
 def test_ci_has_frontend_e2e_gate():
