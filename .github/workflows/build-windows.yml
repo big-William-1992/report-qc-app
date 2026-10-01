@@ -95,15 +95,28 @@ jobs:
           python -m pip install pip-audit
           python -m pip_audit -r requirements.txt --desc
 
-      - name: 单元测试闸（pytest test/ + tests/，2026-08-18 新增；2026-08-23 恢复阻断）
-        # 2026-08-23：本机基线 324 passed / 7 skipped 全绿，恢复为阻断闸
-        # （此前 continue-on-error 只是临时降级，坏代码曾一路流到 Release）。
+      - name: 单元测试闸（pytest tests/）
+        # 2026-08-23：本机基线全绿，恢复为阻断闸（此前 continue-on-error 只是临时降级，
+        #            坏代码曾一路流到 Release）。
         # 2026-08-25：输出落盘并在失败时上传 artifact，便于无 admin 权限时诊断。
+        # 2026-10-01：**修掉一个长期潜伏的阻断失败**——本步骤原先跑
+        #            `pytest test/ tests/`，而 `test/` 早在 2026-09-04（5aebb58）
+        #            已并入 `tests/`，目录本身不入库（本地只剩 .pytest_cache）。
+        #            CI checkout 后 `test/` 不存在 → pytest 直接
+        #            `ERROR: file or directory not found: test/` 退出码 4，
+        #            build 阶段秒挂（Build Windows #172 实测 exit=4）。
+        #            之所以一直没暴露：main 长期未推送，CI 从未跑到这里。
+        #            现只用 `tests/`，并加存在性自检防止再次指错目录。
         shell: bash
         run: |
           python -m pip install pytest
+          if [ ! -d tests ]; then
+            echo "::error::tests/ 目录不存在，测试闸无法执行（工作目录异常）"
+            ls -la
+            exit 1
+          fi
           set +e
-          python -m pytest test/ tests/ -q --tb=short > pytest_output.txt 2>&1
+          python -m pytest tests/ -q --tb=short > pytest_output.txt 2>&1
           rc=$?
           if [ $rc -ne 0 ]; then
             echo "::error::PYTEST_FAILED exit=$rc"

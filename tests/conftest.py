@@ -117,3 +117,68 @@ def _isolate_global_db_binding():
         pass
     yield
     restore_binding(snap)
+
+
+# ── 仓库内真实文件保护（2026-10-01 新增）────────────────────────────────────
+# 背景（真实事故）：写备份恢复的回归用例时，用 `restore_backup("qc.db")` 验证
+# 「正常名仍可恢复」，而 `backup._resolve_known("qc.db")` 解析到的目标是
+# **真实开发库 `<root>/assets/qc.db`** —— 测试把假内容复制覆盖上去，
+# 开发库从 77824 字节被毁成 14 字节，后续 `import server.main` 直接
+# `sqlite3.DatabaseError: file is not a database`，整个测试套件无法收集。
+#
+# 这类事故的共同点：**测试直接操作了仓库内的真实文件**。仅靠"写用例时小心"
+# 不可靠，故加本守卫：跑完整个会话后校验这些文件未被改动，改了就直接报错。
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PROTECTED_REPO_FILES = (
+    "assets/qc.db",
+    "assets/accounts.db",
+    "assets/feedback.db",
+    "assets/rules_config.json",
+    "assets/ris_config.json",
+    "assets/license.dat",
+    "qc.db",
+)
+
+
+def _fingerprint(path: str):
+    """返回文件指纹；不存在返回 None。
+
+    只比对**内容哈希**，不比对 mtime：实测 `assets/ris_config.json` 会被某些
+    用例以**相同内容**重写一遍（mtime 变、内容不变），用 mtime 会误报。
+    本守卫要抓的是「真实文件被改坏/覆盖」，内容相同就不算事故。
+    """
+    if not os.path.isfile(path):
+        return None
+    try:
+        import hashlib
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return "<unreadable>"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _guard_repo_files():
+    """会话前后比对仓库内真实文件；被测试改写则本会话失败。
+
+    只**检测并报错**，不做自动还原 —— 自动还原会把"测试污染了真实数据"这件事
+    掩盖过去，而我们需要它每次都可见（数据可能已经被破坏，掩盖更危险）。
+    """
+    before = {rel: _fingerprint(os.path.join(_REPO_ROOT, rel))
+              for rel in _PROTECTED_REPO_FILES}
+    yield
+    changed = []
+    for rel in _PROTECTED_REPO_FILES:
+        now = _fingerprint(os.path.join(_REPO_ROOT, rel))
+        if now != before[rel]:
+            changed.append(rel)
+    if changed:
+        raise AssertionError(
+            "测试改动了仓库内的真实文件（必须用 tmp_path / QC_APPDATA / "
+            "QC_BACKUP_DIR / temp_db 隔离）：\n  " + "\n  ".join(changed) +
+            "\n请修复对应测试；若属误报请调整 _PROTECTED_REPO_FILES。"
+        )
+
