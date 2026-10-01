@@ -19,7 +19,12 @@ import time
 import shutil
 import subprocess
 
+
 import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from conftest import subprocess_env  # noqa: E402
+
 ROOT = os.path.join(tempfile.gettempdir(), "au_win_test")
 SUD = os.path.join(ROOT, "app")
 ZIP = os.path.join(ROOT, "latest.zip")

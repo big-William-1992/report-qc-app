@@ -87,6 +87,29 @@ def temp_db(db_path: str, appdata_path: str = None):
 import pytest  # noqa: E402
 
 
+def subprocess_env(**extra) -> dict:
+    """返回给 `subprocess.run/Popen` 用的环境变量：强制子进程 UTF-8 输出。
+
+    为什么需要（2026-10-01 实测）：本仓的脚本/工具大量 `print` 中文与 ✓/✗ 符号。
+    Windows 上子进程 stdout 默认走 **cp1252**（即便 Python 3.15 之前，
+    非 UTF-8 控制台就是 ANSI 代码页），于是：
+
+        UnicodeEncodeError: 'charmap' codec can't encode character '\\u2717'
+
+    多个测试靠「跑脚本 + 断言返回码/输出」来验证门禁，在 Windows CI 上因此集体
+    失败（Build Windows 实测：test_silent_exceptions / test_semantic_eval /
+    test_diagnostic_bundle / test_frontend_bundle 等）。这不是脚本写错了，
+    而是**子进程输出编码**问题，故在调用侧统一归一化。
+
+    用法：`subprocess.run([...], env=subprocess_env())`
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    env.update({k: str(v) for k, v in extra.items()})
+    return env
+
+
 @pytest.fixture(autouse=True)
 def _isolate_global_db_binding():
     """**每个用例前后自动快照/还原全局库绑定**（2026-09-30 新增，全仓生效）。

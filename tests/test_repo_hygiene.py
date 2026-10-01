@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+
 import sys
 
 import pytest
@@ -22,6 +23,10 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 
 import version  # noqa: E402
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from conftest import subprocess_env  # noqa: E402
+
 
 # 允许留在根目录的"活文档"（新增前请先想清楚是否该进 docs/reviews/）
 _LIVE_ROOT_DOCS = {

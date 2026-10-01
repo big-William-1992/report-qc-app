@@ -12,9 +12,14 @@ test_semantic_eval.py — 语义评测集脚手架（2026-09-30 新增）
 import json
 import os
 import subprocess
+
 import sys
 
 import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from conftest import subprocess_env  # noqa: E402
+
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PY = sys.executable
@@ -27,7 +32,16 @@ _POOL = [
 
 
 def _run(args, appdata, **env):
-    e = {**os.environ, "QC_APPDATA": appdata, **env}
+    # 用 subprocess_env() 强制子进程 UTF-8：脚本会 print 中文，
+    # Windows 默认 cp1252 会 UnicodeEncodeError（CI 实测）。
+    #
+    # 同时统一给 QC_DB_OVERRIDE：`badcase_store._db_path()` 取「样本库同目录」，
+    # 只设 QC_APPDATA 时 `samplelib.db_path()` 仍落到仓库 `assets/qc.db`，
+    # 于是 feedback.db 会被写进**仓库真实目录**（被 conftest 仓库文件守卫抓到）。
+    # 写入端（seed 子进程）与读取端（本函数）必须用**同一个** override，
+    # 否则出现"写入 A 目录、读取 B 目录"→ 反馈飞轮看似断裂。
+    e = subprocess_env(QC_APPDATA=appdata,
+                       QC_DB_OVERRIDE=os.path.join(str(appdata), "t.db"), **env)
     return subprocess.run([_PY, _TOOL, *args], capture_output=True, text=True,
                           timeout=180, env=e)
 
@@ -112,7 +126,15 @@ def test_feedback_promotes_to_labeling_template(ws):
         % (os.path.join(_ROOT, "src"), _ROOT, "患者女，45岁。右肺上叶结节，建议半年后复查。")
     )
     r0 = subprocess.run([_PY, "-c", seed], capture_output=True, text=True, timeout=120,
-                        env={**os.environ, "QC_APPDATA": ws["appdata"]})
+                        env=subprocess_env(
+                            QC_APPDATA=ws["appdata"],
+                            # 必须同时给 QC_DB_OVERRIDE：`badcase_store._db_path()`
+                            # 取的是「样本库同目录」，只设 QC_APPDATA 时
+                            # `samplelib.db_path()` 仍解析到仓库 `assets/qc.db`，
+                            # 于是 feedback.db 被写进**仓库真实目录**
+                            # （实测被 conftest 的仓库文件守卫抓到：
+                            #  assets/feedback.db 被改写）。
+                            QC_DB_OVERRIDE=os.path.join(ws["appdata"], "t.db")))
     assert r0.returncode == 0, r0.stderr
 
     out = str(ws["dir"] / "from_fb.jsonl")

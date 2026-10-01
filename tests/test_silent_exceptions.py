@@ -16,9 +16,14 @@ health 探针 TypeError、备份恢复 ImportError、诊断包 ValueError、反�
 import json
 import os
 import subprocess
+
 import sys
 
 import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from conftest import subprocess_env  # noqa: E402
+
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPT = os.path.join(_ROOT, "scripts", "audit_silent_except.py")
@@ -35,7 +40,7 @@ def test_baseline_file_exists():
 def test_no_new_silent_exceptions():
     """真静默（pass / 直接 return）不得比基线更多。"""
     assert os.path.isfile(_SCRIPT), "缺少 scripts/audit_silent_except.py"
-    r = subprocess.run([sys.executable, _SCRIPT], capture_output=True, text=True, timeout=180)
+    r = subprocess.run([sys.executable, _SCRIPT], capture_output=True, text=True, timeout=180, env=subprocess_env())
     assert r.returncode == 0, (
         "静默吞异常出现回归：\n" + r.stdout[-3000:] + r.stderr[-1000:])
 

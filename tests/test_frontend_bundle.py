@@ -16,9 +16,14 @@ import os
 import re
 import shutil
 import subprocess
+
 import sys
 
 import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from conftest import subprocess_env  # noqa: E402
+
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _JS = os.path.join(_ROOT, "web", "static", "js")
@@ -74,5 +79,5 @@ def test_bundle_parses_as_classic_script():
 def test_build_script_check_mode_passes():
     """打包脚本自带的 --check 必须通过（CI/本地一条命令即可自检）。"""
     r = subprocess.run([sys.executable, os.path.join(_ROOT, "tools", "build_bundle.py"),
-                        "--check"], capture_output=True, text=True, timeout=60)
+                        "--check"], capture_output=True, text=True, timeout=60, env=subprocess_env())
     assert r.returncode == 0, r.stdout + r.stderr

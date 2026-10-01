@@ -18,5 +18,12 @@
 *.js text eol=lf
 *.json text eol=lf
 *.md text eol=lf
+# 2026-10-01：Shell 脚本也强制 LF。此前 .sh 无规则 → Windows 检出为 CRLF，
+# 而 `bash -n scripts/check_all.sh` 会因 CR 报语法错误
+# （tests/test_repo_hygiene.py 在 Windows build 阶段实测失败，
+#  错误信息里可见 "\x00s\x00t\x00r\x00o\x00>" 这类 UTF-16 噪声）。
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
 # Windows 批处理必须 CRLF（LF 会导致 cmd 解析异常/标签跳转错乱）
 *.bat text eol=crlf

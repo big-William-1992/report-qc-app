@@ -13,8 +13,13 @@ test_diagnostic_bundle.py — 诊断包导出回归（2026-09-30 审计新增）
 """
 import os
 import subprocess
+
 import sys
 import zipfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from conftest import subprocess_env  # noqa: E402
+
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SRC = os.path.join(_ROOT, "src")
@@ -74,7 +79,7 @@ def test_cli_is_runnable(tmp_path):
     r = subprocess.run([sys.executable, os.path.join(_SRC, "log_utils.py"),
                         "--dest", str(out)],
                        capture_output=True, text=True, timeout=120,
-                       env={**os.environ, "QC_APPDATA": str(tmp_path / "appdata")})
+                       env=subprocess_env(QC_APPDATA=str(tmp_path / "appdata")))
     assert r.returncode == 0, f"CLI 退出码 {r.returncode}: {r.stderr[-500:]}"
     zips = list(out.glob("*.zip"))
     assert zips, f"CLI 未产出诊断包：{r.stdout[-300:]}"
