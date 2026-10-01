@@ -162,22 +162,31 @@ def _fingerprint(path: str):
 
 @pytest.fixture(scope="session", autouse=True)
 def _guard_repo_files():
-    """会话前后比对仓库内真实文件；被测试改写则本会话失败。
+    """会话前后比对仓库内真实文件；**已存在**的文件被改写则本会话失败。
+
+    ⚠️ 判据要点（踩过的坑）：只保护**会话开始时已存在**的文件，不能把「不存在 →
+    被创建」也算事故。原因：`assets/*.db`、`assets/ris_config.json`、`assets/license.dat`
+    等**未纳入 git**（开发机的本地数据），CI 全新 checkout 上根本不存在，
+    用例运行中创建它们是**正常行为**（如 health/data 层用例会初始化临时库到该路径）。
+    第一版按「受保护清单」无差别比对，导致 CI 上 `ris_config.json`
+    `None → 哈希` 被判为污染（Build Windows 单元测试闸实测误报）。
 
     只**检测并报错**，不做自动还原 —— 自动还原会把"测试污染了真实数据"这件事
-    掩盖过去，而我们需要它每次都可见（数据可能已经被破坏，掩盖更危险）。
+    掩盖过去，而数据可能已经被破坏，掩盖更危险。
     """
-    before = {rel: _fingerprint(os.path.join(_REPO_ROOT, rel))
-              for rel in _PROTECTED_REPO_FILES}
+    tracked = {rel: _fingerprint(os.path.join(_REPO_ROOT, rel))
+               for rel in _PROTECTED_REPO_FILES}
+    # 只关心开始时确实存在的文件（CI 上未跟踪的文件本就不存在）
+    before = {k: v for k, v in tracked.items() if v is not None}
     yield
     changed = []
-    for rel in _PROTECTED_REPO_FILES:
+    for rel, old in before.items():
         now = _fingerprint(os.path.join(_REPO_ROOT, rel))
-        if now != before[rel]:
+        if now != old:
             changed.append(rel)
     if changed:
         raise AssertionError(
-            "测试改动了仓库内的真实文件（必须用 tmp_path / QC_APPDATA / "
+            "测试改动了仓库内**已存在**的真实文件（必须用 tmp_path / QC_APPDATA / "
             "QC_BACKUP_DIR / temp_db 隔离）：\n  " + "\n  ".join(changed) +
             "\n请修复对应测试；若属误报请调整 _PROTECTED_REPO_FILES。"
         )
