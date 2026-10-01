@@ -59,7 +59,7 @@ def ws(tmp_path):
 def test_template_from_jsonl_has_blank_labels(ws):
     out = str(ws["dir"] / "tmpl.jsonl")
     r = _run(["template", "--from-jsonl", ws["pool"], "--out", out], ws["appdata"])
-    assert r.returncode == 0, r.stderr
+    assert r.returncode == 0, (r.stderr or "")
     rows = [json.loads(x) for x in open(out, encoding="utf-8")]
     assert len(rows) == len(_POOL)
     assert all(x["label"]["is_true_error"] is None for x in rows)
@@ -75,7 +75,7 @@ def test_validate_rejects_silver_labels(ws, tmp_path):
     silver.write_text(json.dumps(row, ensure_ascii=False), encoding="utf-8")
     r = _run(["validate", str(silver)], ws["appdata"])
     assert r.returncode == 1, "银标必须被拒收"
-    assert "human" in r.stdout
+    assert "human" in (r.stdout or "")
 
 
 def test_validate_accepts_human_labels(ws, tmp_path):
@@ -89,8 +89,8 @@ def test_validate_accepts_human_labels(ws, tmp_path):
     good.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in rows),
                     encoding="utf-8")
     r = _run(["validate", str(good)], ws["appdata"])
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert "校验通过" in r.stdout
+    assert r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+    assert "校验通过" in (r.stdout or "")
 
 
 def test_score_keeps_studies_separate(ws, tmp_path):
@@ -107,14 +107,14 @@ def test_score_keeps_studies_separate(ws, tmp_path):
                        encoding="utf-8")
     out = str(tmp_path / "result.json")
     r = _run(["score", str(labeled), "--json", "--save", out], ws["appdata"])
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.returncode == 0, (r.stdout or "") + (r.stderr or "")
     res = json.load(open(out, encoding="utf-8"))
     assert "study_a_rules" in res and res["study_a_rules"]["n_err"] == 1
     assert "study_b_llm_increment" in res
     # 不跑 LLM 时该项为 None，绝不能把规则结果冒充成 LLM 结果
     assert res["study_b_llm_increment"] is None
     # 人类可读输出里也必须分节标注
-    assert "研究 A" in r.stdout
+    assert "研究 A" in (r.stdout or "")
 
 
 def test_feedback_promotes_to_labeling_template(ws):
@@ -135,11 +135,11 @@ def test_feedback_promotes_to_labeling_template(ws):
                             # （实测被 conftest 的仓库文件守卫抓到：
                             #  assets/feedback.db 被改写）。
                             QC_DB_OVERRIDE=os.path.join(ws["appdata"], "t.db")))
-    assert r0.returncode == 0, r0.stderr
+    assert r0.returncode == 0, (r0.stderr or "")
 
     out = str(ws["dir"] / "from_fb.jsonl")
     r = _run(["template", "--from-feedback", "--out", out], ws["appdata"])
-    assert r.returncode == 0, r.stderr
+    assert r.returncode == 0, (r.stderr or "")
     rows = [json.loads(x) for x in open(out, encoding="utf-8")]
     assert rows, "反馈未生成任何候选（飞轮断了）"
     assert any("missed" in (x["meta"].get("origin") or "") for x in rows)

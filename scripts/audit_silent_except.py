@@ -97,7 +97,12 @@ def scan():
                 if not fn.endswith(".py"):
                     continue
                 path = os.path.join(dirpath, fn)
-                rel = os.path.relpath(path, ROOT)
+                # 归一化为 POSIX 分隔符：`os.path.relpath` 在 Windows 上返回
+                # `src\backup.py`，而基线 JSON 的 key 是 `src/backup.py` →
+                # 全部文件被判成「新增文件」，其中含静默吞异常的即报回归 → exit 1。
+                # 这就是 Windows CI 上"静默吞异常出现回归"的真因（2026-10-01 实测：
+                # 模拟反斜杠后有 34 个文件被误判为新增）。
+                rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
                 try:
                     src = open(path, encoding="utf-8").read()
                     tree = ast.parse(src)
