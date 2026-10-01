@@ -267,7 +267,13 @@ jobs:
           dist_server_main = []
           if os.path.isdir("dist"):
               for root, dirs, files in os.walk("dist"):
-                  if os.path.basename(files) == "index.html" and os.path.basename(os.path.dirname(root)) == "static":
+                  # 2026-10-01 修复：原先写 `os.path.basename(files) == "index.html"`，
+                  # 而 os.walk 的 `files` 是 **list** → 每次必然抛
+                  # `TypeError: expected str, bytes or os.PathLike object, not list`，
+                  # 使本校验步骤**在 Windows build 上必然崩**（走到第 68 行即退出），
+                  # 前端/后端是否打进 dist 实际上**从未被校验过**。
+                  # 正确写法是成员判断：`"index.html" in files`。
+                  if "index.html" in files and os.path.basename(root) == "static":
                       dist_index.append(os.path.join(root, "index.html"))
                   if "server" in dirs and os.path.exists(os.path.join(root, "server", "main.py")):
                       dist_server_main.append(os.path.join(root, "server", "main.py"))
