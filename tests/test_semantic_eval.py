@@ -42,7 +42,12 @@ def _run(args, appdata, **env):
     # 否则出现"写入 A 目录、读取 B 目录"→ 反馈飞轮看似断裂。
     e = subprocess_env(QC_APPDATA=appdata,
                        QC_DB_OVERRIDE=os.path.join(str(appdata), "t.db"), **env)
-    return subprocess.run([_PY, _TOOL, *args], capture_output=True, text=True,
+    # 显式给 encoding/errors（而非只靠 text=True）：Windows 上实测出现
+    # 「returncode=0 但 stdout is None」—— 子进程正常退出，管道内容却读不到，
+    # 于是 `"校验通过" in r.stdout` 报 NoneType 错误（CI 实测 3 条 FAILED）。
+    # 显式指定编码可绕开平台默认解码路径；调用方另用 `(r.stdout or "")` 兜底。
+    return subprocess.run([_PY, _TOOL, *args], capture_output=True,
+                          encoding="utf-8", errors="replace",
                           timeout=180, env=e)
 
 

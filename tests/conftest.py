@@ -110,6 +110,27 @@ def subprocess_env(**extra) -> dict:
     return env
 
 
+def checked_output(proc) -> tuple:
+    """返回 `(stdout, stderr)`，并把「管道内容意外为 None」显式暴露出来。
+
+    Windows 上实测：子进程 `returncode=0` 但 `proc.stdout is None`
+    （管道内容读不到，且不报错）→ 断言 `"关键字" in r.stdout` 抛
+    `TypeError: argument of type 'NoneType' is not iterable`，
+    把「输出丢失」这一真因伪装成断言类型错误。
+
+    这里统一转成字符串；若返回码为 0 却**完全没有任何输出**，说明子进程输出
+    丢失（而非"脚本没打印"），此时抛 AssertionError 明确指出问题，
+    避免下游再报难以理解的 NoneType 错。
+    """
+    out = proc.stdout if proc.stdout is not None else ""
+    err = proc.stderr if proc.stderr is not None else ""
+    if proc.returncode == 0 and not out and not err:
+        raise AssertionError(
+            f"子进程返回码 0 但 stdout/stderr 均为空（输出可能丢失）：{proc.args}"
+        )
+    return out, err
+
+
 @pytest.fixture(autouse=True)
 def _isolate_global_db_binding():
     """**每个用例前后自动快照/还原全局库绑定**（2026-09-30 新增，全仓生效）。
