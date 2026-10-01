@@ -660,19 +660,19 @@ jobs:
               except Exception as e:
                   print(f"  probe {i + 1}: {type(e).__name__}: {e}")
 
-          # 无论成败都终止进程（防泄漏占用 8500）
-          try:
-              proc.terminate()
-          except Exception:
-              pass
-          time.sleep(1)
-          try:
-              proc.kill()
-          except Exception:
-              pass
-
+          # 2026-10-01 修复：**先跑质控冒烟，再终止进程**。
+          # 原顺序是先 terminate/kill 再探测 /qc/check，等于向一个**已经死掉的
+          # 进程**发请求 → 必然 `URLError: [WinError 10061] 目标计算机积极拒绝`，
+          # 于是这个「引擎完整性」冒烟**从来没可能通过**（Build Windows #174 实测：
+          # health 明明 OK，QC 却报"引擎不可用"，属误导性结论）。
+          # 真正原因不是 engine 子模块缺失，而是进程已被自己杀掉。
           if not ok:
               print("::error::exe 启动后后端未就绪（依赖缺失/崩溃/端口未监听）")
+              # 失败也要收尾，避免残留进程占端口影响后续排障
+              try:
+                  proc.terminate(); time.sleep(1); proc.kill()
+              except Exception:
+                  pass
               raise SystemExit(1)
 
           # ── 质控路径端到端冒烟 (2026-08-25 审计补盲) ──────────────────
@@ -699,6 +699,17 @@ jobs:
               print(f"QC SMOKE: ok={qc_ok}, findings={findings_n}")
           except Exception as e:
               print(f"  qc smoke error: {type(e).__name__}: {e}")
+
+          # 冒烟结束后再终止进程（防泄漏占用 8500）
+          try:
+              proc.terminate()
+          except Exception:
+              pass
+          time.sleep(1)
+          try:
+              proc.kill()
+          except Exception:
+              pass
 
           if not qc_ok:
               print("::error::exe 内质控引擎不可用(engine 子模块缺失或规则链路异常)")
