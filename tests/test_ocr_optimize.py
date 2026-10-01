@@ -13,20 +13,66 @@ from PIL import Image, ImageDraw, ImageFont
 import ocr_provider
 import engine
 
+import pytest
+
+
+# CI（ubuntu-latest）默认**不装中文字体**：原先的字体查找全部落空 → font=None →
+# PIL 退回内置位图字体，中文渲染成乱码，OCR 读出 "8888888548 / B888888CT"，
+# 于是 `姓名解析失败` 假失败（2026-10-01 Build Windows #172 实测复现）。
+# 本测试**验证的是 OCR 链路**，不是字体环境；无 CJK 字体时应 skip 而非 fail。
+_CJK_FONT_CANDIDATES = (
+    # macOS
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+    # Windows
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/simhei.ttf",
+    # Linux（CI 装了 fonts-noto-cjk / fonts-wqy 时可用）
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/arphic/uming.ttc",
+)
+
+
+def _load_cjk_font(size: int = 26):
+    """返回可渲染中文的字体对象；找不到返回 None。
+
+    先按已知路径找（快），找不到再**扫描字体目录**（稳）—— fonts-noto-cjk 在
+    不同发行版/版本下的落盘路径并不一致（/usr/share/fonts/opentype/noto/ 或
+    /usr/share/fonts/noto-cjk/ 等），硬编码单一路径容易再次出现
+    "本地能跑、CI skip" 的情况。
+    """
+    for fp in _CJK_FONT_CANDIDATES:
+        if os.path.isfile(fp):
+            try:
+                return ImageFont.truetype(fp, size)
+            except Exception:
+                continue
+    # 兜底：扫常见字体根目录下的 CJK 字体文件
+    import glob
+    patterns = (
+        "/usr/share/fonts/**/NotoSansCJK*",
+        "/usr/share/fonts/**/NotoSerifCJK*",
+        "/usr/share/fonts/**/wqy*.tt[cf]",
+        "/usr/share/fonts/**/*ming*.tt[cf]",
+        "/usr/share/fonts/**/*CJK*.tt[cf]",
+        "/usr/local/share/fonts/**/*CJK*.tt[cf]",
+    )
+    for pat in patterns:
+        for fp in sorted(glob.glob(pat, recursive=True)):
+            try:
+                return ImageFont.truetype(fp, size)
+            except Exception:
+                continue
+    return None
+
 
 def _render(lines, size=(420, 160)):
     img = Image.new("RGB", size, "white")
     d = ImageDraw.Draw(img)
-    font = None
-    for fp in ("/System/Library/Fonts/STHeiti Light.ttc",
-               "/System/Library/Fonts/Hiragino Sans GB.ttc",
-               "C:/Windows/Fonts/msyh.ttc"):
-        if os.path.isfile(fp):
-            try:
-                font = ImageFont.truetype(fp, 26)
-                break
-            except Exception:
-                pass
+    font = _load_cjk_font(26)
     y = 12
     for ln in lines:
         d.text((14, y), ln, fill="black", font=font)
@@ -46,12 +92,23 @@ def test_change_detection():
 
 
 def test_ocr_with_confidence():
+    if _load_cjk_font() is None:
+        pytest.skip(
+            "环境无中文字体（CI ubuntu-latest 默认不装），无法渲染中文样本 —— "
+            "本用例验证的是 OCR 链路而非字体环境，跳过而非误报失败。"
+            "如需在 CI 跑：apt-get install -y fonts-noto-cjk"
+        )
     ok, reason = ocr_provider.availability()
     assert ok, f"OCR 不可用：{reason}"
     img = _render(["姓名：张伟", "性别：男 年龄：54岁", "检查部位：胸部CT"])
     text = ocr_provider.ocr_image(img)          # 默认 0.7 阈值
     print("  识别文本：", text.replace("\n", " / "))
     meta = engine.extract_meta(text)
+    # 明确区分「OCR 没读出来」与「解析失败」：前者说明渲染/字体仍有问题，
+    # 避免把乱码当"部分识别"而让断言给出误导性的失败原因。
+    assert "张伟" in text, (
+        f"OCR 未能识别出中文样本（很可能字体渲染异常，而非阈值过滤）：{text!r}"
+    )
     assert meta.get("patient") == "张伟", f"姓名解析失败: {meta}"
     assert meta.get("gender") == "男", f"性别解析失败: {meta}"
     assert "54" in (meta.get("age") or ""), f"年龄解析失败: {meta}"
