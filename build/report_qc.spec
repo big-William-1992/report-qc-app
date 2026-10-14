@@ -84,8 +84,13 @@ except Exception as _e:
 # 非目标平台的实现，只保留 Windows 用的 edgechromium(WebView2) 与 winforms(pythonnet)。
 # （macOS/Linux 打包时可调 _WEBVIEW_DROP 集合。）
 
-# 需排除的 pywebview 平台模块名（Windows 目标）
-_WEBVIEW_DROP = ("cocoa", "gtk", "qt", "cef", "wox", "phantomjs")
+# 需排除的 pywebview 平台模块名（按目标平台动态选择，macOS/Linux 打包自动保留对应后端）
+if sys.platform.startswith("win"):
+    _WEBVIEW_DROP = ("cocoa", "gtk", "qt", "cef", "wox", "phantomjs")
+elif sys.platform == "darwin":
+    _WEBVIEW_DROP = ("gtk", "qt", "cef", "wox", "phantomjs", "edgechrome", "winforms")
+else:
+    _WEBVIEW_DROP = ("cocoa", "edgechrome", "winforms", "wox", "phantomjs")
 
 
 def _webview_trim(_bins, _datas, _hides):
@@ -328,3 +333,17 @@ coll = COLLECT(
     upx=False,
     name="报告质控软件",
 )
+
+# macOS 必须包成 .app（BUNDLE）才能 codesign / notarize；
+# Windows / Linux 下 BUNDLE 无意义，跳过以保持现有产物结构不变。
+if sys.platform == "darwin":
+    app = BUNDLE(
+        coll,
+        name="报告质控软件.app",
+        info_plist={
+            "NSHighResolutionCapable": True,
+            "CFBundleName": "星衍AI放射质控",
+            "CFBundleDisplayName": "星衍AI放射质控",
+            "CFBundleIdentifier": "com.xingyan.qc",
+        },
+    )

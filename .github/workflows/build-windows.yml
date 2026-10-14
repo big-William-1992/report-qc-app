@@ -176,6 +176,23 @@ jobs:
           ls -l "$D/LICENSE" "$D/NOTICE.md" "$D/免责声明.md"
           grep -q "Required Notice:" "$D/NOTICE.md" || { echo "::error::NOTICE.md 缺少 Required Notice 行"; exit 1; }
 
+      # ---- 代码签名（Authenticode）：仅当仓库配置了 WINDOWS_CODESIGN_PFX 才执行 ----
+      # 未配置时跳过，现有「未签名构建」行为不变（SmartScreen 会警告，但不阻断）。
+      - name: Sign exe (Authenticode)
+        if: ${{ secrets.WINDOWS_CODESIGN_PFX != '' }}
+        shell: bash
+        env:
+          PFX_B64: ${{ secrets.WINDOWS_CODESIGN_PFX }}
+          PFX_PW: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
+        run: |
+          echo "$PFX_B64" | base64 -d > codesign.pfx
+          ST=$(find "/c/Program Files (x86)/Windows Kits/10/bin" -name signtool.exe -path '*x64*' 2>/dev/null | head -1)
+          [ -z "$ST" ] && ST=$(find "/c/Program Files (x86)/Windows Kits" -name signtool.exe 2>/dev/null | head -1)
+          echo "signtool: $ST"
+          "$ST" sign /f codesign.pfx /p "$PFX_PW" /fd SHA256 \
+            /tr http://timestamp.digicert.com /td SHA256 \
+            "dist/报告质控软件/报告质控软件.exe"
+
       - name: Smoke test - engine import & run
         # 干净环境下验证引擎能正常 import 并跑一份示例报告（抓逻辑层错误）
         # 非阻断：即使引擎冒烟测试出问题，也不影响 exe 产物的上传
@@ -461,6 +478,22 @@ jobs:
             Write-Error "Inno Setup 编译失败"; exit 1
           }
           "INSTALLER BUILD OK" | Add-Content $diag
+
+      # ---- 安装包签名（Authenticode）：需 WINDOWS_CODESIGN_PFX（codesign.pfx 由上方 exe 签名步生成）----
+      - name: Sign installer (Authenticode)
+        if: ${{ secrets.WINDOWS_CODESIGN_PFX != '' }}
+        shell: bash
+        env:
+          PFX_B64: ${{ secrets.WINDOWS_CODESIGN_PFX }}
+          PFX_PW: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
+        run: |
+          ST=$(find "/c/Program Files (x86)/Windows Kits/10/bin" -name signtool.exe -path '*x64*' 2>/dev/null | head -1)
+          [ -z "$ST" ] && ST=$(find "/c/Program Files (x86)/Windows Kits" -name signtool.exe 2>/dev/null | head -1)
+          for f in installer/*.exe; do
+            [ -e "$f" ] || continue
+            "$ST" sign /f codesign.pfx /p "$PFX_PW" /fd SHA256 \
+              /tr http://timestamp.digicert.com /td SHA256 "$f"
+          done
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v5

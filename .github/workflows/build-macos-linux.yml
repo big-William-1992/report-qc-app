@@ -1,0 +1,226 @@
+# 星衍AI放射质控 · macOS(.dmg) + Linux(.AppImage) 自动构建与签名
+#
+# 触发：推到 main / 手动 workflow_dispatch
+# 产物：发布到独立 Release 标签 `latest-desktop`（与 Windows 的 `latest` 互不覆盖）
+#
+# 签名（均为可选项，缺密钥则跳过签名、仍出未签名包）：
+#   macOS：需仓库 Secrets
+#     MACOS_CERT_P12        base64(Developer ID Application .p12)
+#     MACOS_CERT_PASSWORD   p12 导出密码
+#     APPLE_ID              苹果账号邮箱
+#     APPLE_APP_PASSWORD    苹果「专用密码」（app-specific password）
+#     APPLE_TEAM_ID         团队 ID（10 位）
+#   Linux：需仓库 Secrets
+#     LINUX_GPG_KEY         base64(GPG 私钥导出)
+#     LINUX_GPG_PASSPHRASE  GPG 私钥口令（若设了的话）
+#
+# 注：未签名的 macOS .dmg 用户需「右键→打开」或在「安全性与隐私」里允许；
+#     未签名的 Linux .AppImage 可直接运行（但目标机需自带 WebKit2GTK）。
+name: Build macOS & Linux (dmg + AppImage)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+      - name: Install dependencies (requirements.txt, pythonnet/pynput 已按平台标记跳过)
+        run: python -m pip install -r requirements.txt
+      - name: Force opencv headless (瘦身)
+        run: |
+          python -m pip uninstall -y opencv-python opencv-contrib-python || true
+          python -m pip install --force-reinstall opencv-python-headless
+      - name: Resolve app version
+        run: |
+          VER=$(python -c "import sys; sys.path.insert(0,'src'); from version import APP_VERSION; print(APP_VERSION)")
+          echo "APP_VERSION=$VER" >> "$GITHUB_ENV"
+      - name: Write build info
+        run: |
+          mkdir -p assets
+          python - <<'PY'
+          import json, datetime, os
+          info = {"build_time": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "commit": os.environ.get("GITHUB_SHA","")[:7] or "ci"}
+          with open("assets/build_info.json","w",encoding="utf-8") as f:
+              json.dump(info,f,ensure_ascii=False,indent=2)
+          PY
+      - name: Build app (PyInstaller → dist/报告质控软件.app)
+        run: python -m PyInstaller build/report_qc.spec --noconfirm --clean
+      - name: Verify bundle (OCR 模型 + server + web 前端, 非阻断)
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import os, sys
+          ok = True
+          for m in ("rapidocr_onnxruntime","onnxruntime","cv2","numpy","PIL","pywebview"):
+              try: __import__(m); print("import OK:", m)
+              except Exception as e: print("import FAIL:", m, e); ok = False
+          onnx = []
+          if os.path.isdir("dist"):
+              for root,_,files in os.walk("dist"):
+                  if os.path.basename(root)=="ocr_models":
+                      onnx = sorted(f for f in files if f.endswith(".onnx"))
+          print("DIST ocr_models:", onnx)
+          if len(onnx) < 3: print("WARN: OCR 模型未打进 bundle"); ok = False
+          has_index = any(os.path.isfile(os.path.join(r,"index.html"))
+                         for r,_,_ in os.walk("dist") if os.path.basename(r)=="static")
+          has_server = any(os.path.isfile(os.path.join(r,"main.py"))
+                          for r,_,_ in os.walk("dist") for d in _ if d=="server")
+          print("DIST web/index.html:", has_index, "| server/main.py:", has_server)
+          if not has_index or not has_server: print("WARN: 前端或后端缺失"); ok = False
+          print("VERIFY", "OK" if ok else "ISSUES")
+          PY
+      - name: Create DMG
+        run: |
+          test -d "dist/报告质控软件.app" || { echo "::error::未生成 .app，构建失败"; exit 1; }
+          hdiutil create -volname "星衍AI放射质控" -srcfolder "dist/报告质控软件.app" \
+            -ov -format UDZO "星衍AI放射质控-${{ env.APP_VERSION }}.dmg"
+      - name: Import Developer ID cert
+        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          echo "$MACOS_CERT_P12" | base64 --decode > cert.p12
+          security create-keychain -p "" build.keychain
+          security import cert.p12 -k build.keychain -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+      - name: Codesign app
+        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        run: |
+          IDENTITY=$(security find-identity -v -p codesigning build.keychain \
+            | grep -oE "Developer ID Application:[^(]+" | head -1 | sed 's/:$//' | sed 's/ *$//')
+          echo "Signing with: $IDENTITY"
+          codesign --force --options runtime --timestamp --sign "$IDENTITY" "dist/报告质控软件.app"
+      - name: Notarize & staple
+        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit "星衍AI放射质控-${{ env.APP_VERSION }}.dmg" \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "星衍AI放射质控-${{ env.APP_VERSION }}.dmg"
+      - name: Upload dmg artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: report-qc-dmg
+          path: "星衍AI放射质控-${{ env.APP_VERSION }}.dmg"
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Force opencv headless (瘦身)
+        run: |
+          python -m pip uninstall -y opencv-python opencv-contrib-python || true
+          python -m pip install --force-reinstall opencv-python-headless
+      - name: Resolve app version
+        run: |
+          VER=$(python -c "import sys; sys.path.insert(0,'src'); from version import APP_VERSION; print(APP_VERSION)")
+          echo "APP_VERSION=$VER" >> "$GITHUB_ENV"
+      - name: Write build info
+        run: |
+          mkdir -p assets
+          python - <<'PY'
+          import json, datetime, os
+          info = {"build_time": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "commit": os.environ.get("GITHUB_SHA","")[:7] or "ci"}
+          with open("assets/build_info.json","w",encoding="utf-8") as f:
+              json.dump(info,f,ensure_ascii=False,indent=2)
+          PY
+      - name: Build (PyInstaller → dist/报告质控软件/)
+        run: python -m PyInstaller build/report_qc.spec --noconfirm --clean
+      - name: Build AppImage
+        run: |
+          APPDIR="dist/星衍AI放射质控.AppDir"
+          mkdir -p "$APPDIR"
+          cp -a "dist/报告质控软件/." "$APDIR/"
+          cat > "$APDIR/星衍AI放射质控.desktop" <<'EOS'
+          [Desktop Entry]
+          Type=Application
+          Name=星衍AI放射质控
+          Exec=报告质控软件
+          Categories=Utility;
+          EOS
+          cat > "$APDIR/AppRun" <<'EOS'
+          #!/bin/bash
+          HERE="$(dirname "$(readlink -f "${0}")")"
+          export PYWEBVIEW_BACKEND="${PYWEBVIEW_BACKEND:-gtk}"
+          exec "$HERE/报告质控软件" "$@"
+          EOS
+          chmod +x "$APDIR/AppRun"
+          curl -fsSL -o linuxdeploy.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy.AppImage
+          ./linuxdeploy.AppImage --appimage-extract-and-run --appdir "$APDIR" --output appimage
+          mv 星衍AI放射质控-*.AppImage "星衍AI放射质控-${{ env.APP_VERSION }}.AppImage"
+      - name: GPG sign (detached)
+        if: ${{ secrets.LINUX_GPG_KEY != '' }}
+        env:
+          LINUX_GPG_KEY: ${{ secrets.LINUX_GPG_KEY }}
+          LINUX_GPG_PASSPHRASE: ${{ secrets.LINUX_GPG_PASSPHRASE }}
+        run: |
+          echo "$LINUX_GPG_KEY" | base64 --decode | gpg --batch --import
+          gpg --batch --yes --passphrase "$LINUX_GPG_PASSPHRASE" \
+            --detach-sign --armor "星衍AI放射质控-${{ env.APP_VERSION }}.AppImage"
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: report-qc-appimage
+          path: |
+            星衍AI放射质控-${{ env.APP_VERSION }}.AppImage
+            星衍AI放射质控-${{ env.APP_VERSION }}.AppImage.asc
+
+  publish:
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download dmg
+        uses: actions/download-artifact@v5
+        with:
+          name: report-qc-dmg
+          path: out
+      - name: Download AppImage
+        uses: actions/download-artifact@v5
+        with:
+          name: report-qc-appimage
+          path: out
+      - name: Delete old release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete latest-desktop --yes --repo ${{ github.repository }} || true
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: latest-desktop
+          name: 星衍AI放射质控（macOS / Linux 最新版）
+          files: out/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
